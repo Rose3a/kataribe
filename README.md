@@ -63,37 +63,17 @@ models/             モデル配置ディレクトリ（git管理外）
 speakers/           話者データ配置ディレクトリ（git管理外）
 ```
 
-## 開発・検証
+## 倫理的制約・免責事項
 
-### 音声 I/O のテスト
-```powershell
-.\.local\venv\Scripts\python.exe tools\test_audio_io.py
-```
+本ツールが利用する「Irodori-TTS」モデルには、ライセンス（MIT）に加えて以下の倫理的制約が定められています。本ツールの利用者もこれに従う必要があります。
 
-### 簡易動作確認
-```bat
-bat\verify.bat
-```
-※出力音声やログは `outputs/` および `logs/` に保存されます（git管理外）。
+- **なりすましの禁止**: 本人の明示的な同意を得ていない実在の個人（声優、著名人、公人等）の声をクローンしたり、なりすましを行ったりする目的で使用しないでください。
+- **ディープフェイク・誤情報の生成禁止**: 他者を欺く意図を持った音声や、誤情報・偽情報を拡散する目的の音声生成は行わないでください。
+- **生成音声の類似性に関する免責**: 参照音声を用いずテキスト/キャプションから生成した場合でも、偶然実在の人物に声が似る可能性があります。これは潜在空間における確率的な結果であり、特定の個人を再現することを意図した学習は行われていません。
+- **免責事項**: 本モデルおよび本ツールの利用によって生じたトラブルや損害について、開発者は一切の責任を負いません。各国の法規制を確認の上、利用者自身の責任で利用してください。
 
-### 単体テスト
-標準の `unittest` を使用しているため、pytest は不要です。
-```powershell
-.\.local\venv\Scripts\python.exe -m unittest discover -s irodori-tts\tests -t irodori-tts\tests -p "test_*.py"
-```
-
-WebUI 経由のテスト（セッショントークン、`/audio_query`、`/synthesis`）や、ヘッドレスブラウザでの描画テストの詳細は [docs/TESTING.md](docs/TESTING.md) を参照してください。
-
-### セットアップスクリプトについて
-
-- **`setup.bat`（通常はこちらを使用）**:
-  `bat\first_setup.bat` を呼び出し、GPU 判定から `.local` への環境構築を一括で行います。
-- **`bat\first_setup.bat`**:
-  `tools\setup.ps1` を呼び出し、GPU 判定から `.local` への環境構築（Python / Node / 依存関係 / モデル準備）を一括で行います。`bat\launch.bat` や `bat\serve_browser.bat` はこの環境を参照します。
-- **`irodori-tts\setup_venv.bat`**:
-  ラッパー単体を `irodori-tts\.venv` で動かすためのレガシーなスクリプトです。依存関係の構成が異なるため、通常は使用しません。
 
 ## ライセンス・クレジット
 
-ライセンスの適用範囲、上流プロジェクト、モデルや話者データの取り扱いについては [NOTICE.md](NOTICE.md) を確認してください。
-`voicevox-editor/` の改変・再配布には LGPL-3.0 が適用されます。詳細は [LICENSE](LICENSE) を参照してください。
+コードと標準モデルに適用されるライセンスは [LICENSES.md](LICENSES.md) に一覧で記載しています。
+ライセンステキストは [LICENSE](LICENSE) と各同梱ディレクトリの `LICENSE` を確認してください。
