@@ -79,7 +79,6 @@ import OssLicense from "./HelpOssLicenseSection.vue";
 import BaseListItem from "@/components/Base/BaseListItem.vue";
 import BaseNavigationView from "@/components/Base/BaseNavigationView.vue";
 import { useStore } from "@/store";
-import { createLogger } from "@/helpers/log";
 import type { OssLicenseInfo } from "@/domain/staticAssets";
 import {
   irodoriEthicsNoticeSource,
@@ -104,7 +103,6 @@ const dialogOpened = defineModel<boolean>("dialogOpened", { default: false });
 const isIrodoriFork = import.meta.env.VITE_APP_NAME === "voicevox-irodori";
 
 const store = useStore();
-const { warn } = createLogger("HelpDialog");
 
 // エディタのOSSライセンス取得
 const licenses = ref<OssLicenseInfo[]>();
@@ -123,6 +121,30 @@ void store.actions.GET_Q_AND_A_TEXT().then((obj) => (qAndA.value = obj));
 
 const contact = ref<string>("");
 void store.actions.GET_CONTACT_TEXT().then((obj) => (contact.value = obj));
+
+// アプリに同梱した情報と、起動中の各エンジンが返す情報を一つにまとめる。
+// 同一項目は本文まで一致するときだけ重複を除く。
+const allLicenses = computed<OssLicenseInfo[]>(() => {
+  const entries = [
+    ...(licenses.value ?? []),
+    ...store.getters.GET_SORTED_ENGINE_INFOS.flatMap(
+      (engineInfo) =>
+        store.state.engineManifests[engineInfo.uuid]?.dependencyLicenses ?? [],
+    ),
+  ];
+  const seen = new Set<string>();
+  return entries.filter((license) => {
+    const key = [
+      license.name,
+      license.version ?? "",
+      license.license ?? "",
+      license.text,
+    ].join("\u0000");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+});
 
 const pagedata = computed(() => {
   const data: PageData[] = [
@@ -156,10 +178,10 @@ const pagedata = computed(() => {
       : []),
     {
       type: "item",
-      name: "ライセンス情報",
+      name: "ライセンス・クレジット",
       component: OssLicense,
       props: {
-        licenses: licenses.value,
+        licenses: allLicenses.value,
       },
     },
 
@@ -181,29 +203,6 @@ const pagedata = computed(() => {
       shouldShowOpenLogDirectoryButton: true,
     },
   ];
-  for (const id of store.getters.GET_SORTED_ENGINE_INFOS.map((m) => m.uuid)) {
-    const manifest = store.state.engineManifests[id];
-    if (!manifest) {
-      warn(`manifest not found: ${id}`);
-      continue;
-    }
-
-    data.push(
-      {
-        type: "separator",
-        name: manifest.name,
-      },
-      {
-        type: "item",
-        name: "ライセンス情報",
-        parent: manifest.name,
-        component: OssLicense,
-        props: {
-          licenses: manifest.dependencyLicenses,
-        },
-      },
-    );
-  }
   return data;
 });
 

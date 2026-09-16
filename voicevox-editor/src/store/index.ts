@@ -278,9 +278,27 @@ export const indexStore = createPartialStore<IndexStoreTypes>({
             throw new Error("assert characterInfo !== undefined");
 
           const speakerUuid = characterInfo.metas.speakerUuid;
-          const defaultStyleId = defaultStyleIds.find(
-            (styleId) => speakerUuid == styleId.speakerUuid,
-          );
+          const irodoriDefaultStyleId =
+            import.meta.env.VITE_APP_NAME === "voicevox-irodori" &&
+            characterInfo.metas.speakerName === "話者なし"
+              ? defaultStyleIds.find((styleId) => {
+                  const defaultCharacterInfo = getCharacterInfo(
+                    state,
+                    styleId.engineId,
+                    styleId.defaultStyleId,
+                  );
+                  return (
+                    state.engineManifests[styleId.engineId]?.brandName ===
+                      "Irodori-TTS" &&
+                    defaultCharacterInfo?.metas.speakerName === "tsukuyomi"
+                  );
+                })
+              : undefined;
+          const defaultStyleId =
+            irodoriDefaultStyleId ??
+            defaultStyleIds.find(
+              (styleId) => speakerUuid == styleId.speakerUuid,
+            );
           if (defaultStyleId == undefined)
             throw new Error("defaultStyleId == undefined");
 

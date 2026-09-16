@@ -593,7 +593,24 @@ onetimeWatch(
       return "continue";
     if (!isProjectFileLoaded) {
       // 最初のAudioCellを作成
-      const audioItem = await store.actions.GENERATE_AUDIO_ITEM({});
+      // Irodori版では、初回の空プロジェクトはつくよみちゃんを使う。
+      // userCharacterOrder に過去の「話者なし」の順序が保存されていても、
+      // 新規プロジェクトの既定話者はそれに引っ張られないようにする。
+      const tsukuyomiVoice =
+        import.meta.env.VITE_APP_NAME === "voicevox-irodori"
+          ? store.getters
+              .GET_ALL_VOICES("talk")
+              .find(
+                (voice) =>
+                  store.state.engineManifests[voice.engineId]?.brandName ===
+                    "Irodori-TTS" &&
+                  store.getters.CHARACTER_INFO(voice.engineId, voice.styleId)
+                    ?.metas.speakerName === "tsukuyomi",
+              )
+          : undefined;
+      const audioItem = await store.actions.GENERATE_AUDIO_ITEM({
+        voice: tsukuyomiVoice,
+      });
       const newAudioKey = await store.actions.REGISTER_AUDIO_ITEM({
         audioItem,
       });

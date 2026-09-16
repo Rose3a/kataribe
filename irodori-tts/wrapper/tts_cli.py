@@ -446,7 +446,13 @@ class IrodoriTTS:
         return "trt"
 
     def _pick_default_speaker(self) -> Optional[str]:
-        for preferred in ("ureshun", "unleashguang", "fairy", "kugimiya"):
+        for preferred in (
+            "tsukuyomi",
+            "ureshun",
+            "unleashguang",
+            "fairy",
+            "kugimiya",
+        ):
             if self.cassette.has(preferred):
                 return preferred
         return self.cassette.speakers[0] if self.cassette.speakers else None

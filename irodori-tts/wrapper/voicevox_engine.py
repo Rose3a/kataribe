@@ -45,6 +45,7 @@ from speaker_catalog import blink_thumbnail_for, credit_for, policy_for, mouth_o
 
 ENGINE_VERSION = "0.1.0"
 ENGINE_UUID_NAMESPACE = uuid.UUID("1d9f9d29-5a2a-4a4d-81e9-bb5f78a89d4b")
+DEFAULT_SPEAKER_NAME = "tsukuyomi"
 MAX_BODY_BYTES = 16 * 1024 * 1024
 # 30秒前後の日本語音声（目安180〜240文字）を収めつつ、
 # DirectMLワーカーのメモリ使用量が急増する長文を防ぐ。
@@ -270,6 +271,9 @@ def _speaker_table(tts: IrodoriTTS, progress_callback=None) -> tuple[list[dict],
             "credit": credit,
             "policy": policy,
         })
+    # 話者 ID は既存プロジェクトとの互換性のため生成順のまま維持し、
+    # 表示順だけを変えて初回起動時の既定話者をつくよみちゃんにする。
+    output.sort(key=lambda speaker: speaker["name"] != DEFAULT_SPEAKER_NAME)
     if progress_callback:
         progress_callback("speaker table ready", 75)
     return output, id_to_name

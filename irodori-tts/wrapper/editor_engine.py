@@ -17,7 +17,8 @@ from http.server import ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 from voicevox_engine import (Handler, VoicevoxAdapter, ROOT, ENGINE_UUID_NAMESPACE,
-                              TINY_PNG, _query, SESSION_TOKEN, MAX_BODY_BYTES, MAX_TEXT_CHARS)
+                              TINY_PNG, _query, SESSION_TOKEN, MAX_BODY_BYTES, MAX_TEXT_CHARS,
+                              DEFAULT_SPEAKER_NAME)
 from speaker_catalog import (
     _fallback_icon,
     credit_for,
@@ -678,6 +679,11 @@ class EditorAdapter:
                     mouth_open=mouth[1] if mouth else None,
                     blink=blink[1] if blink else None,
                     mouth_parts=mouth_parts, credit=credit, policy=policy))
+            # エディタはここで話者一覧を独自に組み立てる。話者IDは保ったまま
+            # 表示順だけを入れ替え、初回の既定話者をつくよみちゃんにする。
+            speakers_json.sort(
+                key=lambda speaker: speaker["name"] != DEFAULT_SPEAKER_NAME
+            )
             with self.state_lock:
                 self.id_to_name = id_to_name
                 self.speakers_json = speakers_json
