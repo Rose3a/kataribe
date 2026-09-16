@@ -81,6 +81,10 @@ import BaseNavigationView from "@/components/Base/BaseNavigationView.vue";
 import { useStore } from "@/store";
 import { createLogger } from "@/helpers/log";
 import type { OssLicenseInfo } from "@/domain/staticAssets";
+import {
+  irodoriEthicsNoticeSource,
+  irodoriEthicsNoticeTerms,
+} from "@/domain/irodoriEthicsNotice";
 
 type PageItem = {
   type: "item";
@@ -97,6 +101,7 @@ type PageSeparator = {
 type PageData = PageItem | PageSeparator;
 
 const dialogOpened = defineModel<boolean>("dialogOpened", { default: false });
+const isIrodoriFork = import.meta.env.VITE_APP_NAME === "voicevox-irodori";
 
 const store = useStore();
 const { warn } = createLogger("HelpDialog");
@@ -137,6 +142,18 @@ const pagedata = computed(() => {
         markdown: howToUse.value,
       },
     },
+    ...(isIrodoriFork
+      ? [
+          {
+            type: "item" as const,
+            name: "利用上の注意",
+            component: MarkdownView,
+            props: {
+              markdown: `${irodoriEthicsNoticeTerms}\n\n${irodoriEthicsNoticeSource}`,
+            },
+          },
+        ]
+      : []),
     {
       type: "item",
       name: "ライセンス情報",

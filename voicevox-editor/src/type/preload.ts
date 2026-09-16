@@ -425,6 +425,10 @@ export const rootMiscSettingSchema = z.object({
   lipSyncBlink: z.enum(["off", "normal", "often"]).default("normal"),
   // 口パクのタイムライン。mora=セリフの文字数から推定、asr=生成音声の発話時刻から
   lipSyncTimeline: z.enum(["mora", "asr"]).default("mora"),
+  // Irodori-TTS モデルの利用上の注意を確認したバージョン
+  irodoriEthicsNoticeVersion: z.string().default(""),
+  // 話者IDごとに、確認済みの利用条件本文を識別する値
+  reviewedIrodoriSpeakerPolicies: z.record(z.string(), z.string()).default({}),
 });
 export type RootMiscSettingType = z.infer<typeof rootMiscSettingSchema>;
 

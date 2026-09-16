@@ -15,6 +15,19 @@
           :isProjectFileLoaded
         />
       </KeepAlive>
+      <IrodoriEthicsDialog
+        v-if="isIrodoriFork"
+        v-model:dialogOpened="isIrodoriEthicsDialogOpen"
+        @reject="rejectIrodoriEthics"
+        @accept="acceptIrodoriEthics"
+      />
+      <SpeakerPolicyReviewDialog
+        v-if="isIrodoriFork"
+        v-model:dialogOpened="isSpeakerPolicyReviewDialogOpen"
+        :speakers="pendingSpeakerPolicyReviews"
+        @defer="deferSpeakerPolicyReview"
+        @accept="acceptSpeakerPolicyReview"
+      />
       <AllDialog :isEnginesReady />
     </TooltipProvider>
   </ErrorBoundary>
@@ -32,6 +45,11 @@ import ErrorBoundary from "@/components/ErrorBoundary.vue";
 import { useStore } from "@/store";
 import { useHotkeyManager } from "@/plugins/hotkeyPlugin";
 import AllDialog from "@/components/Dialog/AllDialog.vue";
+import IrodoriEthicsDialog from "@/components/Dialog/AcceptDialog/IrodoriEthicsDialog.vue";
+import SpeakerPolicyReviewDialog, {
+  type SpeakerPolicyReview,
+} from "@/components/Dialog/SpeakerPolicyReviewDialog.vue";
+import { IRODORI_ETHICS_NOTICE_VERSION } from "@/domain/irodoriEthicsNotice";
 import MenuBar from "@/components/Menu/MenuBar/MenuBar.vue";
 import { useMenuBarData as useTalkMenuBarData } from "@/components/Talk/menuBarData";
 import { useMenuBarData as useSingMenuBarData } from "@/components/Sing/menuBarData";
@@ -62,6 +80,107 @@ const subMenuData = computed(() =>
 );
 
 const openedEditor = computed(() => store.state.openedEditor);
+
+const isIrodoriEthicsDialogOpen = ref(false);
+const isSpeakerPolicyReviewDialogOpen = ref(false);
+const pendingSpeakerPolicyReviews = ref<SpeakerPolicyReview[]>([]);
+
+const policyFingerprint = (policy: string) => {
+  let hash = 2166136261;
+  for (const character of policy) {
+    hash ^= character.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${policy.length}:${(hash >>> 0).toString(16)}`;
+};
+
+const getIrodoriSpeakerPolicyReviews = (): SpeakerPolicyReview[] =>
+  [...store.getters.GET_ALL_CHARACTER_INFOS.values()]
+    .filter((characterInfo) =>
+      characterInfo.metas.styles.some(
+        (style) =>
+          store.state.engineManifests[style.engineId]?.brandName ===
+          "Irodori-TTS",
+      ),
+    )
+    .map((characterInfo) => {
+      // エンジンの既存 API は Markdown の改行として空白を補うため、
+      // 確認画面では credit.txt 本来の改行に戻して表示する。
+      const policy = characterInfo.metas.policy.replaceAll("  \n", "\n").trim();
+      return {
+        id: characterInfo.metas.speakerUuid,
+        name: characterInfo.metas.speakerName,
+        policy,
+        fingerprint: policyFingerprint(policy || "(credit.txt missing)"),
+      };
+    });
+
+const openSpeakerPolicyReviewIfNeeded = () => {
+  if (
+    !isIrodoriFork ||
+    !isEnginesReady.value ||
+    isIrodoriEthicsDialogOpen.value ||
+    isSpeakerPolicyReviewDialogOpen.value
+  ) {
+    return;
+  }
+
+  const reviews = getIrodoriSpeakerPolicyReviews().filter(
+    (review) =>
+      store.state.reviewedIrodoriSpeakerPolicies[review.id] !==
+      review.fingerprint,
+  );
+  if (reviews.length > 0) {
+    pendingSpeakerPolicyReviews.value = reviews;
+    isSpeakerPolicyReviewDialogOpen.value = true;
+  }
+};
+
+const acceptIrodoriEthics = () => {
+  void store.actions.SET_ROOT_MISC_SETTING({
+    key: "irodoriEthicsNoticeVersion",
+    value: IRODORI_ETHICS_NOTICE_VERSION,
+  });
+  isIrodoriEthicsDialogOpen.value = false;
+  openSpeakerPolicyReviewIfNeeded();
+};
+
+const rejectIrodoriEthics = () => {
+  isIrodoriEthicsDialogOpen.value = false;
+  void store.actions.CHECK_EDITED_AND_NOT_SAVE({ nextAction: "close" });
+};
+
+const acceptSpeakerPolicyReview = () => {
+  const reviewedSpeakerPolicies = {
+    ...store.state.reviewedIrodoriSpeakerPolicies,
+  };
+  for (const review of pendingSpeakerPolicyReviews.value) {
+    reviewedSpeakerPolicies[review.id] = review.fingerprint;
+  }
+  void store.actions.SET_ROOT_MISC_SETTING({
+    key: "reviewedIrodoriSpeakerPolicies",
+    value: reviewedSpeakerPolicies,
+  });
+  isSpeakerPolicyReviewDialogOpen.value = false;
+};
+
+const deferSpeakerPolicyReview = () => {
+  isSpeakerPolicyReviewDialogOpen.value = false;
+};
+
+watch(
+  () =>
+    getIrodoriSpeakerPolicyReviews()
+      .map((review) => `${review.id}:${review.fingerprint}`)
+      .join("|"),
+  () => {
+    if (
+      store.state.irodoriEthicsNoticeVersion === IRODORI_ETHICS_NOTICE_VERSION
+    ) {
+      openSpeakerPolicyReviewIfNeeded();
+    }
+  },
+);
 
 // Google Tag Manager
 const gtm = useGtm();
@@ -156,6 +275,16 @@ onMounted(async () => {
   await store.actions.SYNC_ALL_USER_DICT();
 
   isEnginesReady.value = true;
+
+  if (isIrodoriFork) {
+    if (
+      store.state.irodoriEthicsNoticeVersion !== IRODORI_ETHICS_NOTICE_VERSION
+    ) {
+      isIrodoriEthicsDialogOpen.value = true;
+    } else {
+      openSpeakerPolicyReviewIfNeeded();
+    }
+  }
 
   // エンジン起動後にダイアログを開く
   void store.actions.SET_DIALOG_OPEN({

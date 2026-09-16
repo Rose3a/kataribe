@@ -1,6 +1,7 @@
 <template>
   <QDialog
     v-model="dialogOpened"
+    :persistent
     maximized
     transitionShow="jump-up"
     transitionHide="jump-down"
@@ -74,6 +75,7 @@ const props = defineProps<{
   terms: string;
   rejectLabel: string;
   acceptLabel: string;
+  persistent?: boolean;
 }>();
 
 defineEmits<{

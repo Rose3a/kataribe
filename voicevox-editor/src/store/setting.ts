@@ -82,6 +82,8 @@ export const settingStoreState: SettingStoreState = {
   lipSyncSpeed: "normal",
   lipSyncBlink: "normal",
   lipSyncTimeline: "mora",
+  irodoriEthicsNoticeVersion: "",
+  reviewedIrodoriSpeakerPolicies: {},
 };
 
 export const settingStore = createPartialStore<SettingStoreTypes>({
@@ -168,6 +170,8 @@ export const settingStore = createPartialStore<SettingStoreTypes>({
         "lipSyncSpeed",
         "lipSyncBlink",
         "lipSyncTimeline",
+        "irodoriEthicsNoticeVersion",
+        "reviewedIrodoriSpeakerPolicies",
       ] as const;
 
       // rootMiscSettingKeysに値を足し忘れていたときに型エラーを出す検出用コード
