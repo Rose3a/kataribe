@@ -193,7 +193,12 @@ const backends = computed(() =>
     (item) => availableBackends.value[item.value] === true,
   ),
 );
-const modelOptions = [
+type ModelOption = {
+  label: string;
+  value: string;
+  description: string;
+};
+const modelOptions = ref<ModelOption[]>([
   {
     label: "Irodori-TTS v4.1 Small（既定・8ステップ）",
     value: "Aratako/Irodori-TTS-v4.1-Small",
@@ -209,11 +214,24 @@ const modelOptions = [
     value: "phasefield-audio/Irodori-TTS-v4.1-Anime",
     description: "Anime fine-tune / MIT",
   },
-];
+]);
+function ensureModelOption(source: string) {
+  const value = source.trim();
+  if (!value || modelOptions.value.some((option) => option.value === value)) {
+    return;
+  }
+  modelOptions.value.push({
+    label: value,
+    value,
+    description: "カスタムモデル",
+  });
+}
 const licenseName = computed(
   () =>
     modelInfo.value?.license ??
-    (modelOptions.some((option) => option.value === settings.value?.model)
+    (modelOptions.value.some(
+      (option) => option.value === settings.value?.model,
+    )
       ? "MIT"
       : undefined),
 );
@@ -226,10 +244,15 @@ const licenseUrl = computed(
 );
 function setCustomModel(
   value: string,
-  done: (value: string, mode?: "add" | "add-unique" | "toggle") => void,
+  done: () => void,
 ) {
   const trimmed = value.trim();
-  if (trimmed) done(trimmed, "add-unique");
+  if (!trimmed || !settings.value) return done();
+  // QSelect の emit-value と new-value-mode の組み合わせでは、プリセット外の
+  // 文字列が次の描画で失われることがある。選択肢と v-model を明示的に更新する。
+  ensureModelOption(trimmed);
+  settings.value.model = trimmed;
+  done();
 }
 const endpoint = computed(() => {
   const info = store.state.engineInfos[props.engineId];
@@ -262,6 +285,7 @@ async function run(save: boolean, refreshSpeakers = false) {
   try {
     const result = await loadSettings(save);
     settings.value = result.settings;
+    ensureModelOption(result.settings.model);
     progress.value = result.progress;
     modelInfo.value = result.modelInfo ?? modelInfo.value;
     availableBackends.value = result.availableBackends ?? { cpu: true };

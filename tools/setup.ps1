@@ -5,6 +5,7 @@ $stateDir = Join-Path $box '.local'
 $python = Join-Path $stateDir 'venv\Scripts\python.exe'
 $stateFile = Join-Path $stateDir 'setup.json'
 $frontendAsset = Join-Path $box 'voicevox-editor\node_modules\@quasar\extras\material-icons\material-icons.css'
+$prebuiltEditor = Join-Path $box 'editor\kataribe.exe'
 
 function Get-Sha256([string]$Path) {
     $sha = [System.Security.Cryptography.SHA256]::Create()
@@ -16,6 +17,7 @@ function Get-Sha256([string]$Path) {
 }
 
 function Test-FrontendInstall {
+    if (Test-Path -LiteralPath $prebuiltEditor -PathType Leaf) { return $true }
     # Vite can start even when pnpm's links are incomplete, then fails only once
     # the browser imports the missing package.  Check an asset used by main.ts.
     return Test-Path -LiteralPath $frontendAsset -PathType Leaf
@@ -131,22 +133,26 @@ try {
     # without asking the resolver to reconcile those incompatible metadata.
     Run-Uv @('pip','install','--python',$python,'--upgrade','protobuf>=4.25.1,<6','ml_dtypes>=0.5.4','flatbuffers','coloredlogs','packaging','sympy')
     Run-Uv @('pip','install','--python',$python,'--no-deps','onnx>=1.16,<2','onnxruntime>=1.24,<2','onnxscript>=0.2','onnx_ir>=0.1')
-    $nodeDir = Ensure-PortableNode
-    $nodeExe = Join-Path $nodeDir 'node.exe'
-    # Invoke the JS entry point directly so cmd.exe does not reparse the
-    # portable Node path (which can contain spaces or shell metacharacters).
-    $npxCli = Join-Path $nodeDir 'node_modules\npm\bin\npx-cli.js'
-    $env:Path = "$nodeDir;$env:Path"
-    Write-Host '[EDITOR] Installing frontend dependencies...' -ForegroundColor Cyan
-    Push-Location $editorDir
-    try {
-        # --force recreates pnpm links copied incompletely from another PC/ZIP.
-        & $nodeExe $npxCli --yes 'pnpm@10.28.2' install --frozen-lockfile --force
-        if ($LASTEXITCODE -ne 0) { throw "pnpm install failed ($LASTEXITCODE)" }
-        if (!(Test-FrontendInstall)) {
-            throw "Frontend install is incomplete: missing $frontendAsset"
-        }
-    } finally { Pop-Location }
+    if (Test-Path -LiteralPath $prebuiltEditor -PathType Leaf) {
+        Write-Host '[EDITOR] Using the bundled Electron editor.' -ForegroundColor Cyan
+    } else {
+        $nodeDir = Ensure-PortableNode
+        $nodeExe = Join-Path $nodeDir 'node.exe'
+        # Invoke the JS entry point directly so cmd.exe does not reparse the
+        # portable Node path (which can contain spaces or shell metacharacters).
+        $npxCli = Join-Path $nodeDir 'node_modules\npm\bin\npx-cli.js'
+        $env:Path = "$nodeDir;$env:Path"
+        Write-Host '[EDITOR] Installing frontend dependencies...' -ForegroundColor Cyan
+        Push-Location $editorDir
+        try {
+            # --force recreates pnpm links copied incompletely from another PC/ZIP.
+            & $nodeExe $npxCli --yes 'pnpm@10.28.2' install --frozen-lockfile --force
+            if ($LASTEXITCODE -ne 0) { throw "pnpm install failed ($LASTEXITCODE)" }
+            if (!(Test-FrontendInstall)) {
+                throw "Frontend install is incomplete: missing $frontendAsset"
+            }
+        } finally { Pop-Location }
+    }
     if ($Backend -eq 'radeon') {
         $radeonVenv = Join-Path $box 'work\amd-dml-venv'
         Run-Uv @('venv','--python','3.11.9',$radeonVenv)

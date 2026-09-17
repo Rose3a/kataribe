@@ -35,6 +35,15 @@ speakers_import_log.json
 *.exe
 tools/uv.exe
 
+# インストーラー本体とそのビルド成果物。setup EXE はアプリツリー全体
+# （payload.zip、数百MB）を埋め込むため、履歴には一切入れない。
+# ソースもローカル専用として扱う（追跡したい場合は git add -f で個別に）。
+installer/
+dist/
+tools/build_installer_payload.ps1
+# ポータブル配布物もローカル生成・同梱用。リポジトリには含めない。
+portable/
+
 # Local output, logs and temporary work
 logs/
 outputs/
