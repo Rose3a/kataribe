@@ -1,6 +1,19 @@
-export const IRODORI_ETHICS_NOTICE_VERSION = "2026-09-16";
+export const IRODORI_ETHICS_NOTICE_VERSION = "2026-09-18";
 
-export const irodoriEthicsNoticeTerms = `## モデルの利用上の注意
+export const kataribeUsageConditions = `## kataribeの利用条件
+
+kataribeを利用する際は、以下のすべての条件に従ってください。
+
+- 本READMEに記載された「倫理的制約・免責事項」
+- \`LICENSE\` および \`LICENSES.md\` に記載されたライセンス条件
+- 使用するモデル、話者データ、音声データ等に個別の利用条件がある場合は、その条件
+- 各話者データに付属する \`credit.txt\` 等の条件
+
+本項でいう「kataribeの利用条件」は、これらの条件を総称したものです。`;
+
+export const irodoriEthicsNoticeTerms = `${kataribeUsageConditions}
+
+## モデルの利用上の注意
 
 - 本人の明示的な同意なしに、実在する個人の声を模倣・なりすましする目的で使用しないでください。
 - 人を欺いたり、誤情報を広めたりする目的のディープフェイク音声を生成しないでください。
