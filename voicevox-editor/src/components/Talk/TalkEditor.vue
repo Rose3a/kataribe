@@ -605,7 +605,7 @@ onetimeWatch(
                   store.state.engineManifests[voice.engineId]?.brandName ===
                     "Irodori-TTS" &&
                   store.getters.CHARACTER_INFO(voice.engineId, voice.styleId)
-                    ?.metas.speakerName === "tsukuyomi",
+                    ?.metas.speakerName === "つくよみちゃん",
               )
           : undefined;
       const audioItem = await store.actions.GENERATE_AUDIO_ITEM({

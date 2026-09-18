@@ -22,6 +22,7 @@ from voicevox_engine import (Handler, VoicevoxAdapter, ROOT, ENGINE_UUID_NAMESPA
 from speaker_catalog import (
     _fallback_icon,
     credit_for,
+    display_name_for,
     policy_for,
     blink_thumbnail_for,
     mouth_open_thumbnail_for,
@@ -663,7 +664,7 @@ class EditorAdapter:
                 if sid in id_to_name and name:
                     raise ValueError("話者IDが衝突しました。話者ファイルの名前を変更してください")
                 id_to_name[sid] = name
-                label = name or "話者なし"
+                label = display_name_for(name) if name else "話者なし"
                 image = catalog.get(name)
                 encoded = image[1] if image else fallback_payload
                 source = cassette.path_for(name) if name else None
@@ -682,7 +683,8 @@ class EditorAdapter:
             # エディタはここで話者一覧を独自に組み立てる。話者IDは保ったまま
             # 表示順だけを入れ替え、初回の既定話者をつくよみちゃんにする。
             speakers_json.sort(
-                key=lambda speaker: speaker["name"] != DEFAULT_SPEAKER_NAME
+                key=lambda speaker: speaker["name"]
+                != display_name_for(DEFAULT_SPEAKER_NAME)
             )
             with self.state_lock:
                 self.id_to_name = id_to_name

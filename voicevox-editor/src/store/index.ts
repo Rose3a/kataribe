@@ -290,7 +290,7 @@ export const indexStore = createPartialStore<IndexStoreTypes>({
                   return (
                     state.engineManifests[styleId.engineId]?.brandName ===
                       "Irodori-TTS" &&
-                    defaultCharacterInfo?.metas.speakerName === "tsukuyomi"
+                    defaultCharacterInfo?.metas.speakerName === "つくよみちゃん"
                   );
                 })
               : undefined;

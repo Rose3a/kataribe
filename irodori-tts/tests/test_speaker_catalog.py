@@ -6,10 +6,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "wrapper"))
 
-from speaker_catalog import FALLBACK_ICON_PATH, credit_for, policy_for, portrait_for, speaker_catalog, thumbnail_for
+from speaker_catalog import FALLBACK_ICON_PATH, credit_for, display_name_for, policy_for, portrait_for, speaker_catalog, thumbnail_for
 
 
 class SpeakerCatalogTests(unittest.TestCase):
+    def test_display_name_keeps_internal_identifier_out_of_the_ui(self):
+        self.assertEqual(display_name_for("tsukuyomi"), "つくよみちゃん")
+        self.assertEqual(display_name_for("external"), "external")
+
     def test_existing_raster_sidecar_wins_over_fallback(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

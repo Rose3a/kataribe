@@ -12,6 +12,17 @@ FALLBACK_ICON_PATH = (
     Path(__file__).resolve().parents[2] / "speakers" / "thumbnails" / "default-speaker.png"
 )
 
+# Stable ASCII identifiers are retained in filenames, API IDs, and saved
+# projects. The editor must use the approved name for any user-facing label.
+SPEAKER_DISPLAY_NAMES = {
+    "tsukuyomi": "つくよみちゃん",
+}
+
+
+def display_name_for(speaker_name: str) -> str:
+    """Return the user-facing name for a stable internal speaker identifier."""
+    return SPEAKER_DISPLAY_NAMES.get(speaker_name, speaker_name)
+
 
 def speaker_stem(path: Path) -> str:
     name = path.name

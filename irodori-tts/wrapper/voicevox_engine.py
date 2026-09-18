@@ -40,7 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tts_cli import IrodoriTTS, resolve_embed_dirs  # noqa: E402
 from reading_dictionary import READING_DICTIONARY, make_word
 from third_party_licenses import dependency_licenses
-from speaker_catalog import blink_thumbnail_for, credit_for, policy_for, mouth_open_thumbnail_for, mouth_parts_for, portrait_for, speaker_catalog, _fallback_icon  # noqa: E402
+from speaker_catalog import blink_thumbnail_for, credit_for, display_name_for, policy_for, mouth_open_thumbnail_for, mouth_parts_for, portrait_for, speaker_catalog, _fallback_icon  # noqa: E402
 
 
 ENGINE_VERSION = "0.1.0"
@@ -226,6 +226,7 @@ def _speaker_table(tts: IrodoriTTS, progress_callback=None) -> tuple[list[dict],
     for index, name in enumerate(styles, start=1):
         style_id = index
         id_to_name[style_id] = name
+        display_name = display_name_for(name)
         speaker_uuid = str(uuid.uuid5(ENGINE_UUID_NAMESPACE, name))
         # 「話者なし」も赤い空画像ではなく、話者一覧と同じ汎用SVGを表示する。
         fallback = _fallback_icon()
@@ -258,9 +259,9 @@ def _speaker_table(tts: IrodoriTTS, progress_callback=None) -> tuple[list[dict],
                 if open_mouth:
                     break
         output.append({
-            "name": name,
+            "name": display_name,
             "speaker_uuid": speaker_uuid,
-            "styles": [{"name": name, "id": style_id, "type": "talk"}],
+            "styles": [{"name": "ノーマル", "id": style_id, "type": "talk"}],
             "version": ENGINE_VERSION,
             "icon": icon,
             "portrait": portrait,
@@ -273,7 +274,10 @@ def _speaker_table(tts: IrodoriTTS, progress_callback=None) -> tuple[list[dict],
         })
     # 話者 ID は既存プロジェクトとの互換性のため生成順のまま維持し、
     # 表示順だけを変えて初回起動時の既定話者をつくよみちゃんにする。
-    output.sort(key=lambda speaker: speaker["name"] != DEFAULT_SPEAKER_NAME)
+    output.sort(
+        key=lambda speaker: speaker["name"]
+        != display_name_for(DEFAULT_SPEAKER_NAME)
+    )
     if progress_callback:
         progress_callback("speaker table ready", 75)
     return output, id_to_name
