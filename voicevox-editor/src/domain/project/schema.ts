@@ -56,15 +56,19 @@ export const audioItemSchema = z.object({
   query: audioQuerySchema.optional(),
   presetKey: presetKeySchema.optional(),
   morphingInfo: morphingInfoSchema.optional(),
+  // prettier-ignore
   irodori: z.object({
     seed: z.number().nullable().optional(),
     steps: z.number().int().min(1).max(80).optional(),
     schedule: z.enum(["linear", "sway"]).optional(),
     seconds: z.number().min(0.1).max(60).nullable().optional(),
     caption: z.string().max(2000).optional(),
+    captionStrength: z.number().min(0).max(1).optional(),
     cfgText: z.number().min(0).max(20).optional(),
     cfgCaption: z.number().min(0).max(20).optional(),
     cfgSpeaker: z.number().min(0).max(20).optional(),
+    referenceStrength: z.number().min(0).max(1).optional(),
+    // prettier-ignore
     referenceAudio: z.object({
       dataUrl: z.string(),
       mime: z.string().optional(),

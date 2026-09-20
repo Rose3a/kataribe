@@ -12,6 +12,8 @@ import {
   IRODORI_DEFAULT_CFG_CAPTION,
   IRODORI_DEFAULT_CFG_SPEAKER,
   IRODORI_DEFAULT_CFG_TEXT,
+  IRODORI_DEFAULT_CAPTION_STRENGTH,
+  IRODORI_DEFAULT_REFERENCE_STRENGTH,
   IRODORI_DEFAULT_SEED,
   IRODORI_DEFAULT_SCHEDULE,
   irodoriDefaultSteps,
@@ -84,9 +86,15 @@ export async function fetchAudioFromAudioItem(
         irodoriSchedule: audioItem.irodori?.schedule ?? IRODORI_DEFAULT_SCHEDULE,
         irodoriSeconds: audioItem.irodori?.seconds ?? null,
         irodoriCaption: audioItem.irodori?.caption,
+        irodoriCaptionStrength:
+          audioItem.irodori?.captionStrength ??
+          IRODORI_DEFAULT_CAPTION_STRENGTH,
         irodoriCfgText: audioItem.irodori?.cfgText ?? IRODORI_DEFAULT_CFG_TEXT,
         irodoriCfgCaption: audioItem.irodori?.cfgCaption ?? IRODORI_DEFAULT_CFG_CAPTION,
         irodoriCfgSpeaker: audioItem.irodori?.cfgSpeaker ?? IRODORI_DEFAULT_CFG_SPEAKER,
+        irodoriReferenceStrength:
+          audioItem.irodori?.referenceStrength ??
+          IRODORI_DEFAULT_REFERENCE_STRENGTH,
         irodoriReferenceAudio: audioItem.irodori?.referenceAudio,
       },
       speaker,

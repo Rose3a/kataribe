@@ -125,6 +125,8 @@ def sample_euler_rf_cfg(
     speaker_state_override: torch.Tensor | None = None,
     speaker_mask_override: torch.Tensor | None = None,
     speaker_uncond_mode: str = "mask",
+    speaker_strength: float = 1.0,
+    caption_strength: float = 1.0,
     num_steps: int = 40,
     cfg_scale_text: float = 3.0,
     cfg_scale_caption: float = 3.0,
@@ -232,6 +234,8 @@ def sample_euler_rf_cfg(
             speaker_mask_override=speaker_mask_override,
             speaker_uncond_mode=speaker_uncond_mode,
             skip_caption_encoding=skip_caption_encoding,
+            speaker_strength=speaker_strength,
+            caption_strength=caption_strength,
         )
     (
         text_state_cond,

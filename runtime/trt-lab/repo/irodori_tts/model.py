@@ -34,6 +34,25 @@ DURATION_ARCHITECTURES = {
 }
 
 
+def _condition_strength(value: float, name: str) -> float:
+    result = float(value)
+    if not math.isfinite(result) or not 0.0 <= result <= 1.0:
+        raise ValueError(f"{name} must be between 0 and 1")
+    return result
+
+
+def _apply_condition_strength(
+    state: torch.Tensor,
+    mask: torch.Tensor,
+    strength: float,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if strength <= 0.0:
+        return torch.zeros_like(state), torch.zeros_like(mask)
+    if strength >= 1.0:
+        return state, mask
+    return state * strength, mask
+
+
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> torch.Tensor:
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 2, dtype=torch.float32) / dim))
     t = torch.arange(end, dtype=torch.float32)
@@ -1780,6 +1799,8 @@ class TextToLatentRFDiT(nn.Module):
         speaker_condition_dropout: torch.Tensor | None = None,
         caption_condition_dropout: torch.Tensor | None = None,
         skip_caption_encoding: bool = False,
+        speaker_strength: float = 1.0,
+        caption_strength: float = 1.0,
     ) -> tuple[
         torch.Tensor,
         torch.Tensor,
@@ -1788,6 +1809,8 @@ class TextToLatentRFDiT(nn.Module):
         torch.Tensor | None,
         torch.Tensor | None,
     ]:
+        speaker_strength = _condition_strength(speaker_strength, "speaker_strength")
+        caption_strength = _condition_strength(caption_strength, "caption_strength")
         if text_condition_dropout is not None:
             text_mask = text_mask.clone()
             text_mask[text_condition_dropout] = False
@@ -1864,6 +1887,9 @@ class TextToLatentRFDiT(nn.Module):
                 uncond_mask=None,
                 uncond_mode=speaker_uncond_mode,
             )
+            ref_state, ref_mask = _apply_condition_strength(
+                ref_state, ref_mask, speaker_strength
+            )
         caption_state = None
         if self.cfg.use_caption_condition:
             if bool(skip_caption_encoding) and not self.training:
@@ -1879,6 +1905,9 @@ class TextToLatentRFDiT(nn.Module):
                     self.pretrained_text_backbone, caption_input_ids, caption_mask
                 )
             caption_state = self.caption_norm(caption_state)
+            caption_state, caption_mask = _apply_condition_strength(
+                caption_state, caption_mask, caption_strength
+            )
         return text_state, text_mask, ref_state, ref_mask, caption_state, caption_mask
 
     def forward_with_encoded_conditions(

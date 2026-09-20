@@ -94,6 +94,18 @@ def _cfg_value(query: dict, key: str, default: float) -> float:
     return value
 
 
+def _strength_value(query: dict, key: str, default: float = 1.0) -> float:
+    """Read one per-line condition strength in the inclusive 0..1 range."""
+    raw = query.get(key, default)
+    try:
+        value = float(default if raw is None else raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{key} must be a number") from exc
+    if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+        raise ValueError(f"{key} must be between 0 and 1")
+    return value
+
+
 # 既定ステップ数はモデル種別で決まる。RF はエンジン既定の8、MeanFlow（蒸留
 # モデル）は蒸留時の4。エディタ側の /irodori/settings と同じ規則に揃える。
 DEFAULT_STEPS_RF = 8
@@ -354,6 +366,14 @@ class VoicevoxAdapter:
         flow = getattr(self, "flow_parameterization", "rf_velocity")
         sampling = _sampling_settings(
             flow, getattr(self, "default_steps", DEFAULT_STEPS_RF), query)
+        caption_strength = _strength_value(
+            query, "irodori_caption_strength")
+        reference_strength = _strength_value(
+            query, "irodori_reference_strength")
+        # The slider controls the optional user-provided reference audio. If no
+        # such file is attached, preserve the normal speaker condition.
+        if not query.get("irodori_reference_audio"):
+            reference_strength = 1.0
         print(
             f"[voicevox] synth: flow={flow} steps={sampling['num_steps']} "
             f"cfg={sampling['cfg_scale_text']}/{sampling['cfg_scale_caption']}"
@@ -390,6 +410,8 @@ class VoicevoxAdapter:
                     num_steps=sampling["num_steps"],
                     seconds=query.get("irodori_seconds"),
                     caption=str(query.get("irodori_caption") or "").strip() or None,
+                    caption_strength=caption_strength,
+                    reference_strength=reference_strength,
                     duration_scale=1.0 / max(0.1, float(query.get("speedScale", 1.0))),
                     cfg_scale_text=sampling["cfg_scale_text"],
                     cfg_scale_speaker=sampling["cfg_scale_speaker"],

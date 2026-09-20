@@ -202,7 +202,9 @@ class RuntimeKey:
 class SamplingRequest:
     text: str
     caption: str | None = None
+    caption_strength: float = 1.0
     ref_wav: str | None = None
+    reference_strength: float = 1.0
     ref_wavs: list[str] | None = None
     ref_latent: str | None = None
     ref_latents: list[str] | None = None
@@ -1107,6 +1109,12 @@ class InferenceRuntime:
             and req.caption is not None
             and str(req.caption).strip() != ""
         )
+        caption_strength = float(req.caption_strength)
+        reference_strength = float(req.reference_strength)
+        if not math.isfinite(caption_strength) or not 0.0 <= caption_strength <= 1.0:
+            raise ValueError("caption_strength must be between 0 and 1")
+        if not math.isfinite(reference_strength) or not 0.0 <= reference_strength <= 1.0:
+            raise ValueError("reference_strength must be between 0 and 1")
         # Encode conditions once and share them between duration prediction and RF sampling.
         # Re-encode in RF only when caption or reference input requires it.
         has_reference_input = bool(
@@ -1291,6 +1299,7 @@ class InferenceRuntime:
                     has_speaker_duration = speaker_mask_override.any(dim=1)
                 elif self.model_cfg.use_speaker_condition_resolved and ref_mask is not None:
                     has_speaker_duration = ref_mask.any(dim=1)
+                has_speaker_duration &= reference_strength > 0.0
                 duration_features = build_duration_features(
                     [normalized_text] * num_candidates,
                     token_counts=text_mask.sum(dim=1),
@@ -1315,6 +1324,8 @@ class InferenceRuntime:
                     speaker_mask_override=speaker_mask_override,
                     speaker_uncond_mode=req.speaker_uncond_mode,
                     skip_caption_encoding=not has_caption_text,
+                    speaker_strength=reference_strength,
+                    caption_strength=caption_strength,
                 )
                 # Reuse the condition encodings during RF sampling.
                 encoded_conditions = (
@@ -1336,7 +1347,7 @@ class InferenceRuntime:
                     has_speaker=has_speaker_duration,
                     has_caption=torch.full(
                         (num_candidates,),
-                        has_caption_text,
+                        has_caption_text and caption_strength > 0.0,
                         dtype=torch.bool,
                         device=self.model_device,
                     )
@@ -1393,6 +1404,8 @@ class InferenceRuntime:
                     speaker_state_override=speaker_state_override,
                     speaker_mask_override=speaker_mask_override,
                     speaker_uncond_mode=req.speaker_uncond_mode,
+                    speaker_strength=reference_strength,
+                    caption_strength=caption_strength,
                     num_steps=num_steps,
                     seed=used_seed,
                     # Duration prediction has already encoded the exact same
@@ -1415,6 +1428,8 @@ class InferenceRuntime:
                     speaker_state_override=speaker_state_override,
                     speaker_mask_override=speaker_mask_override,
                     speaker_uncond_mode=req.speaker_uncond_mode,
+                    speaker_strength=reference_strength,
+                    caption_strength=caption_strength,
                     num_steps=num_steps,
                     cfg_scale_text=cfg_scale_text,
                     cfg_scale_caption=cfg_scale_caption,

@@ -105,9 +105,11 @@ export type AudioItem = {
     schedule?: "linear" | "sway";
     seconds?: number | null;
     caption?: string;
+    captionStrength?: number;
     cfgText?: number;
     cfgCaption?: number;
     cfgSpeaker?: number;
+    referenceStrength?: number;
     referenceAudio?: {
       dataUrl: string;
       mime?: string;

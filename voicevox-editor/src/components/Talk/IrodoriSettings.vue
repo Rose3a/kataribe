@@ -242,6 +242,26 @@
           @click="clearReferenceAudio"
         />
       </div>
+      <div class="irodori-strength-control q-mb-md">
+        <div class="irodori-strength-label">
+          <span>音声参照の強度</span>
+          <span>{{ referenceStrengthValue.toFixed(1) }}</span>
+        </div>
+        <QSlider
+          v-model="referenceStrengthValue"
+          dense
+          snap
+          color="primary"
+          trackSize="2px"
+          :min="0"
+          :max="1"
+          :step="0.1"
+          :disable="locked || !referenceAudioName"
+          aria-label="音声参照の強度"
+          @change="saveStrength('referenceStrength', referenceStrengthValue)"
+        />
+        <div class="text-caption">0で音声参照なし、1で最大</div>
+      </div>
       <QInput
         v-model="captionText"
         outlined
@@ -256,6 +276,26 @@
         class="q-mb-sm"
         @update:modelValue="saveCaption"
       />
+      <div class="irodori-strength-control">
+        <div class="irodori-strength-label">
+          <span>指示キャプションの強度</span>
+          <span>{{ captionStrengthValue.toFixed(1) }}</span>
+        </div>
+        <QSlider
+          v-model="captionStrengthValue"
+          dense
+          snap
+          color="primary"
+          trackSize="2px"
+          :min="0"
+          :max="1"
+          :step="0.1"
+          :disable="locked || !captionText.trim()"
+          aria-label="指示キャプションの強度"
+          @change="saveStrength('captionStrength', captionStrengthValue)"
+        />
+        <div class="text-caption">0で指示なし、1で最大</div>
+      </div>
     </div>
     <div v-if="error" role="alert" class="text-negative text-caption q-mt-sm">
       {{ error }}
@@ -276,6 +316,8 @@ import {
   IRODORI_DEFAULT_CFG_CAPTION,
   IRODORI_DEFAULT_CFG_SPEAKER,
   IRODORI_DEFAULT_CFG_TEXT,
+  IRODORI_DEFAULT_CAPTION_STRENGTH,
+  IRODORI_DEFAULT_REFERENCE_STRENGTH,
   IRODORI_DEFAULT_SEED,
   IRODORI_DEFAULT_SCHEDULE,
   irodoriDefaultSteps,
@@ -359,6 +401,9 @@ const irodori = computed(() => {
     cfgText: value?.cfgText ?? IRODORI_DEFAULT_CFG_TEXT,
     cfgCaption: value?.cfgCaption ?? IRODORI_DEFAULT_CFG_CAPTION,
     cfgSpeaker: value?.cfgSpeaker ?? IRODORI_DEFAULT_CFG_SPEAKER,
+    captionStrength: value?.captionStrength ?? IRODORI_DEFAULT_CAPTION_STRENGTH,
+    referenceStrength:
+      value?.referenceStrength ?? IRODORI_DEFAULT_REFERENCE_STRENGTH,
   };
 });
 const seedText = ref("");
@@ -369,6 +414,8 @@ const captionText = ref("");
 const cfgTextText = ref("");
 const cfgCaptionText = ref("");
 const cfgSpeakerText = ref("");
+const captionStrengthValue = ref(IRODORI_DEFAULT_CAPTION_STRENGTH);
+const referenceStrengthValue = ref(IRODORI_DEFAULT_REFERENCE_STRENGTH);
 watch(
   irodori,
   (value) => {
@@ -380,6 +427,8 @@ watch(
     cfgTextText.value = String(value.cfgText);
     cfgCaptionText.value = String(value.cfgCaption);
     cfgSpeakerText.value = String(value.cfgSpeaker);
+    captionStrengthValue.value = value.captionStrength;
+    referenceStrengthValue.value = value.referenceStrength;
   },
   { immediate: true, deep: true },
 );
@@ -482,6 +531,28 @@ function saveCaption() {
     irodori: { ...irodori.value, caption: value || undefined },
   });
   clearAudioCache();
+}
+type StrengthKey = "captionStrength" | "referenceStrength";
+function saveStrength(key: StrengthKey, input: number | null) {
+  const value = Number(input);
+  if (!Number.isFinite(value) || value < 0 || value > 1) {
+    error.value = "強度は0〜1の数値だけ指定できます";
+    if (key === "captionStrength") {
+      captionStrengthValue.value = irodori.value.captionStrength;
+    } else {
+      referenceStrengthValue.value = irodori.value.referenceStrength;
+    }
+    return;
+  }
+  error.value = "";
+  const normalized = Number(value.toFixed(1));
+  if (key === "captionStrength") captionStrengthValue.value = normalized;
+  else referenceStrengthValue.value = normalized;
+  clearAudioCache();
+  void store.actions.COMMAND_SET_IRODORI_SETTINGS({
+    audioKey: props.activeAudioKey,
+    irodori: { ...irodori.value, [key]: normalized },
+  });
 }
 function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -714,6 +785,19 @@ const showStepsQualityWarning = computed(
 .irodori-settings :deep(.irodori-cfg-row) {
   align-items: stretch;
 }
+.irodori-strength-control {
+  padding: 0 4px;
+}
+.irodori-strength-label {
+  display: flex;
+  justify-content: space-between;
+  color: rgba(0, 0, 0, 0.72);
+  font-size: 0.875rem;
+  line-height: 1.25;
+}
+.irodori-strength-control :deep(.q-slider) {
+  margin: 0 4px;
+}
 .irodori-settings :deep(.irodori-number-input .q-field__native[type="number"]) {
   appearance: textfield;
   -moz-appearance: textfield;
@@ -768,6 +852,9 @@ const showStepsQualityWarning = computed(
   .irodori-settings
   :deep(.irodori-number-input .q-field__native[type="number"]) {
   color-scheme: dark;
+}
+:global(:root[is-dark-theme="true"]) .irodori-strength-label {
+  color: rgba(255, 255, 255, 0.82);
 }
 :global(:root[is-dark-theme="true"]) .irodori-number-stepper :deep(.q-btn) {
   border-color: rgba(168, 161, 255, 0.58);

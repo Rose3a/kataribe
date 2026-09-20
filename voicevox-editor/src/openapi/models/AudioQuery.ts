@@ -43,12 +43,16 @@ export interface AudioQuery {
     irodoriSeconds?: number | null;
     /** Per-item Irodori caption. */
     irodoriCaption?: string;
+    /** Per-item Irodori caption condition strength. */
+    irodoriCaptionStrength?: number;
     /** Per-item Irodori text CFG. */
     irodoriCfgText?: number;
     /** Per-item Irodori caption CFG. */
     irodoriCfgCaption?: number;
     /** Per-item Irodori speaker CFG. */
     irodoriCfgSpeaker?: number;
+    /** Per-item Irodori reference-audio condition strength. */
+    irodoriReferenceStrength?: number;
     /** Optional Irodori-TTS reference audio data URL. */
     irodoriReferenceAudio?: IrodoriReferenceAudio;
     /**
@@ -158,9 +162,11 @@ export function AudioQueryFromJSONTyped(json: any, ignoreDiscriminator: boolean)
         'irodoriSchedule': !exists(json, 'irodori_schedule') ? undefined : json['irodori_schedule'],
         'irodoriSeconds': !exists(json, 'irodori_seconds') ? undefined : json['irodori_seconds'],
         'irodoriCaption': !exists(json, 'irodori_caption') ? undefined : json['irodori_caption'],
+        'irodoriCaptionStrength': !exists(json, 'irodori_caption_strength') ? undefined : json['irodori_caption_strength'],
         'irodoriCfgText': !exists(json, 'irodori_cfg_text') ? undefined : json['irodori_cfg_text'],
         'irodoriCfgCaption': !exists(json, 'irodori_cfg_caption') ? undefined : json['irodori_cfg_caption'],
         'irodoriCfgSpeaker': !exists(json, 'irodori_cfg_speaker') ? undefined : json['irodori_cfg_speaker'],
+        'irodoriReferenceStrength': !exists(json, 'irodori_reference_strength') ? undefined : json['irodori_reference_strength'],
         'irodoriReferenceAudio': !exists(json, 'irodori_reference_audio') ? undefined : json['irodori_reference_audio'],
         'accentPhrases': ((json['accent_phrases'] as Array<any>).map(AccentPhraseFromJSON)),
         'speedScale': json['speedScale'],
@@ -190,9 +196,11 @@ export function AudioQueryToJSON(value?: AudioQuery | null): any {
         'irodori_schedule': value.irodoriSchedule,
         'irodori_seconds': value.irodoriSeconds,
         'irodori_caption': value.irodoriCaption,
+        'irodori_caption_strength': value.irodoriCaptionStrength,
         'irodori_cfg_text': value.irodoriCfgText,
         'irodori_cfg_caption': value.irodoriCfgCaption,
         'irodori_cfg_speaker': value.irodoriCfgSpeaker,
+        'irodori_reference_strength': value.irodoriReferenceStrength,
         'irodori_reference_audio': value.irodoriReferenceAudio,
         'accent_phrases': ((value.accentPhrases as Array<any>).map(AccentPhraseToJSON)),
         'speedScale': value.speedScale,

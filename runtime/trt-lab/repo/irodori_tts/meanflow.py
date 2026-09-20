@@ -501,6 +501,8 @@ def sample_euler_meanflow(
     speaker_state_override: torch.Tensor | None = None,
     speaker_mask_override: torch.Tensor | None = None,
     speaker_uncond_mode: str = "mask",
+    speaker_strength: float = 1.0,
+    caption_strength: float = 1.0,
     num_steps: int = 4,
     seed: int = 0,
     encoded_conditions: EncodedConditions | None = None,
@@ -537,6 +539,8 @@ def sample_euler_meanflow(
                 speaker_state_override=speaker_state_override,
                 speaker_mask_override=speaker_mask_override,
                 speaker_uncond_mode=speaker_uncond_mode,
+                speaker_strength=speaker_strength,
+                caption_strength=caption_strength,
             )
         )
     context_kv_cache = model.build_context_kv_cache(

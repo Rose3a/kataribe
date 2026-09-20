@@ -478,6 +478,8 @@ class IrodoriTTS:
                    cfg_scale_speaker: float = 5.0,
                    cfg_scale_caption: float = 3.0,
                    caption: Optional[str] = None,
+                   caption_strength: float = 1.0,
+                   reference_strength: float = 1.0,
                    ref_wav: Optional[str] = None,
                    t_schedule_mode: str = "sway",
                    sway_coeff: float = -1.0,
@@ -491,6 +493,8 @@ class IrodoriTTS:
         _, _, _, SamplingRequest, _ = _import_runtime()
         request = SamplingRequest(
             text=text, caption=caption,
+            caption_strength=float(caption_strength),
+            reference_strength=float(reference_strength),
             # Empty string is not the same as an omitted embedding to the
             # runtime; use None until a cassette is actually staged below.
             ref_wav=ref_wav, ref_embed=None, no_ref=False,
