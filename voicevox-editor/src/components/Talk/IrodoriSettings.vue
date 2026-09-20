@@ -241,6 +241,24 @@
           :disable="locked"
           @click="clearReferenceAudio"
         />
+        <QBtn
+          v-if="referenceAudioPlaying"
+          flat
+          dense
+          label="停止"
+          icon="stop"
+          aria-label="音声リファレンスを停止"
+          @click="stopReferenceAudio"
+        />
+        <QBtn
+          v-else
+          flat
+          dense
+          label="再生"
+          icon="play_arrow"
+          aria-label="音声リファレンスを再生"
+          @click="playReferenceAudio"
+        />
       </div>
       <div class="irodori-strength-control q-mb-md">
         <div class="irodori-strength-label">
@@ -304,7 +322,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useStore } from "@/store";
 import { createEngineUrl } from "@/domain/url";
 import { fetchIrodoriDefaultSteps } from "@/helpers/irodoriEngine";
@@ -436,9 +454,12 @@ const referenceFile = ref<File | null>(null);
 const referenceAudioName = computed(
   () => irodori.value.referenceAudio?.name ?? "",
 );
+const referenceAudioPlaying = ref(false);
+const referenceAudio = ref<HTMLAudioElement | null>(null);
 watch(
   () => props.activeAudioKey,
   () => {
+    stopReferenceAudio();
     referenceFile.value = null;
   },
   { immediate: true },
@@ -605,6 +626,7 @@ async function handleReferenceFileChange(value: File | File[] | null) {
   }
 }
 function clearReferenceAudio() {
+  stopReferenceAudio();
   referenceFile.value = null;
   void store.actions.COMMAND_SET_IRODORI_SETTINGS({
     audioKey: props.activeAudioKey,
@@ -612,6 +634,45 @@ function clearReferenceAudio() {
   });
   clearAudioCache();
 }
+async function playReferenceAudio() {
+  const dataUrl = irodori.value.referenceAudio?.dataUrl;
+  if (dataUrl == undefined) return;
+  stopReferenceAudio();
+  const audio = new Audio(dataUrl);
+  referenceAudio.value = audio;
+  audio.addEventListener("ended", () => {
+    if (referenceAudio.value !== audio) return;
+    referenceAudioPlaying.value = false;
+    referenceAudio.value = null;
+  });
+  audio.addEventListener("error", () => {
+    if (referenceAudio.value !== audio) return;
+    referenceAudioPlaying.value = false;
+    referenceAudio.value = null;
+    error.value = "音声リファレンスを再生できませんでした";
+  });
+  try {
+    await audio.play();
+    referenceAudioPlaying.value = true;
+  } catch {
+    if (referenceAudio.value === audio) {
+      referenceAudio.value = null;
+      error.value = "音声リファレンスを再生できませんでした";
+    }
+  }
+}
+function stopReferenceAudio() {
+  const audio = referenceAudio.value;
+  if (audio == null) {
+    referenceAudioPlaying.value = false;
+    return;
+  }
+  audio.pause();
+  audio.currentTime = 0;
+  referenceAudio.value = null;
+  referenceAudioPlaying.value = false;
+}
+onBeforeUnmount(stopReferenceAudio);
 function adjustSeed(delta: number) {
   const current = Number(seedText.value);
   seedText.value = String((Number.isFinite(current) ? current : 0) + delta);
