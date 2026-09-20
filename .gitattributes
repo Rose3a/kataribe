@@ -1,0 +1,9 @@
+# README and Markdown documents are documentation, not source code.
+# This keeps GitHub Linguist from using Japanese prose to infer a language.
+*.md linguist-documentation
+
+# Textual metadata and notices should not affect the repository language mix.
+*.txt linguist-documentation
+
+# Keep this file out of generated source archives.
+.gitattributes export-ignore
