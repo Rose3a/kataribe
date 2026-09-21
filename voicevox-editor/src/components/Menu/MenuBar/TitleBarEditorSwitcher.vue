@@ -11,23 +11,64 @@
     :disable="uiLocked"
     dense
     toggleColor="primary"
-    :options="[
-      { label: 'トーク', value: 'talk' },
-      { label: 'ソング（非対応）', value: 'song', disable: true },
-    ]"
+    :options="
+      isIrodori
+        ? [{ label: 'トーク', value: 'talk' }]
+        : [
+            { label: 'トーク', value: 'talk' },
+            { label: 'ソング（非対応）', value: 'song', disable: true },
+          ]
+    "
     @update:modelValue="switchEditor"
   />
+  <QBtn
+    v-if="isIrodori"
+    dense
+    flat
+    label="話者マージ"
+    :disable="uiLocked || !mixEndpoint"
+    @click="mixOpen = true"
+  />
+  <QDialog
+    v-if="isIrodori && mixEngineId && mixEndpoint"
+    v-model="mixOpen"
+    maximized
+  >
+    <SpeakerMixEditor
+      v-if="mixOpen"
+      :engine-id="mixEngineId"
+      :endpoint="mixEndpoint"
+      @close="mixOpen = false"
+    />
+  </QDialog>
 </template>
 
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { useStore } from "@/store";
 import type { EditorType } from "@/type/preload";
+import { createEngineUrl } from "@/domain/url";
+import SpeakerMixEditor from "@/components/SpeakerMixEditor.vue";
 
 const store = useStore();
 
 const openedEditor = computed(() => store.state.openedEditor);
 const uiLocked = computed(() => store.getters.UI_LOCKED);
+const isIrodori = import.meta.env.VITE_APP_NAME === "voicevox-irodori";
+const mixOpen = ref(false);
+const mixEngineId = computed(
+  () =>
+    Object.values(store.state.engineInfos).find((info) => info.isDefault)?.uuid,
+);
+const mixEndpoint = computed(() => {
+  const engineId = mixEngineId.value;
+  if (!engineId) return undefined;
+  const info = store.state.engineInfos[engineId];
+  return createEngineUrl({
+    ...info,
+    port: store.state.altPortInfos[engineId] ?? info.defaultPort,
+  });
+});
 
 const switchEditor = async (editor: EditorType) => {
   await store.actions.SET_ROOT_MISC_SETTING({

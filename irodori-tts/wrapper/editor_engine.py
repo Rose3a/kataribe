@@ -10,6 +10,7 @@ import re
 import struct
 import threading
 import time
+import tempfile
 import uuid
 from collections import deque
 from pathlib import Path
@@ -33,6 +34,7 @@ from speaker_catalog import (
 from asr_timeline import (AsrTimeline, decode_wav, ensure_asr_model, asr_package_error,
                           MODEL_DIR as ASR_MODEL_DIR)
 from tts_cli import SpeakerCassette, resolve_embed_dirs
+from speaker_mix import compose_speaker_mix
 
 # 初回のASRモデル取得でリクエストを待たせる上限（秒）。待ち切れなくても
 # ダウンロードは続くので、次の要求で揃っていれば使える。
@@ -693,6 +695,76 @@ class EditorAdapter:
             if delegate:
                 delegate.refresh()
 
+    def mix_speakers(self):
+        cassette = SpeakerCassette(resolve_embed_dirs())
+        return [dict(id=name, name=display_name_for(name)) for name in cassette.speakers
+                if not (name.endswith(".speaker") and name[:-8] in cassette.speakers)]
+
+    def mix_recipes(self):
+        recipes = []
+        if not SPEAKER_DIR.exists():
+            return recipes
+        for path in sorted(SPEAKER_DIR.rglob("*.mix.json")):
+            if len(recipes) >= 100:
+                break
+            if path.stat().st_size > 128_000:
+                continue
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+                if value.get("version") != 1 or not isinstance(value.get("tokens"), list) or len(value["tokens"]) != 16:
+                    continue
+                recipes.append({"name": path.name[:-len(".mix.json")], "tokens": value["tokens"]})
+            except (OSError, UnicodeError, ValueError, TypeError, AttributeError):
+                continue
+        return recipes
+
+    def _mix_tensor(self, payload):
+        if not isinstance(payload, dict):
+            raise ValueError("mix request must be an object")
+        return compose_speaker_mix(payload.get("tokens"), SpeakerCassette(resolve_embed_dirs()))
+
+    def mix_preview(self, payload):
+        text = payload.get("text") if isinstance(payload, dict) else None
+        if not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT_CHARS:
+            raise ValueError(f"text must contain 1 to {MAX_TEXT_CHARS} characters")
+        tensor = self._mix_tensor(payload)
+        with self.operation_lock:
+            if self.delegate is None:
+                self.delegate = self._build_delegate()
+            with self.delegate.lock:
+                with tempfile.TemporaryDirectory(prefix="irodori-mix-", dir=str(ROOT / "wrapper")) as temp:
+                    output = Path(temp) / "preview.wav"
+                    self.delegate.tts.synthesize(
+                        text=text.strip(), speaker="", out_wav=output,
+                        seed=int(self.settings["seed"]),
+                        num_steps=self.delegate.default_steps,
+                        cfg_scale_text=3.0, cfg_scale_speaker=5.0,
+                        cfg_scale_caption=3.0,
+                        speaker_tensor_override=tensor,
+                    )
+                    return output.read_bytes()
+
+    def mix_save(self, payload):
+        name = payload.get("name") if isinstance(payload, dict) else None
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,48}", name):
+            raise ValueError("name must be 1-48 ASCII letters, digits, _ or -")
+        tensor = self._mix_tensor(payload)
+        if not tensor.any():
+            raise ValueError("at least one token must contain a speaker")
+        from safetensors.torch import save_file
+        folder = SPEAKER_DIR / name
+        target = folder / f"{name}.speaker.safetensors"
+        if target.exists():
+            raise ValueError("speaker name already exists")
+        folder.mkdir(parents=True, exist_ok=True)
+        save_file({"speaker_embedding": tensor.contiguous()}, str(target))
+        (folder / f"{name}.mix.json").write_text(
+            json.dumps({"version": 1, "tokens": payload["tokens"]}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        self.refresh()
+        return {"name": name}
+
     def synthesize(self, query, speaker_id):
         try:
             with self.operation_lock:
@@ -783,6 +855,14 @@ class EditorAdapter:
 class EditorHandler(Handler):
     def do_GET(self):
         path = urlparse(self.path).path
+        if path == "/irodori/mix/speakers":
+            if not self._authorized():
+                return self._json(403, {"detail": "invalid local origin/session"})
+            return self._json(200, self.adapter.mix_speakers())
+        if path == "/irodori/mix/recipes":
+            if not self._authorized():
+                return self._json(403, {"detail": "invalid local origin/session"})
+            return self._json(200, self.adapter.mix_recipes())
         if path == "/irodori/settings":
             if not self._authorized():
                 return self._json(403, {"detail": "invalid local origin/session"})
@@ -803,6 +883,16 @@ class EditorHandler(Handler):
     def do_POST(self):
         if not self._authorized():
             return self._json(403, {"detail": "invalid local origin/session"})
+        if urlparse(self.path).path in ("/irodori/mix/preview", "/irodori/mix/save"):
+            try:
+                payload = self._body_json()
+                if self.path.endswith("/preview"):
+                    return self._send(200, self.adapter.mix_preview(payload), "audio/wav")
+                return self._json(200, self.adapter.mix_save(payload))
+            except (ValueError, KeyError, TypeError, FileNotFoundError) as exc:
+                return self._json(400, {"detail": str(exc)})
+            except Exception as exc:
+                return self._json(500, {"detail": str(exc)})
         if urlparse(self.path).path == "/irodori/timeline":
             try:
                 return self._json(200, self.adapter.asr_timeline(self._body_json()))

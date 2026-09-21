@@ -248,8 +248,7 @@ class TorchBackend:
         cache_dir.mkdir(parents=True, exist_ok=True)
         target = cache_dir / "active_speaker.speaker.safetensors"
         cpu = tensor.detach().to("cpu").contiguous()
-        if not target.exists() or target.stat().st_size != cpu.numel() * cpu.element_size():
-            save_file({"speaker_embedding": cpu}, str(target))
+        save_file({"speaker_embedding": cpu}, str(target))
         return str(target)
 
 
@@ -483,11 +482,15 @@ class IrodoriTTS:
                    ref_wav: Optional[str] = None,
                    t_schedule_mode: str = "sway",
                    sway_coeff: float = -1.0,
-                   log_fn=None) -> dict:
+                   log_fn=None,
+                   speaker_tensor_override: Optional[torch.Tensor] = None) -> dict:
         if not text.strip():
             raise ValueError("text must not be empty")
         speaker_name = self.default_speaker if speaker is None else speaker
-        speaker_tensor = None if ref_wav else (self.cassette.get(speaker_name) if speaker_name else None)
+        if ref_wav is not None and speaker_tensor_override is not None:
+            raise ValueError("reference audio and speaker mix cannot be combined")
+        speaker_tensor = (speaker_tensor_override if speaker_tensor_override is not None
+                          else None if ref_wav else (self.cassette.get(speaker_name) if speaker_name else None))
         out_wav = Path(out_wav) if out_wav else Path(f"outputs/{speaker_name}_{seed}.wav")
         out_wav.parent.mkdir(parents=True, exist_ok=True)
         _, _, _, SamplingRequest, _ = _import_runtime()
