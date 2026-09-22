@@ -35,6 +35,8 @@
         :model-value="activeFolder"
         dense
         align="left"
+        outside-arrows
+        mobile-arrows
         active-color="primary"
         indicator-color="primary"
         class="speaker-folder-tabs"
@@ -49,7 +51,7 @@
           v-for="folder in folderTabs"
           :key="folder"
           :name="folder"
-          :label="folder"
+          :label="folderTabLabel(folder)"
           :title="folder"
           class="speaker-folder-tab"
         />
@@ -324,6 +326,16 @@ const folderTabs = computed(() => {
 const folderIsTabbed = (folder: string | undefined) =>
   folder != undefined && folderTabs.value.includes(folder);
 
+const folderTabLabel = (folder: string) => {
+  const maxLength = 12;
+  if (folder.length <= maxLength) return folder;
+
+  // Keep a suffix so similarly named folders such as EMBEDDINGS_0921 and
+  // EMBEDDINGS_0922 remain distinguishable at a glance.
+  const suffixLength = 3;
+  return `${folder.slice(0, maxLength - suffixLength - 1)}…${folder.slice(-suffixLength)}`;
+};
+
 const hasUngroupedCharacters = computed(() =>
   props.characterInfos.some(
     (characterInfo) => !folderIsTabbed(characterInfo.metas.irodoriFolder),
@@ -457,8 +469,10 @@ const onMenuBeforeShow = () => {
     border-bottom: 1px solid rgba(colors.$primary-rgb, 0.2);
 
     .speaker-folder-tab {
-      max-width: 11rem;
+      flex: 0 0 6rem;
+      max-width: 6rem;
       min-width: 0;
+      overflow: hidden;
     }
 
     :deep(.q-tab__label) {
@@ -539,11 +553,14 @@ const onMenuBeforeShow = () => {
   }
 
   .speaker-folder-tab {
-    max-width: 11rem;
+    flex: 0 0 6rem;
+    max-width: 6rem;
     min-width: 0;
+    overflow: hidden;
   }
 
   .speaker-folder-tabs .q-tab__label,
+  .speaker-folder-tab .q-tab__content,
   .speaker-name {
     overflow: hidden;
     text-overflow: ellipsis;
