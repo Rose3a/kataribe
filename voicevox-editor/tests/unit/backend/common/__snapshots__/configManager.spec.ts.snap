@@ -55,6 +55,10 @@ exports[`0.13.0からマイグレーションできる 1`] = `
       "combination": "Shift Space",
     },
     {
+      "action": "選択中のセリフを生成して再生",
+      "combination": "Ctrl Enter",
+    },
+    {
       "action": "ｱｸｾﾝﾄ欄を表示",
       "combination": "1",
     },

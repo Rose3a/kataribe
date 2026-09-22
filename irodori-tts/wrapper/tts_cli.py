@@ -145,6 +145,7 @@ class SpeakerCassette:
         self.embed_dirs = [Path(d).expanduser().resolve() for d in embed_dirs]
         self._cache: dict[str, torch.Tensor] = {}
         self._name_to_path: dict[str, Path] = {}
+        self._name_to_root: dict[str, Path] = {}
         self._scan()
 
     def _scan(self) -> None:
@@ -155,14 +156,17 @@ class SpeakerCassette:
                 if p.stem not in self._name_to_path:
                     name = p.name[:-len(".speaker.safetensors")] if p.name.endswith(".speaker.safetensors") else p.stem
                     self._name_to_path[name] = p
+                    self._name_to_root[name] = d
         # Convenience aliases: also expose each embedding under its
         # bare "fairy" name so callers can pass either "fairy" or
         # "fairy.speaker". The first one wins.
         aliases = {}
         for name in self._name_to_path:
             if name.endswith(".speaker"):
-                aliases[name[: -len(".speaker")]] = self._name_to_path[name]
-        self._name_to_path.update(aliases)
+                alias = name[: -len(".speaker")]
+                aliases[alias] = (self._name_to_path[name], self._name_to_root[name])
+        self._name_to_path.update({name: path for name, (path, _root) in aliases.items()})
+        self._name_to_root.update({name: root for name, (_path, root) in aliases.items()})
 
     @property
     def speakers(self) -> list[str]:
@@ -180,6 +184,26 @@ class SpeakerCassette:
                 f"available: {self.speakers}"
             )
         return self._name_to_path[name]
+
+    def folder_for(self, name: str) -> str | None:
+        """Return the speaker's path below its configured root, if any.
+
+        This is presentation metadata only: a file directly below ``speakers``
+        has no folder, while every nested file below ``speakers/idolmaster`` is
+        reported as ``idolmaster``.  The embedding lookup name remains flat so
+        existing projects and API clients stay compatible.
+        """
+        path = self.path_for(name)
+        root = self._name_to_root[name]
+        try:
+            parent = path.relative_to(root).parent
+        except ValueError:
+            return None
+        # Speaker assets commonly live one level deeper, for example
+        # ``speakers/idolmaster/haruka/haruka.speaker.safetensors``.  The
+        # first path component is the user-facing series/group tab; the
+        # per-speaker asset directory must not split that series into tabs.
+        return parent.parts[0] if parent.parts else None
 
     def get(self, name: str) -> torch.Tensor:
         cached = self._cache.get(name)
@@ -202,6 +226,7 @@ class SpeakerCassette:
         """Re-scan the search paths and drop the GPU cache."""
         self._cache.clear()
         self._name_to_path.clear()
+        self._name_to_root.clear()
         self._scan()
 
 

@@ -171,6 +171,8 @@ defineExpose({
   selectCharacterAt: (index: number) => {
     selectCharacterAt(index);
   },
+  /** 未確定のテキスト入力を保存してから音声生成に渡せるようにする。 */
+  commitText: () => pushAudioTextIfNeeded(),
 });
 
 const store = useStore();

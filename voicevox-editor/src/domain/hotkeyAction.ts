@@ -15,6 +15,7 @@ export const hotkeyActionNameSchema = z.enum([
   "音声を繋げて書き出し",
   "再生/停止",
   "連続再生/停止",
+  "選択中のセリフを生成して再生",
   "ｱｸｾﾝﾄ欄を表示",
   "ｲﾝﾄﾈｰｼｮﾝ欄を表示",
   "長さ欄を表示",
@@ -87,6 +88,10 @@ export function getDefaultHotkeySettings({
     {
       action: "連続再生/停止",
       combination: HotkeyCombination("Shift Space"),
+    },
+    {
+      action: "選択中のセリフを生成して再生",
+      combination: HotkeyCombination(!isMac ? "Ctrl Enter" : "Meta Enter"),
     },
     {
       action: "ｱｸｾﾝﾄ欄を表示",

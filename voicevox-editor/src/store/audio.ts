@@ -406,6 +406,7 @@ export const audioStore = createPartialStore<AudioStoreTypes>({
             metas: {
               speakerUuid: SpeakerId(baseSpeaker.speakerUuid),
               speakerName: baseSpeaker.name,
+              irodoriFolder: baseSpeaker.irodoriFolder,
               styles: await stylesPromise,
               policy: baseCharacterInfo.policy,
             },

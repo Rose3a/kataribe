@@ -160,6 +160,8 @@ export type StyleInfo = {
 export type MetasJson = {
   speakerName: string;
   speakerUuid: SpeakerId;
+  /** Irodori-specific path below the configured speakers directory. */
+  irodoriFolder?: string;
   styles: Pick<StyleInfo, "styleName" | "styleId">[];
 };
 
@@ -169,6 +171,8 @@ export type CharacterInfo = {
   metas: {
     speakerUuid: SpeakerId;
     speakerName: string;
+    /** Irodori-specific path below the configured speakers directory. */
+    irodoriFolder?: string;
     styles: StyleInfo[];
     policy: string;
   };

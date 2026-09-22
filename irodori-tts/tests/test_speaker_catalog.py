@@ -7,9 +7,28 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "wrapper"))
 
 from speaker_catalog import FALLBACK_ICON_PATH, credit_for, display_name_for, policy_for, portrait_for, speaker_catalog, thumbnail_for
+from tts_cli import SpeakerCassette
 
 
 class SpeakerCatalogTests(unittest.TestCase):
+    def test_speaker_folder_is_relative_to_its_configured_root(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "direct.speaker.safetensors").write_bytes(b"embedding")
+            grouped = (
+                root
+                / "idolmaster"
+                / "idol"
+                / "idol.speaker.safetensors"
+            )
+            grouped.parent.mkdir(parents=True)
+            grouped.write_bytes(b"embedding")
+
+            cassette = SpeakerCassette([root])
+
+            self.assertIsNone(cassette.folder_for("direct"))
+            self.assertEqual(cassette.folder_for("idol"), "idolmaster")
+
     def test_display_name_keeps_internal_identifier_out_of_the_ui(self):
         self.assertEqual(display_name_for("tsukuyomi"), "つくよみちゃん")
         self.assertEqual(display_name_for("external"), "external")

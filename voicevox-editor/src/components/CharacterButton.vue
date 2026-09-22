@@ -23,13 +23,38 @@
       <QSpinner color="primary" size="1.6rem" :thickness="7" />
     </div>
     <QMenu
-      class="character-menu"
+      class="character-menu character-picker-menu"
+      style="width: min(90vw, 27rem)"
       transitionShow="none"
       transitionHide="none"
       :max-height="maxMenuHeight"
-      @beforeShow="updateMenuHeight"
+      @beforeShow="onMenuBeforeShow"
     >
-      <QList style="min-width: max-content" class="character-item-container">
+      <QTabs
+        v-if="folderTabs.length > 0"
+        :model-value="activeFolder"
+        dense
+        align="left"
+        active-color="primary"
+        indicator-color="primary"
+        class="speaker-folder-tabs"
+        @update:model-value="selectFolder"
+      >
+        <QTab
+          v-if="hasUngroupedCharacters"
+          :name="ROOT_FOLDER_TAB"
+          label="その他"
+        />
+        <QTab
+          v-for="folder in folderTabs"
+          :key="folder"
+          :name="folder"
+          :label="folder"
+          :title="folder"
+          class="speaker-folder-tab"
+        />
+      </QTabs>
+      <QList class="character-item-container">
         <QItem
           v-if="selectedStyleInfo == undefined && !emptiable"
           class="warning-item row no-wrap items-center"
@@ -59,8 +84,8 @@
           </QBtn>
         </QItem>
         <QItem
-          v-for="(characterInfo, characterIndex) in characterInfos"
-          :key="characterIndex"
+          v-for="(characterInfo, characterIndex) in visibleCharacterInfos"
+          :key="characterInfo.metas.speakerUuid"
           class="q-pa-none"
           :class="isSelectedItem(characterInfo) && 'selected-character-item'"
         >
@@ -69,7 +94,9 @@
               v-close-popup
               flat
               noCaps
-              class="col-grow"
+              class="col-grow speaker-name-button"
+              :aria-label="characterInfo.metas.speakerName"
+              :title="characterInfo.metas.speakerName"
               @click="onSelectSpeaker(characterInfo.metas.speakerUuid)"
               @mouseover="reassignSubMenuOpen(-1)"
               @mouseleave="reassignSubMenuOpen.cancel()"
@@ -100,7 +127,9 @@
                   />
                 </QAvatar>
               </QAvatar>
-              <div>{{ characterInfo.metas.speakerName }}</div>
+              <div class="speaker-name">
+                {{ characterInfo.metas.speakerName }}
+              </div>
             </QBtn>
             <!-- スタイルが2つ以上あるものだけ、スタイル選択ボタンを表示する-->
             <template v-if="characterInfo.metas.styles.length >= 2">
@@ -277,6 +306,41 @@ const selectedStyleInfo = computed(() => {
 
 const engineIcons = useEngineIcons(() => store.state.engineManifests);
 
+// A folder becomes a tab only when it contains more than one speaker.  Single
+// speaker folders keep the established, flat list behaviour.
+const ROOT_FOLDER_TAB = "__irodori_root__";
+const activeFolder = ref(ROOT_FOLDER_TAB);
+const folderTabs = computed(() => {
+  const counts = new Map<string, number>();
+  for (const characterInfo of props.characterInfos) {
+    const folder = characterInfo.metas.irodoriFolder;
+    if (folder) counts.set(folder, (counts.get(folder) ?? 0) + 1);
+  }
+  return [...counts]
+    .filter(([, count]) => count >= 2)
+    .map(([folder]) => folder);
+});
+
+const folderIsTabbed = (folder: string | undefined) =>
+  folder != undefined && folderTabs.value.includes(folder);
+
+const hasUngroupedCharacters = computed(() =>
+  props.characterInfos.some(
+    (characterInfo) => !folderIsTabbed(characterInfo.metas.irodoriFolder),
+  ),
+);
+
+const visibleCharacterInfos = computed(() =>
+  activeFolder.value === ROOT_FOLDER_TAB
+    ? props.characterInfos.filter(
+        (characterInfo) => !folderIsTabbed(characterInfo.metas.irodoriFolder),
+      )
+    : props.characterInfos.filter(
+        (characterInfo) =>
+          characterInfo.metas.irodoriFolder === activeFolder.value,
+      ),
+);
+
 const getDefaultStyleWrapper = (speakerUuid: SpeakerId) =>
   getDefaultStyle(
     speakerUuid,
@@ -304,6 +368,12 @@ const reassignSubMenuOpen = debounce((idx: number) => {
   subMenuOpenFlags.value = arr;
 }, 100);
 
+const selectFolder = (folder: string | number | null) => {
+  if (typeof folder !== "string") return;
+  activeFolder.value = folder;
+  reassignSubMenuOpen(-1);
+};
+
 // 高さを制限してメニューが下方向に展開されるようにする
 const buttonRef: Ref<InstanceType<typeof QBtn> | undefined> = ref();
 const heightLimit = "65vh"; // QMenuのデフォルト値
@@ -318,6 +388,18 @@ const updateMenuHeight = () => {
   // AudioDetailよりボタンが下に来ることはないのでその最低高185pxに余裕を持たせた170pxを最小の高さにする。
   // pxで指定するとウインドウサイズ変更に追従できないので ウインドウの高さの96% - ボタンの下端の座標 でメニューの高さを決定する。
   maxMenuHeight.value = `max(170px, min(${heightLimit}, calc(96vh - ${buttonRect.bottom}px)))`;
+};
+
+// Opening the menu again returns to the selected speaker's folder instead of
+// the top of one long list.  This is also useful after changing a line's voice.
+const onMenuBeforeShow = () => {
+  const selectedFolder = selectedCharacter.value?.metas.irodoriFolder;
+  activeFolder.value =
+    selectedFolder && folderIsTabbed(selectedFolder)
+      ? selectedFolder
+      : ROOT_FOLDER_TAB;
+  reassignSubMenuOpen(-1);
+  updateMenuHeight();
 };
 </script>
 
@@ -366,9 +448,31 @@ const updateMenuHeight = () => {
 }
 
 .character-menu {
+  // Keep the popup stable when tabs have speakers with differently sized names.
+  width: min(90vw, 27rem);
+
+  .speaker-folder-tabs {
+    min-width: 0;
+    max-width: 100%;
+    border-bottom: 1px solid rgba(colors.$primary-rgb, 0.2);
+
+    .speaker-folder-tab {
+      max-width: 11rem;
+      min-width: 0;
+    }
+
+    :deep(.q-tab__label) {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+  }
+
   .character-item-container {
     display: flex;
     flex-direction: column;
+    min-width: 0;
+    width: 100%;
   }
 
   .q-item {
@@ -376,13 +480,30 @@ const updateMenuHeight = () => {
   }
 
   .q-btn-group {
+    min-width: 0;
+
     > .q-btn:first-child > :deep(.q-btn__content) {
       justify-content: flex-start;
+      min-width: 0;
+      width: 100%;
     }
 
     > div:last-child:hover {
       background-color: rgba(colors.$primary-rgb, 0.1);
     }
+  }
+
+  .speaker-name-button {
+    min-width: 0;
+  }
+
+  .speaker-name {
+    flex: 1 1 0;
+    min-width: 0;
+    overflow: hidden;
+    text-align: left;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .warning-item {
@@ -404,6 +525,47 @@ const updateMenuHeight = () => {
     height: 13px;
     bottom: -6px;
     right: -6px;
+  }
+}
+
+// QMenu is rendered outside this component's DOM tree.  Keep these rules
+// global so the teleported menu receives the fixed width and ellipsis styles.
+:global(.character-picker-menu) {
+  width: min(90vw, 27rem);
+
+  .speaker-folder-tabs {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .speaker-folder-tab {
+    max-width: 11rem;
+    min-width: 0;
+  }
+
+  .speaker-folder-tabs .q-tab__label,
+  .speaker-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .speaker-name-button,
+  .q-btn-group,
+  .q-btn-group > .q-btn:first-child > .q-btn__content,
+  .character-item-container {
+    min-width: 0;
+  }
+
+  .character-item-container,
+  .q-btn-group > .q-btn:first-child > .q-btn__content {
+    width: 100%;
+  }
+
+  .speaker-name {
+    flex: 1 1 0;
+    min-width: 0;
+    text-align: left;
   }
 }
 </style>

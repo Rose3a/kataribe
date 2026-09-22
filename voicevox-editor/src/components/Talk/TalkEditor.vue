@@ -170,6 +170,7 @@ import {
 } from "@/domain/hotkeyAction";
 import { isElectron } from "@/helpers/platform";
 import { dragAndDropReorder } from "@/helpers/reorderHelper";
+import { handlePossiblyNotMorphableError } from "@/store/audioGenerate";
 
 const props = defineProps<{
   isEnginesReady: boolean;
@@ -228,6 +229,17 @@ registerHotkeyWithCleanup({
   callback: () => {
     if (!uiLocked.value) {
       void store.actions.COMMAND_IMPORT_FROM_FILE({ type: "dialog" });
+    }
+  },
+});
+registerHotkeyWithCleanup({
+  editor: "talk",
+  // テキスト編集中でも使えるようにし、未確定の入力は先に保存する。
+  enableInTextbox: true,
+  name: "選択中のセリフを生成して再生",
+  callback: () => {
+    if (!uiLocked.value) {
+      void generateAndPlayActiveAudio();
     }
   },
 });
@@ -316,6 +328,23 @@ const removeAudioItem = async () => {
 const onCharacterSelectHotkey = async (selectedCharacterIndex: number) => {
   if (activeAudioKey.value == undefined) throw new Error();
   audioCellRefs[activeAudioKey.value].selectCharacterAt(selectedCharacterIndex);
+};
+
+const generateAndPlayActiveAudio = async () => {
+  const audioKey = activeAudioKey.value;
+  if (audioKey == undefined) return;
+
+  // Ctrl+Enterをテキスト欄内で押しても、最新の入力内容で生成する。
+  await audioCellRefs[audioKey]?.commitText();
+  try {
+    await store.actions.PLAY_AUDIO({ audioKey });
+  } catch (e) {
+    const msg = handlePossiblyNotMorphableError(e);
+    void store.actions.SHOW_ALERT_DIALOG({
+      title: "再生に失敗しました",
+      message: msg ?? "エンジンの再起動をお試しください。",
+    });
+  }
 };
 
 // view

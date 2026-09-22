@@ -676,12 +676,14 @@ class EditorAdapter:
                 mouth_parts = mouth_parts_for(source) if source else None
                 credit = credit_for(source) if source else None
                 policy = policy_for(source) if source else None
+                folder = cassette.folder_for(name) if name else None
                 speakers_json.append(dict(name=label, speaker_uuid=str(uid),
                     styles=[dict(name="ノーマル", id=sid, type="talk")], version="0.2.0",
                     icon=encoded, portrait=portrait[1] if portrait else encoded,
                     mouth_open=mouth[1] if mouth else None,
                     blink=blink[1] if blink else None,
-                    mouth_parts=mouth_parts, credit=credit, policy=policy))
+                    mouth_parts=mouth_parts, credit=credit, policy=policy,
+                    irodori_folder=folder))
             # エディタはここで話者一覧を独自に組み立てる。話者IDは保ったまま
             # 表示順だけを入れ替え、初回の既定話者をつくよみちゃんにする。
             speakers_json.sort(

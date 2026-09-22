@@ -240,6 +240,11 @@ def _speaker_table(tts: IrodoriTTS, progress_callback=None) -> tuple[list[dict],
         id_to_name[style_id] = name
         display_name = display_name_for(name)
         speaker_uuid = str(uuid.uuid5(ENGINE_UUID_NAMESPACE, name))
+        folder = (
+            tts.cassette.folder_for(name)
+            if name and name != "話者なし"
+            else None
+        )
         # 「話者なし」も赤い空画像ではなく、話者一覧と同じ汎用SVGを表示する。
         fallback = _fallback_icon()
         fallback_payload = fallback[1] if fallback else TINY_PNG
@@ -283,6 +288,7 @@ def _speaker_table(tts: IrodoriTTS, progress_callback=None) -> tuple[list[dict],
             "mouth_parts": mouth_parts,
             "credit": credit,
             "policy": policy,
+            "irodori_folder": folder,
         })
     # 話者 ID は既存プロジェクトとの互換性のため生成順のまま維持し、
     # 表示順だけを変えて初回起動時の既定話者をつくよみちゃんにする。

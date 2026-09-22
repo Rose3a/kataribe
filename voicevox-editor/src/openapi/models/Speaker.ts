@@ -62,6 +62,11 @@ export interface Speaker {
      * @memberof Speaker
      */
     supportedFeatures?: SpeakerSupportedFeatures;
+    /**
+     * Irodori speaker-folder path, relative to the configured speakers root.
+     * This optional extension is ignored by standard VOICEVOX engines.
+     */
+    irodoriFolder?: string;
 }
 
 /**
@@ -92,6 +97,7 @@ export function SpeakerFromJSONTyped(json: any, ignoreDiscriminator: boolean): S
         'styles': ((json['styles'] as Array<any>).map(SpeakerStyleFromJSON)),
         'version': json['version'],
         'supportedFeatures': !exists(json, 'supported_features') ? undefined : SpeakerSupportedFeaturesFromJSON(json['supported_features']),
+        'irodoriFolder': !exists(json, 'irodori_folder') ? undefined : json['irodori_folder'],
     };
 }
 
@@ -109,6 +115,6 @@ export function SpeakerToJSON(value?: Speaker | null): any {
         'styles': ((value.styles as Array<any>).map(SpeakerStyleToJSON)),
         'version': value.version,
         'supported_features': SpeakerSupportedFeaturesToJSON(value.supportedFeatures),
+        'irodori_folder': value.irodoriFolder,
     };
 }
-

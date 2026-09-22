@@ -12,3 +12,11 @@ test("すべてのホットキーに初期値が設定されている", async ()
   );
   expect(allActionNames).toEqual(defaultHotkeyActionsNames);
 });
+
+test("選択中のセリフを生成して再生するショートカットはCtrl+Enter", () => {
+  const hotkey = getDefaultHotkeySettings({ isMac: false }).find(
+    (setting) => setting.action === "選択中のセリフを生成して再生",
+  );
+
+  expect(hotkey?.combination).toBe("Ctrl Enter");
+});
