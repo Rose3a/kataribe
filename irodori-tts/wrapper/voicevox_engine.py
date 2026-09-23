@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import hashlib
 import math
 import mimetypes
 import os
@@ -62,6 +63,63 @@ TINY_PNG = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAF"
     "gAI/7jS7WQAAAABJRU5ErkJggg=="
 )
+
+
+def _speaker_list_payload(speakers: list[dict]) -> list[dict]:
+    """Build the lightweight ``/speakers`` response.
+
+    Portraits and icons belong to ``/speaker_info``.  Sending them in this
+    list made the initial response grow by one base64 image per speaker (and
+    then sent the same data again from ``/speaker_info``), which is prohibitive
+    for large local speaker collections.
+    """
+    fields = (
+        "name",
+        "speaker_uuid",
+        "styles",
+        "version",
+        "supported_features",
+        "irodori_folder",
+    )
+    return [
+        {field: speaker[field] for field in fields if field in speaker}
+        for speaker in speakers
+    ]
+
+
+def _speaker_resource_index(speakers: list[dict]) -> dict[str, str]:
+    """Index unique base64 resources once when the speaker catalog is built."""
+    resources: dict[str, str] = {}
+    digests_by_value: dict[str, str] = {}
+    for speaker in speakers:
+        values = [
+            speaker.get("icon"),
+            speaker.get("portrait"),
+            speaker.get("mouth_open"),
+            speaker.get("blink"),
+        ]
+        mouth_parts = speaker.get("mouth_parts")
+        if isinstance(mouth_parts, dict):
+            values.extend(mouth_parts.values())
+        for value in values:
+            if not isinstance(value, str):
+                continue
+            digest = digests_by_value.get(value)
+            if digest is None:
+                digest = hashlib.sha256(value.encode("ascii")).hexdigest()
+                digests_by_value[value] = digest
+            resources.setdefault(digest, value)
+    return resources
+
+
+def _speaker_uuid_index(speakers: list[dict]) -> dict[str, dict]:
+    """Index speaker records so /speaker_info stays fast for large libraries."""
+    index = {}
+    for speaker in speakers:
+        speaker_uuid = speaker.get("speaker_uuid")
+        if isinstance(speaker_uuid, str):
+            index.setdefault(speaker_uuid, speaker)
+    return index
 
 
 class RequestBodyError(ValueError):
@@ -220,11 +278,13 @@ def _unique_speakers(tts: IrodoriTTS) -> list[str]:
     """Hide the convenience ``name`` alias when ``name.speaker`` exists."""
     names = set(tts.speakers())
     result: list[str] = []
+    added: set[str] = set()
     for name in tts.speakers():
         if name.endswith(".speaker") and name[: -len(".speaker")] in names:
             continue
-        if name not in result:
+        if name not in added:
             result.append(name)
+            added.add(name)
     return result
 
 
@@ -232,9 +292,14 @@ def _speaker_table(tts: IrodoriTTS, progress_callback=None) -> tuple[list[dict],
     if progress_callback:
         progress_callback("preparing speaker table", 65)
     styles = ["話者なし"] + _unique_speakers(tts)
-    catalog = {name: thumb for name, thumb in speaker_catalog(tts.embed_dirs)}
+    catalog = dict(speaker_catalog(
+        tts.embed_dirs,
+        ((name, tts.cassette.path_for(name)) for name in styles[1:]),
+    ))
     id_to_name: dict[int, str] = {}
     output: list[dict] = []
+    fallback = _fallback_icon()
+    fallback_payload = fallback[1] if fallback else TINY_PNG
     for index, name in enumerate(styles, start=1):
         style_id = index
         id_to_name[style_id] = name
@@ -246,35 +311,22 @@ def _speaker_table(tts: IrodoriTTS, progress_callback=None) -> tuple[list[dict],
             else None
         )
         # 「話者なし」も赤い空画像ではなく、話者一覧と同じ汎用SVGを表示する。
-        fallback = _fallback_icon()
-        fallback_payload = fallback[1] if fallback else TINY_PNG
         icon = portrait = fallback_payload
         thumb = catalog.get(name)
         if thumb:
             mime, encoded = thumb
             # VOICEVOX expects the raw base64 payload in these fields.
             icon = portrait = encoded
-        open_mouth = None
-        blink = None
-        mouth_parts = None
-        credit = None
-        policy = None
-        if name:
-            for directory in tts.embed_dirs:
-                for candidate in Path(directory).rglob("*.safetensors"):
-                    candidate_name = candidate.stem if not candidate.name.endswith(".speaker.safetensors") else candidate.name[:-len(".speaker.safetensors")]
-                    if candidate_name == name:
-                        open_mouth = mouth_open_thumbnail_for(candidate)
-                        blink = blink_thumbnail_for(candidate)
-                        mouth_parts = mouth_parts_for(candidate)
-                        credit = credit_for(candidate)
-                        policy = policy_for(candidate)
-                        original = portrait_for(candidate)
-                        if original:
-                            portrait = original[1]
-                        break
-                if open_mouth:
-                    break
+        # "話者なし" is a UI choice, not an embedding filename.
+        source = tts.cassette.path_for(name) if name != "話者なし" else None
+        open_mouth = mouth_open_thumbnail_for(source) if source else None
+        blink = blink_thumbnail_for(source) if source else None
+        mouth_parts = mouth_parts_for(source) if source else None
+        credit = credit_for(source) if source else None
+        policy = policy_for(source) if source else None
+        original = portrait_for(source) if source else None
+        if original:
+            portrait = original[1]
         output.append({
             "name": display_name,
             "speaker_uuid": speaker_uuid,
@@ -332,6 +384,9 @@ class VoicevoxAdapter:
         if progress_callback:
             progress_callback("preparing speaker table", 65)
         self.speakers_json, self.id_to_name = _speaker_table(self.tts, progress_callback)
+        self.resource_index = _speaker_resource_index(self.speakers_json)
+        self.resource_digests = {value: digest for digest, value in self.resource_index.items()}
+        self.speaker_index = _speaker_uuid_index(self.speakers_json)
         self.name_to_id = {name: sid for sid, name in self.id_to_name.items()}
         self.lock = threading.Lock()
         self.synthesis_slots = threading.BoundedSemaphore(2)
@@ -348,6 +403,9 @@ class VoicevoxAdapter:
         with self.lock:
             self.tts.refresh_cassette()
             self.speakers_json, self.id_to_name = _speaker_table(self.tts)
+            self.resource_index = _speaker_resource_index(self.speakers_json)
+            self.resource_digests = {value: digest for digest, value in self.resource_index.items()}
+            self.speaker_index = _speaker_uuid_index(self.speakers_json)
             self.name_to_id = {name: sid for sid, name in self.id_to_name.items()}
 
     def synthesize(self, query: dict, speaker_id: int) -> bytes:
@@ -376,6 +434,32 @@ class VoicevoxAdapter:
             query, "irodori_caption_strength")
         reference_strength = _strength_value(
             query, "irodori_reference_strength")
+        speaker_strength = _strength_value(
+            query, "irodori_speaker_strength")
+        additions = query.get("irodori_additional_speakers")
+        if additions is None:
+            legacy_id = query.get("irodori_secondary_speaker_style_id")
+            additions = ([] if legacy_id is None else [{
+                "style_id": legacy_id,
+                "strength": _strength_value(query, "irodori_secondary_speaker_strength", 0.5),
+            }])
+        if not isinstance(additions, list) or len(additions) > 3:
+            raise ValueError("追加話者は最大3人までです")
+        additional_speakers = []
+        seen_speakers = set()
+        for entry in additions:
+            if not isinstance(entry, dict):
+                raise ValueError("追加話者の指定が正しくありません")
+            style_id = entry.get("style_id")
+            if (isinstance(style_id, bool) or not isinstance(style_id, int)
+                    or style_id not in self.id_to_name):
+                raise ValueError("追加話者が見つかりません")
+            name = self.id_to_name[style_id]
+            if name == "話者なし" or name == speaker_name or name in seen_speakers:
+                raise ValueError("追加話者が重複しているか、話者なしが指定されています")
+            seen_speakers.add(name)
+            strength = _strength_value(entry, "strength", 0.5)
+            additional_speakers.append((name, strength))
         # The slider controls the optional user-provided reference audio. If no
         # such file is attached, preserve the normal speaker condition.
         if not query.get("irodori_reference_audio"):
@@ -418,6 +502,8 @@ class VoicevoxAdapter:
                     caption=str(query.get("irodori_caption") or "").strip() or None,
                     caption_strength=caption_strength,
                     reference_strength=reference_strength,
+                    speaker_strength=speaker_strength,
+                    additional_speakers=additional_speakers,
                     duration_scale=1.0 / max(0.1, float(query.get("speedScale", 1.0))),
                     cfg_scale_text=sampling["cfg_scale_text"],
                     cfg_scale_speaker=sampling["cfg_scale_speaker"],
@@ -436,7 +522,8 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         sys.stderr.write("[voicevox] " + (fmt % args) + "\n")
 
-    def _send(self, status: int, body: bytes, content_type: str = "application/json; charset=utf-8"):
+    def _send(self, status: int, body: bytes, content_type: str = "application/json; charset=utf-8",
+              cache_control: str | None = None):
         self.send_response(status)
         origin = self.headers.get("Origin")
         if origin in ALLOWED_ORIGINS:
@@ -446,6 +533,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        if cache_control:
+            self.send_header("Cache-Control", cache_control)
         self.end_headers()
         self.wfile.write(body)
 
@@ -491,6 +580,99 @@ class Handler(BaseHTTPRequestHandler):
     def _authorized(self) -> bool:
         return self._bootstrap_allowed() and self.headers.get("X-Irodori-Session") == SESSION_TOKEN
 
+    def _resource_url(self, value: str) -> str:
+        """Create a content-addressed, loopback-only URL for a speaker image."""
+        digests = getattr(self.adapter, "resource_digests", None)
+        digest = digests.get(value) if isinstance(digests, dict) else None
+        if digest is None:
+            digest = hashlib.sha256(value.encode("ascii")).hexdigest()
+        host = self.headers.get("Host", "127.0.0.1")
+        return f"http://{host}/irodori/resource/{digest}"
+
+    def _resource_value(self, digest: str) -> str | None:
+        """Find a cached catalog resource by its content digest."""
+        resource_index = getattr(self.adapter, "resource_index", None)
+        if isinstance(resource_index, dict):
+            return resource_index.get(digest)
+
+        # Compatibility fallback for adapters that have not built the index.
+        for speaker in self.adapter.speakers_json:
+            values = [
+                speaker.get("icon"),
+                speaker.get("portrait"),
+                speaker.get("mouth_open"),
+                speaker.get("blink"),
+            ]
+            mouth_parts = speaker.get("mouth_parts")
+            if isinstance(mouth_parts, dict):
+                values.extend(mouth_parts.values())
+            for value in values:
+                if isinstance(value, str) and hashlib.sha256(
+                    value.encode("ascii")
+                ).hexdigest() == digest:
+                    return value
+        return None
+
+    @staticmethod
+    def _image_mime(data: bytes) -> str:
+        if data.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "image/png"
+        if data.startswith(b"\xff\xd8\xff"):
+            return "image/jpeg"
+        if data.startswith((b"GIF87a", b"GIF89a")):
+            return "image/gif"
+        if data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+            return "image/webp"
+        if data.lstrip().startswith((b"<svg", b"<?xml")):
+            return "image/svg+xml"
+        return "application/octet-stream"
+
+    def _send_resource(self, digest: str) -> None:
+        # Image requests cannot attach the session header.  The engine binds to
+        # loopback, and resources were already available from /speaker_info.
+        if self.client_address[0] not in ("127.0.0.1", "::1"):
+            self._json(403, {"detail": "resource access is local-only"})
+            return
+        value = self._resource_value(digest)
+        if value is None:
+            self._json(404, {"detail": "speaker resource not found"})
+            return
+        try:
+            data = base64.b64decode(value, validate=True)
+        except (ValueError, binascii.Error):
+            self._json(500, {"detail": "invalid speaker resource"})
+            return
+        self._send(200, data, self._image_mime(data),
+                   "private, max-age=31536000, immutable")
+
+    def _speaker_info_payload(self, speaker: dict, use_resource_url: bool) -> dict:
+        def resource(value):
+            if not isinstance(value, str):
+                return value
+            return self._resource_url(value) if use_resource_url else value
+
+        mouth_parts = speaker.get("mouth_parts")
+        return {
+            "policy": (speaker.get("policy") or "").replace("\n", "  \n"),
+            "credit": speaker.get("credit"),
+            "portrait": resource(speaker.get("portrait", TINY_PNG)),
+            "style_infos": [
+                {
+                    "id": style["id"],
+                    "icon": resource(speaker.get("icon", TINY_PNG)),
+                    "portrait": resource(speaker.get("portrait", TINY_PNG)),
+                    "voice_samples": [],
+                    "mouth_open": resource(speaker.get("mouth_open")),
+                    "blink": resource(speaker.get("blink")),
+                    "mouth_parts": (
+                        {shape: resource(value) for shape, value in mouth_parts.items()}
+                        if isinstance(mouth_parts, dict) else None
+                    ),
+                }
+                for style in speaker.get("styles", [])
+            ],
+        }
+
     def do_OPTIONS(self):
         if not self._bootstrap_allowed():
             self._send(403, b"forbidden")
@@ -507,10 +689,24 @@ class Handler(BaseHTTPRequestHandler):
         elif parsed.path == "/refresh" and not self._authorized():
             self._json(403, {"detail": "invalid local origin/session"})
             return
+        elif parsed.path.startswith("/irodori/resource/"):
+            self._send_resource(parsed.path.removeprefix("/irodori/resource/"))
         elif parsed.path == "/version":
             self._json(200, ENGINE_VERSION)
         elif parsed.path == "/speakers":
-            self._json(200, self.adapter.speakers_json)
+            self._json(200, _speaker_list_payload(self.adapter.speakers_json))
+        elif parsed.path == "/irodori/speaker_bundle":
+            if not self._authorized():
+                self._json(403, {"detail": "invalid local origin/session"})
+                return
+            speakers = self.adapter.speakers_json
+            self._json(200, {
+                "speakers": _speaker_list_payload(speakers),
+                "speaker_infos": {
+                    speaker["speaker_uuid"]: self._speaker_info_payload(speaker, True)
+                    for speaker in speakers
+                },
+            })
         elif parsed.path in ("/engine_manifest", "/engine_manifest.json"):
             manifest = {
                 "manifest_version": "0.13.1",
@@ -537,7 +733,7 @@ class Handler(BaseHTTPRequestHandler):
                     "synthesis_morphing": False,
                     "sing": False,
                     "manage_library": False,
-                    "return_resource_url": False,
+                    "return_resource_url": True,
                     "apply_katakana_english": False,
                 },
             }
@@ -553,41 +749,31 @@ class Handler(BaseHTTPRequestHandler):
             })
         elif parsed.path == "/speaker_info":
             speaker_uuid = (parse_qs(parsed.query).get("speaker_uuid") or [""])[0]
-            speaker = next(
-                (item for item in self.adapter.speakers_json
-                 if item.get("speaker_uuid") == speaker_uuid),
-                None,
-            )
+            speaker_index = getattr(self.adapter, "speaker_index", None)
+            if isinstance(speaker_index, dict):
+                speaker = speaker_index.get(speaker_uuid)
+            else:
+                # Compatibility for adapters created before the index existed.
+                speaker = next(
+                    (item for item in self.adapter.speakers_json
+                     if item.get("speaker_uuid") == speaker_uuid),
+                    None,
+                )
             if speaker is None:
                 self._json(404, {"detail": "speaker not found"})
                 return
-            self._json(200, {
-                "policy": (speaker.get("policy") or "").replace("\n", "  \n"),
-                "credit": speaker.get("credit"),
-                "portrait": next((item.get("portrait", TINY_PNG) for item in self.adapter.speakers_json
-                                   if item.get("speaker_uuid") == speaker_uuid), TINY_PNG),
-                "style_infos": [
-                    {
-                        "id": style["id"],
-                        "icon": next((item.get("icon", TINY_PNG) for item in self.adapter.speakers_json
-                                      if item.get("speaker_uuid") == speaker_uuid), TINY_PNG),
-                        "portrait": next((item.get("portrait", TINY_PNG) for item in self.adapter.speakers_json
-                                          if item.get("speaker_uuid") == speaker_uuid), TINY_PNG),
-                        "voice_samples": [],
-                        "mouth_open": speaker.get("mouth_open"),
-                        "blink": speaker.get("blink"),
-                        "mouth_parts": speaker.get("mouth_parts"),
-                    }
-                    for style in speaker.get("styles", [])
-                ],
-            })
+            use_resource_url = (
+                (parse_qs(parsed.query).get("resource_format") or [""])[0]
+                == "url"
+            )
+            self._json(200, self._speaker_info_payload(speaker, use_resource_url))
         elif parsed.path == "/is_initialized_speaker":
             self._json(200, True)
         elif parsed.path == "/user_dict":
             self._json(200, READING_DICTIONARY.snapshot())
         elif parsed.path == "/refresh":
             self.adapter.refresh()
-            self._json(200, self.adapter.speakers_json)
+            self._json(200, _speaker_list_payload(self.adapter.speakers_json))
         else:
             self._json(404, {"detail": "Not Found"})
 
@@ -636,10 +822,13 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._json(404, {"detail": "Not Found"})
         except RequestBodyError as exc:
+            self.log_message("request rejected (%s): %s", exc.status, exc)
             self._json(exc.status, {"detail": str(exc)})
         except (ValueError, KeyError) as exc:
+            self.log_message("request rejected (400): %s", exc)
             self._json(400, {"detail": str(exc)})
         except Exception as exc:
+            self.log_message("request failed (500): %s", exc)
             self._json(500, {"detail": str(exc)})
 
     def _change_dictionary(self, delete=False):

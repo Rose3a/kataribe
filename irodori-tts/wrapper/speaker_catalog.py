@@ -5,6 +5,7 @@ import base64
 import io
 import json
 import mimetypes
+from functools import lru_cache
 from pathlib import Path
 
 
@@ -147,8 +148,8 @@ def portrait_for(path: Path) -> tuple[str, str] | None:
 
 
 def credit_for(path: Path) -> str | None:
-    """Read the speaker credit notice, preferring the authoritative text file."""
-    return _read_credit(path, ("credit.txt", "credits.json"))
+    """Show a speaker's credit.txt below its portrait when provided."""
+    return _read_credit(path, ("credit.txt",))
 
 
 def policy_for(path: Path) -> str | None:
@@ -186,19 +187,28 @@ def _fallback_icon() -> tuple[str, str] | None:
     """Return the bundled default portrait for speakers without artwork."""
     if not FALLBACK_ICON_PATH.is_file() or FALLBACK_ICON_PATH.stat().st_size > 8_000_000:
         return None
+    stat = FALLBACK_ICON_PATH.stat()
+    return _cached_fallback_icon(stat.st_mtime_ns, stat.st_size)
+
+
+@lru_cache(maxsize=2)
+def _cached_fallback_icon(_mtime_ns: int, _size: int) -> tuple[str, str]:
     return "image/png", base64.b64encode(FALLBACK_ICON_PATH.read_bytes()).decode("ascii")
 
 
-def speaker_catalog(embed_dirs):
+def speaker_catalog(embed_dirs, speaker_paths=None):
     """Return deduplicated speakers with optional VOICEVOX image data."""
     result = []
     seen = set()
-    for directory in embed_dirs:
-        directory = Path(directory)
-        for path in sorted(directory.rglob("*.safetensors")):
-            name = speaker_stem(path) if path.name.endswith(".speaker.safetensors") else path.stem
-            if name in seen:
-                continue
-            seen.add(name)
-            result.append((name, thumbnail_for(path)))
+    if speaker_paths is None:
+        speaker_paths = (
+            (speaker_stem(path), path)
+            for directory in embed_dirs
+            for path in sorted(Path(directory).rglob("*.safetensors"))
+        )
+    for name, path in speaker_paths:
+        if name in seen:
+            continue
+        seen.add(name)
+        result.append((name, thumbnail_for(path)))
     return result

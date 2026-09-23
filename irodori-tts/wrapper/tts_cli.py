@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import time
@@ -504,6 +505,10 @@ class IrodoriTTS:
                    caption: Optional[str] = None,
                    caption_strength: float = 1.0,
                    reference_strength: float = 1.0,
+                   speaker_strength: float = 1.0,
+                   secondary_speaker: Optional[str] = None,
+                   secondary_speaker_strength: float = 0.5,
+                   additional_speakers: Optional[list[tuple[str, float]]] = None,
                    ref_wav: Optional[str] = None,
                    t_schedule_mode: str = "sway",
                    sway_coeff: float = -1.0,
@@ -514,8 +519,46 @@ class IrodoriTTS:
         speaker_name = self.default_speaker if speaker is None else speaker
         if ref_wav is not None and speaker_tensor_override is not None:
             raise ValueError("reference audio and speaker mix cannot be combined")
+        if additional_speakers is None:
+            additional_speakers = ([] if secondary_speaker is None else
+                                   [(secondary_speaker, secondary_speaker_strength)])
+        if len(additional_speakers) > 3:
+            raise ValueError("追加話者は最大3人までです")
+        if ref_wav is not None and additional_speakers:
+            raise ValueError("音声リファレンスと追加話者は同時に使えません")
+        speaker_strength = float(speaker_strength)
+        if not math.isfinite(speaker_strength) or not 0 <= speaker_strength <= 1:
+            raise ValueError("speaker strength must be between 0 and 1")
         speaker_tensor = (speaker_tensor_override if speaker_tensor_override is not None
-                          else None if ref_wav else (self.cassette.get(speaker_name) if speaker_name else None))
+                          else None if ref_wav or speaker_strength == 0
+                          else (self.cassette.get(speaker_name) if speaker_name else None))
+        if speaker_tensor is not None:
+            speaker_tensor = None if speaker_strength == 0 else speaker_tensor * speaker_strength
+        def token_rows(tensor: torch.Tensor) -> torch.Tensor:
+            if tensor.ndim == 3 and tensor.shape[0] == 1:
+                tensor = tensor[0]
+            if tensor.ndim != 2 or tensor.shape[1] != 768:
+                raise ValueError("speaker cassette has an unsupported shape")
+            return tensor
+
+        for additional_name, raw_strength in additional_speakers:
+            strength = float(raw_strength)
+            if not math.isfinite(strength) or not 0 <= strength <= 1:
+                raise ValueError("additional speaker strength must be between 0 and 1")
+            if strength == 0:
+                continue
+            second = token_rows(self.cassette.get(additional_name))
+            if speaker_tensor is None:
+                speaker_tensor = second * strength
+                continue
+            primary = token_rows(speaker_tensor)
+            rows = max(primary.shape[0], second.shape[0])
+            combined = torch.zeros((rows, 768), dtype=torch.float32,
+                                   device=primary.device)
+            combined[:primary.shape[0]] += primary.float()
+            combined[:second.shape[0]] += second.to(
+                device=primary.device, dtype=torch.float32) * strength
+            speaker_tensor = combined.to(primary.dtype)
         out_wav = Path(out_wav) if out_wav else Path(f"outputs/{speaker_name}_{seed}.wav")
         out_wav.parent.mkdir(parents=True, exist_ok=True)
         _, _, _, SamplingRequest, _ = _import_runtime()

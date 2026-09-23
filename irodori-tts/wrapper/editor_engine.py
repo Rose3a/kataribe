@@ -19,12 +19,13 @@ from urllib.parse import urlparse, parse_qs
 
 from voicevox_engine import (Handler, VoicevoxAdapter, ROOT, ENGINE_UUID_NAMESPACE,
                               TINY_PNG, _query, SESSION_TOKEN, MAX_BODY_BYTES, MAX_TEXT_CHARS,
-                              DEFAULT_SPEAKER_NAME)
+                              DEFAULT_SPEAKER_NAME, _speaker_resource_index,
+                              _speaker_uuid_index)
 from speaker_catalog import (
     _fallback_icon,
     credit_for,
-    display_name_for,
     policy_for,
+    display_name_for,
     blink_thumbnail_for,
     mouth_open_thumbnail_for,
     mouth_parts_for,
@@ -657,7 +658,10 @@ class EditorAdapter:
             names = [n for n in names if not (n.endswith(".speaker") and n[:-8] in names)]
             id_to_name = {0: ""}
             speakers_json = []
-            catalog = dict(speaker_catalog(cassette.dirs))
+            catalog = dict(speaker_catalog(
+                cassette.dirs,
+                ((name, cassette.path_for(name)) for name in names),
+            ))
             fallback = _fallback_icon()
             fallback_payload = fallback[1] if fallback else TINY_PNG
             for name in [""] + names:
@@ -690,9 +694,15 @@ class EditorAdapter:
                 key=lambda speaker: speaker["name"]
                 != display_name_for(DEFAULT_SPEAKER_NAME)
             )
+            resource_index = _speaker_resource_index(speakers_json)
+            resource_digests = {value: digest for digest, value in resource_index.items()}
+            speaker_index = _speaker_uuid_index(speakers_json)
             with self.state_lock:
                 self.id_to_name = id_to_name
                 self.speakers_json = speakers_json
+                self.resource_index = resource_index
+                self.resource_digests = resource_digests
+                self.speaker_index = speaker_index
                 delegate = self.delegate
             if delegate:
                 delegate.refresh()
@@ -816,6 +826,32 @@ class EditorAdapter:
             sid = self.delegate.name_to_id.get(name)
             if sid is None:
                 raise ValueError("話者一覧を更新してください")
+            def delegate_style_id(style_id):
+                if (isinstance(style_id, bool) or not isinstance(style_id, int)
+                        or style_id not in self.id_to_name):
+                    raise ValueError("追加話者が見つかりません。話者一覧を更新してください")
+                secondary_name = self.id_to_name[style_id]
+                if not secondary_name:
+                    raise ValueError("追加話者に『話者なし』は選べません")
+                delegate_id = self.delegate.name_to_id.get(secondary_name)
+                if delegate_id is None:
+                    raise ValueError("追加話者が見つかりません。話者一覧を更新してください")
+                return delegate_id
+
+            additions = query.get("irodori_additional_speakers")
+            if additions is not None:
+                if not isinstance(additions, list) or len(additions) > 3:
+                    raise ValueError("追加話者は最大3人までです")
+                translated = []
+                for entry in additions:
+                    if not isinstance(entry, dict):
+                        raise ValueError("追加話者の指定が正しくありません")
+                    translated.append({**entry, "style_id": delegate_style_id(entry.get("style_id"))})
+                query["irodori_additional_speakers"] = translated
+            else:
+                secondary_style_id = query.get("irodori_secondary_speaker_style_id")
+                if secondary_style_id is not None:
+                    query["irodori_secondary_speaker_style_id"] = delegate_style_id(secondary_style_id)
             line_steps = self._line_steps(query)
             line_schedule = self._line_schedule(query)
             line_seconds = self._line_seconds(query)
