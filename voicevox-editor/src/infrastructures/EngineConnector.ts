@@ -6,6 +6,7 @@ export interface IEngineConnectorFactory {
   // FIXME: hostという名前の時点で外部APIに接続するという知識が出てきてしまっているので
   // Factory自体に型パラメータを付けて、接続方法だったり設定、IDみたいな名前で表現する
   instance: (host: string) => DefaultApiInterface;
+  request?: (host: string, path: string) => Promise<Response>;
 }
 
 // 通常エンジン
@@ -16,7 +17,9 @@ const OpenAPIEngineConnectorFactoryImpl = (): IEngineConnectorFactory => {
   // エンジンの再起動でトークンが変わったときは force で取り直す。
   const sessionToken = (host: string, force = false): Promise<string> => {
     if (force) delete tokenPromises[host];
-    tokenPromises[host] ??= fetch(`${host}/irodori/session`)
+    tokenPromises[host] ??= fetch(`${host}/irodori/session`, {
+      signal: AbortSignal.timeout(10_000),
+    })
       .then((response) => {
         if (!response.ok)
           throw new Error(`engine session unavailable (${response.status})`);
@@ -30,6 +33,17 @@ const OpenAPIEngineConnectorFactoryImpl = (): IEngineConnectorFactory => {
     return tokenPromises[host];
   };
   return {
+    request: async (host, path) => {
+      const send = async (token: string) =>
+        await fetch(`${host}${path}`, {
+          headers: { "X-Irodori-Session": token },
+          signal: AbortSignal.timeout(30_000),
+        });
+      const response = await send(await sessionToken(host));
+      return response.status === 403
+        ? await send(await sessionToken(host, true))
+        : response;
+    },
     instance: (host: string) => {
       const cached = instanceMapper[host];
       if (cached != undefined) {
@@ -48,7 +62,27 @@ const OpenAPIEngineConnectorFactoryImpl = (): IEngineConnectorFactory => {
             const send = async (token: string) => {
               const headers = new Headers(init.headers);
               headers.set("X-Irodori-Session", token);
-              return await fetch(input, { ...init, headers });
+              const path = new URL(url).pathname;
+              const isStartupMetadata = [
+                "/version",
+                "/engine_manifest",
+                "/supported_devices",
+                "/speakers",
+                "/speaker_info",
+                "/singers",
+                "/singer_info",
+                "/user_dict",
+              ].includes(path);
+              const timeoutMs = path === "/version" ? 5_000 : 30_000;
+              const signal = isStartupMetadata
+                ? init.signal
+                  ? AbortSignal.any([
+                      init.signal,
+                      AbortSignal.timeout(timeoutMs),
+                    ])
+                  : AbortSignal.timeout(timeoutMs)
+                : init.signal;
+              return await fetch(input, { ...init, headers, signal });
             };
             if (url.endsWith("/irodori/session")) {
               return await fetch(input, init);

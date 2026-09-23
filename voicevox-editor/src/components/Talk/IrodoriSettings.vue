@@ -1,322 +1,448 @@
 <template>
-  <section class="q-pa-md irodori-settings">
-    <div v-if="audioItem" class="q-mb-md">
-      <div class="text-subtitle1 q-mb-sm">セリフごとの設定</div>
-      <div class="row items-center q-gutter-sm q-mb-sm irodori-line-actions">
+  <section class="irodori-settings q-pa-md">
+    <div v-if="audioItem" class="settings-stack">
+      <h2 class="settings-title">セリフの設定</h2>
+
+      <QCard flat bordered class="settings-card">
+        <div class="settings-card-heading">
+          <span>話者と声質</span>
+          <small>追加 {{ additionalSpeakersValue.length }}/3人</small>
+        </div>
+        <div class="settings-card-body">
+          <div class="settings-label">基本の話者</div>
+          <div class="primary-voice">
+            <CharacterButton
+              :selected-voice="audioItem.voice"
+              :character-infos="store.state.characterInfos[engineId] ?? []"
+              :show-label="true"
+              :ui-locked="locked"
+              @update:selected-voice="selectPrimaryVoice"
+            />
+          </div>
+          <div class="strength-row primary-strength-row">
+            <label>話者の強度</label>
+            <QSlider
+              v-model="speakerStrengthValue"
+              dense
+              snap
+              color="primary"
+              :min="0"
+              :max="1"
+              :step="0.01"
+              :disable="locked || !!referenceAudioName"
+              aria-label="基本の話者の強度"
+              @change="saveStrength('speakerStrength', speakerStrengthValue)"
+            />
+            <QInput
+              :model-value="speakerStrengthValue"
+              type="number"
+              dense
+              outlined
+              :min="0"
+              :max="1"
+              :step="0.01"
+              :disable="locked || !!referenceAudioName"
+              aria-label="基本の話者の強度の数値"
+              @change="saveStrength('speakerStrength', Number($event))"
+            />
+          </div>
+          <QSeparator spaced />
+          <div class="settings-label">追加する話者</div>
+          <div
+            v-for="(entry, index) in additionalSpeakersValue"
+            :key="`${entry.styleId}-${index}`"
+            class="additional-speaker-row"
+          >
+            <CharacterButton
+              :selected-voice="additionalVoice(entry.styleId)"
+              :character-infos="additionalCharacterInfos(index)"
+              :emptiable="true"
+              :show-label="true"
+              :ui-locked="locked || !!referenceAudioName"
+              @update:selected-voice="selectAdditionalSpeaker(index, $event)"
+            />
+            <div class="additional-strength">
+              <QSlider
+                v-model="entry.strength"
+                dense
+                snap
+                color="primary"
+                :min="0"
+                :max="1"
+                :step="0.01"
+                :disable="locked || !!referenceAudioName"
+                :aria-label="`追加話者${index + 1}の強度`"
+                @change="saveAdditionalStrength(index, entry.strength)"
+              />
+            </div>
+            <QInput
+              :model-value="entry.strength"
+              type="number"
+              dense
+              outlined
+              :min="0"
+              :max="1"
+              :step="0.01"
+              :disable="locked || !!referenceAudioName"
+              :aria-label="`追加話者${index + 1}の強度の数値`"
+              @change="saveAdditionalStrength(index, Number($event))"
+            />
+            <QBtn
+              flat
+              round
+              dense
+              icon="close"
+              :disable="locked"
+              :aria-label="`追加話者${index + 1}を削除`"
+              @click="selectAdditionalSpeaker(index, undefined)"
+            />
+          </div>
+          <div
+            v-if="additionalSpeakersValue.length < 3"
+            class="add-speaker-row"
+          >
+            <CharacterButton
+              :selected-voice="undefined"
+              :character-infos="
+                additionalCharacterInfos(additionalSpeakersValue.length)
+              "
+              :emptiable="true"
+              :show-label="true"
+              placeholder-label="話者を追加"
+              :ui-locked="locked || !!referenceAudioName"
+              @update:selected-voice="
+                selectAdditionalSpeaker(additionalSpeakersValue.length, $event)
+              "
+            />
+          </div>
+          <p class="settings-hint">
+            基本の話者と追加話者の強度は、このセリフにだけ適用されます。
+          </p>
+          <p v-if="referenceAudioName" class="settings-hint">
+            音声参照を解除すると、話者の強度と追加話者を編集できます。
+          </p>
+        </div>
+      </QCard>
+
+      <QCard flat bordered class="settings-card">
+        <div class="settings-card-heading">話し方</div>
+        <div class="settings-card-body">
+          <div class="strength-row speed-row">
+            <label>話速</label>
+            <QSlider
+              dense
+              snap
+              color="primary"
+              :min="speedScaleSlider.qSliderProps.min.value"
+              :max="speedScaleSlider.qSliderProps.max.value"
+              :step="speedScaleSlider.qSliderProps.step.value"
+              :disable="speedScaleSlider.qSliderProps.disable.value"
+              :model-value="speedScaleSlider.qSliderProps.modelValue.value"
+              @update:model-value="
+                speedScaleSlider.qSliderProps['onUpdate:modelValue']
+              "
+              @change="speedScaleSlider.qSliderProps.onChange"
+              @wheel="speedScaleSlider.qSliderProps.onWheel"
+              @pan="speedScaleSlider.qSliderProps.onPan"
+            />
+            <QInput
+              dense
+              outlined
+              :disable="speedScaleSlider.qSliderProps.disable.value"
+              :model-value="
+                speedScaleSlider.state.currentValue.value != undefined
+                  ? speedScaleSlider.state.currentValue.value.toFixed(2)
+                  : speedScaleSlider.qSliderProps.min.value.toFixed(2)
+              "
+              aria-label="話速の数値"
+              @change="handleSpeedScaleChange"
+            />
+          </div>
+          <QFile
+            v-model="referenceFile"
+            outlined
+            dense
+            clearable
+            accept="audio/*"
+            label="音声参照（任意）"
+            hint="この行の話者・声質の参考音声。最大10MB"
+            :disable="locked || additionalSpeakersValue.length > 0"
+            @update:model-value="handleReferenceFileChange"
+          />
+          <p v-if="additionalSpeakersValue.length > 0" class="settings-hint">
+            音声参照は追加話者と同時に使えません。
+          </p>
+          <div v-if="referenceAudioName" class="row items-center q-gutter-sm">
+            <span class="text-caption">適用中: {{ referenceAudioName }}</span>
+            <QBtn
+              flat
+              dense
+              label="解除"
+              icon="clear"
+              :disable="locked"
+              @click="clearReferenceAudio"
+            />
+            <QBtn
+              flat
+              dense
+              :label="referenceAudioPlaying ? '停止' : '再生'"
+              :icon="referenceAudioPlaying ? 'stop' : 'play_arrow'"
+              :aria-label="
+                referenceAudioPlaying ? '音声参照を停止' : '音声参照を再生'
+              "
+              @click="
+                referenceAudioPlaying
+                  ? stopReferenceAudio()
+                  : playReferenceAudio()
+              "
+            />
+          </div>
+          <div v-if="referenceAudioName" class="strength-row">
+            <label>音声参照の強度</label>
+            <QSlider
+              v-model="referenceStrengthValue"
+              dense
+              snap
+              color="primary"
+              :min="0"
+              :max="1"
+              :step="0.1"
+              :disable="locked"
+              aria-label="音声参照の強度"
+              @change="
+                saveStrength('referenceStrength', referenceStrengthValue)
+              "
+            />
+            <span class="strength-value">{{
+              referenceStrengthValue.toFixed(1)
+            }}</span>
+          </div>
+          <QInput
+            v-model="captionText"
+            outlined
+            dense
+            autogrow
+            type="textarea"
+            label="キャプション（任意）"
+            hint="場面・話し方・感情など。空欄なら未指定"
+            :maxlength="2000"
+            counter
+            :disable="locked"
+            @update:model-value="saveCaption"
+          />
+          <div v-if="captionText.trim()" class="strength-row">
+            <label>キャプションの強度</label>
+            <QSlider
+              v-model="captionStrengthValue"
+              dense
+              snap
+              color="primary"
+              :min="0"
+              :max="1"
+              :step="0.1"
+              :disable="locked"
+              aria-label="キャプションの強度"
+              @change="saveStrength('captionStrength', captionStrengthValue)"
+            />
+            <span class="strength-value">{{
+              captionStrengthValue.toFixed(1)
+            }}</span>
+          </div>
+        </div>
+      </QCard>
+
+      <QExpansionItem
+        v-model="advancedExpanded"
+        label="詳細設定"
+        caption="ステップ・Schedule・音声長・シード・CFG"
+        icon="tune"
+        header-class="advanced-heading"
+        class="settings-card advanced-settings"
+      >
+        <div class="settings-card-body">
+          <QInput
+            v-model.number="stepsValue"
+            outlined
+            dense
+            type="number"
+            label="ステップ数 (1〜80)"
+            :hint="`既定値: ${defaultSteps}（このモデル）`"
+            :min="1"
+            :max="80"
+            :step="1"
+            :disable="locked"
+            class="irodori-number-input"
+            @change="saveSteps"
+          >
+            <template #prepend>
+              <QIcon
+                v-if="showStepsQualityWarning"
+                name="warning"
+                color="negative"
+                size="sm"
+                role="img"
+                aria-label="音声品質に関する警告"
+              >
+                <QTooltip
+                  >ステップ数がデフォルト未満のため、音声の質が低い可能性があります。</QTooltip
+                >
+              </QIcon>
+            </template>
+            <template #append>
+              <div
+                class="irodori-number-stepper"
+                role="group"
+                aria-label="ステップ数を調整"
+              >
+                <QBtn
+                  flat
+                  dense
+                  icon="expand_less"
+                  aria-label="ステップ数を1増やす"
+                  :disable="locked"
+                  @click.stop="adjustSteps(1)"
+                />
+                <QBtn
+                  flat
+                  dense
+                  icon="expand_more"
+                  aria-label="ステップ数を1減らす"
+                  :disable="locked"
+                  @click.stop="adjustSteps(-1)"
+                />
+              </div>
+            </template>
+          </QInput>
+          <QSelect
+            v-model="scheduleValue"
+            outlined
+            dense
+            label="Schedule"
+            :options="scheduleModes"
+            emit-value
+            map-options
+            :disable="locked"
+            @update:model-value="saveSchedule"
+          />
+          <QSelect
+            v-model="secondsValue"
+            outlined
+            dense
+            label="音声長"
+            :options="durations"
+            emit-value
+            map-options
+            :disable="locked"
+            @update:model-value="saveSeconds"
+          />
+          <QInput
+            v-model="seedText"
+            outlined
+            dense
+            label="シード（空欄＝ランダム）"
+            type="number"
+            :disable="locked"
+            class="irodori-number-input"
+            @update:model-value="saveSeed"
+          >
+            <template #append>
+              <div
+                class="irodori-number-stepper"
+                role="group"
+                aria-label="シードを調整"
+              >
+                <QBtn
+                  flat
+                  dense
+                  icon="expand_less"
+                  aria-label="シードを1増やす"
+                  :disable="locked"
+                  @click.stop="adjustSeed(1)"
+                />
+                <QBtn
+                  flat
+                  dense
+                  icon="expand_more"
+                  aria-label="シードを1減らす"
+                  :disable="locked"
+                  @click.stop="adjustSeed(-1)"
+                />
+              </div>
+            </template>
+          </QInput>
+          <div class="row q-col-gutter-sm irodori-cfg-row">
+            <QInput
+              v-model="cfgTextText"
+              outlined
+              dense
+              type="number"
+              label="テキストCFG"
+              hint="既定値: 3（0〜20）"
+              inputmode="decimal"
+              :min="0"
+              :max="20"
+              :step="0.5"
+              :disable="locked"
+              class="col-4 irodori-number-input"
+              @change="saveLineCfg('cfgText', cfgTextText)"
+            />
+            <QInput
+              v-model="cfgCaptionText"
+              outlined
+              dense
+              type="number"
+              label="キャプションCFG"
+              hint="既定値: 3（0〜20）"
+              inputmode="decimal"
+              :min="0"
+              :max="20"
+              :step="0.5"
+              :disable="locked"
+              class="col-4 irodori-number-input"
+              @change="saveLineCfg('cfgCaption', cfgCaptionText)"
+            />
+            <QInput
+              v-model="cfgSpeakerText"
+              outlined
+              dense
+              type="number"
+              label="スピーカーCFG"
+              hint="既定値: 5（0〜20）"
+              inputmode="decimal"
+              :min="0"
+              :max="20"
+              :step="0.5"
+              :disable="locked"
+              class="col-4 irodori-number-input"
+              @change="saveLineCfg('cfgSpeaker', cfgSpeakerText)"
+            />
+          </div>
+        </div>
+      </QExpansionItem>
+
+      <div v-if="error" role="alert" class="text-negative text-caption">
+        {{ error }}
+      </div>
+      <div v-if="lineError" role="alert" class="text-negative text-caption">
+        {{ lineError }}
+      </div>
+      <div v-if="!canPlayActiveLine" class="text-caption">
+        セリフを入力すると、この行を生成できます
+      </div>
+      <div v-if="linePlaying" class="text-caption">
+        この行を生成中。停止は上のボタンから
+      </div>
+      <div class="settings-action">
         <QBtn
           color="primary"
-          dense
           icon="play_arrow"
-          label="この行だけ生成して再生"
+          label="この行を生成して再生"
           :loading="linePlaying"
           :disable="locked || !canPlayActiveLine"
+          class="full-width"
           @click="playActiveLine"
         />
       </div>
-      <div v-if="!canPlayActiveLine" class="text-caption q-mb-sm">
-        セリフを入力すると、この1行だけの音声を生成できます
-      </div>
-      <div v-if="linePlaying" class="text-caption q-mb-sm">
-        この行を生成中。止めたいときは上の「停止」から
-      </div>
-      <div
-        v-if="lineError"
-        role="alert"
-        class="text-negative text-caption q-mb-sm"
-      >
-        {{ lineError }}
-      </div>
-      <div class="row q-col-gutter-sm irodori-cfg-row">
-        <QInput
-          v-model="cfgTextText"
-          outlined
-          dense
-          type="number"
-          label="テキストCFG"
-          hint="既定値: 3（0〜20）"
-          inputmode="decimal"
-          :min="0"
-          :max="20"
-          :step="0.5"
-          :disable="locked"
-          class="col-4 irodori-number-input"
-          @change="saveLineCfg('cfgText', cfgTextText)"
-        />
-        <QInput
-          v-model="cfgCaptionText"
-          outlined
-          dense
-          type="number"
-          label="キャプションCFG"
-          hint="既定値: 3（0〜20）"
-          inputmode="decimal"
-          :min="0"
-          :max="20"
-          :step="0.5"
-          :disable="locked"
-          class="col-4 irodori-number-input"
-          @change="saveLineCfg('cfgCaption', cfgCaptionText)"
-        />
-        <QInput
-          v-model="cfgSpeakerText"
-          outlined
-          dense
-          type="number"
-          label="スピーカーCFG"
-          hint="既定値: 5（0〜20）"
-          inputmode="decimal"
-          :min="0"
-          :max="20"
-          :step="0.5"
-          :disable="locked"
-          class="col-4 irodori-number-input"
-          @change="saveLineCfg('cfgSpeaker', cfgSpeakerText)"
-        />
-      </div>
-      <QInput
-        v-model.number="stepsValue"
-        outlined
-        dense
-        type="number"
-        label="ステップ数 (1〜80)"
-        :hint="`既定値: ${defaultSteps}（このモデル）`"
-        :min="1"
-        :max="80"
-        :step="1"
-        :disable="locked"
-        class="q-mb-sm irodori-number-input"
-        @change="saveSteps"
-      >
-        <template #prepend>
-          <QIcon
-            v-if="showStepsQualityWarning"
-            name="warning"
-            color="negative"
-            size="sm"
-            role="img"
-            aria-label="音声品質に関する警告"
-          >
-            <QTooltip>
-              ステップ数がデフォルト未満のため、音声の質が低い可能性があります。
-            </QTooltip>
-          </QIcon>
-        </template>
-        <template #append>
-          <div
-            class="irodori-number-stepper"
-            role="group"
-            aria-label="ステップ数を調整"
-          >
-            <QBtn
-              flat
-              dense
-              icon="expand_less"
-              aria-label="ステップ数を1増やす"
-              :disable="locked"
-              @click.stop="adjustSteps(1)"
-            />
-            <QBtn
-              flat
-              dense
-              icon="expand_more"
-              aria-label="ステップ数を1減らす"
-              :disable="locked"
-              @click.stop="adjustSteps(-1)"
-            />
-          </div>
-        </template>
-      </QInput>
-      <QSelect
-        v-model="scheduleValue"
-        outlined
-        dense
-        label="Schedule"
-        :options="scheduleModes"
-        emitValue
-        mapOptions
-        :disable="locked"
-        class="q-mb-sm"
-        @update:modelValue="saveSchedule"
-      />
-      <QSelect
-        v-model="secondsValue"
-        outlined
-        dense
-        label="音声長"
-        :options="durations"
-        emitValue
-        mapOptions
-        :disable="locked"
-        class="q-mb-sm"
-        @update:modelValue="saveSeconds"
-      />
-      <QInput
-        dense
-        borderless
-        maxlength="5"
-        :class="{ disabled: speedScaleSlider.qSliderProps.disable.value }"
-        :disable="speedScaleSlider.qSliderProps.disable.value"
-        :modelValue="
-          speedScaleSlider.state.currentValue.value != undefined
-            ? speedScaleSlider.state.currentValue.value.toFixed(2)
-            : speedScaleSlider.qSliderProps.min.value.toFixed(2)
-        "
-        @change="handleSpeedScaleChange"
-      >
-        <template #before
-          ><span class="text-body1 text-display">話速</span></template
-        >
-      </QInput>
-      <QSlider
-        dense
-        snap
-        color="primary"
-        trackSize="2px"
-        :min="speedScaleSlider.qSliderProps.min.value"
-        :max="speedScaleSlider.qSliderProps.max.value"
-        :step="speedScaleSlider.qSliderProps.step.value"
-        :disable="speedScaleSlider.qSliderProps.disable.value"
-        :modelValue="speedScaleSlider.qSliderProps.modelValue.value"
-        @update:modelValue="
-          speedScaleSlider.qSliderProps['onUpdate:modelValue']
-        "
-        @change="speedScaleSlider.qSliderProps.onChange"
-        @wheel="speedScaleSlider.qSliderProps.onWheel"
-        @pan="speedScaleSlider.qSliderProps.onPan"
-      />
-      <QInput
-        v-model="seedText"
-        outlined
-        dense
-        label="シード（空欄＝ランダム）"
-        type="number"
-        :disable="locked"
-        class="q-mb-sm irodori-number-input"
-        @update:modelValue="saveSeed"
-      >
-        <template #append>
-          <div
-            class="irodori-number-stepper"
-            role="group"
-            aria-label="シードを調整"
-          >
-            <QBtn
-              flat
-              dense
-              icon="expand_less"
-              aria-label="シードを1増やす"
-              :disable="locked"
-              @click.stop="adjustSeed(1)"
-            />
-            <QBtn
-              flat
-              dense
-              icon="expand_more"
-              aria-label="シードを1減らす"
-              :disable="locked"
-              @click.stop="adjustSeed(-1)"
-            />
-          </div>
-        </template>
-      </QInput>
-      <QFile
-        v-model="referenceFile"
-        outlined
-        dense
-        clearable
-        accept="audio/*"
-        label="音声リファレンス（任意）"
-        hint="この行の話者・声質の参考音声。最大10MB"
-        :disable="locked"
-        class="q-mb-sm"
-        @update:modelValue="handleReferenceFileChange"
-      />
-      <div v-if="referenceAudioName" class="text-caption q-mb-sm">
-        適用中: {{ referenceAudioName }}
-        <QBtn
-          flat
-          dense
-          label="解除"
-          icon="clear"
-          :disable="locked"
-          @click="clearReferenceAudio"
-        />
-        <QBtn
-          v-if="referenceAudioPlaying"
-          flat
-          dense
-          label="停止"
-          icon="stop"
-          aria-label="音声リファレンスを停止"
-          @click="stopReferenceAudio"
-        />
-        <QBtn
-          v-else
-          flat
-          dense
-          label="再生"
-          icon="play_arrow"
-          aria-label="音声リファレンスを再生"
-          @click="playReferenceAudio"
-        />
-      </div>
-      <div class="irodori-strength-control q-mb-md">
-        <div class="irodori-strength-label">
-          <span>音声参照の強度</span>
-          <span>{{ referenceStrengthValue.toFixed(1) }}</span>
-        </div>
-        <QSlider
-          v-model="referenceStrengthValue"
-          dense
-          snap
-          color="primary"
-          trackSize="2px"
-          :min="0"
-          :max="1"
-          :step="0.1"
-          :disable="locked || !referenceAudioName"
-          aria-label="音声参照の強度"
-          @change="saveStrength('referenceStrength', referenceStrengthValue)"
-        />
-        <div class="text-caption">0で音声参照なし、1で最大</div>
-      </div>
-      <QInput
-        v-model="captionText"
-        outlined
-        dense
-        autogrow
-        type="textarea"
-        label="キャプション（任意）"
-        hint="このセリフの場面・話し方・感情など。空欄なら未指定"
-        :maxlength="2000"
-        counter
-        :disable="locked"
-        class="q-mb-sm"
-        @update:modelValue="saveCaption"
-      />
-      <div class="irodori-strength-control">
-        <div class="irodori-strength-label">
-          <span>指示キャプションの強度</span>
-          <span>{{ captionStrengthValue.toFixed(1) }}</span>
-        </div>
-        <QSlider
-          v-model="captionStrengthValue"
-          dense
-          snap
-          color="primary"
-          trackSize="2px"
-          :min="0"
-          :max="1"
-          :step="0.1"
-          :disable="locked || !captionText.trim()"
-          aria-label="指示キャプションの強度"
-          @change="saveStrength('captionStrength', captionStrengthValue)"
-        />
-        <div class="text-caption">0で指示なし、1で最大</div>
-      </div>
-    </div>
-    <div v-if="error" role="alert" class="text-negative text-caption q-mt-sm">
-      {{ error }}
     </div>
   </section>
 </template>
@@ -324,6 +450,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useStore } from "@/store";
+import CharacterButton from "@/components/CharacterButton.vue";
 import { createEngineUrl } from "@/domain/url";
 import { fetchIrodoriDefaultSteps } from "@/helpers/irodoriEngine";
 import {
@@ -336,6 +463,7 @@ import {
   IRODORI_DEFAULT_CFG_TEXT,
   IRODORI_DEFAULT_CAPTION_STRENGTH,
   IRODORI_DEFAULT_REFERENCE_STRENGTH,
+  IRODORI_DEFAULT_SPEAKER_STRENGTH,
   IRODORI_DEFAULT_SEED,
   IRODORI_DEFAULT_SCHEDULE,
   irodoriDefaultSteps,
@@ -347,7 +475,7 @@ import {
 } from "@/helpers/previewSliderHelper";
 import type { EngineManifest } from "@/openapi";
 import { SLIDER_PARAMETERS } from "@/store/utility";
-import type { AudioKey, EngineId } from "@/type/preload";
+import type { AudioKey, EngineId, Voice } from "@/type/preload";
 
 const props = defineProps<{ engineId: EngineId; activeAudioKey: AudioKey }>();
 const store = useStore();
@@ -422,8 +550,73 @@ const irodori = computed(() => {
     captionStrength: value?.captionStrength ?? IRODORI_DEFAULT_CAPTION_STRENGTH,
     referenceStrength:
       value?.referenceStrength ?? IRODORI_DEFAULT_REFERENCE_STRENGTH,
+    speakerStrength: value?.speakerStrength ?? IRODORI_DEFAULT_SPEAKER_STRENGTH,
+    additionalSpeakers:
+      value?.additionalSpeakers ??
+      (value?.secondarySpeakerStyleId != null
+        ? [
+            {
+              styleId: value.secondarySpeakerStyleId,
+              strength: value.secondarySpeakerStrength ?? 0.5,
+            },
+          ]
+        : []),
   };
 });
+type AdditionalSpeaker = { styleId: number; strength: number };
+const additionalSpeakersValue = ref<AdditionalSpeaker[]>([]);
+async function selectPrimaryVoice(voice: Voice | undefined) {
+  if (!voice) return;
+  if (
+    audioItem.value?.voice.engineId === voice.engineId &&
+    audioItem.value.voice.styleId === voice.styleId
+  ) return;
+  try {
+    await store.actions.COMMAND_MULTI_CHANGE_VOICE({
+      audioKeys: [props.activeAudioKey],
+      voice,
+    });
+    error.value = "";
+    const remaining = additionalSpeakersValue.value.filter(
+      (entry) => entry.styleId !== voice.styleId,
+    );
+    if (remaining.length !== additionalSpeakersValue.value.length) {
+      saveAdditionalSpeakers(remaining);
+    }
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : String(cause);
+  }
+}
+function additionalCharacterInfos(index: number) {
+  const selectedElsewhere = new Set(
+    additionalSpeakersValue.value
+      .filter((_, entryIndex) => entryIndex !== index)
+      .map((entry) => entry.styleId),
+  );
+  return (store.state.characterInfos[props.engineId] ?? []).filter(
+    (character) =>
+      character.metas.speakerName !== "話者なし" &&
+      character.metas.styles.some(
+        (style) =>
+          style.styleId !== audioItem.value?.voice.styleId &&
+          !selectedElsewhere.has(style.styleId),
+      ),
+  );
+}
+function additionalVoice(styleId: number): Voice | undefined {
+  const character = (store.state.characterInfos[props.engineId] ?? []).find(
+    (item) => item.metas.styles.some((style) => style.styleId === styleId),
+  );
+  const style = character?.metas.styles.find(
+    (item) => item.styleId === styleId,
+  );
+  if (!character || !style) return undefined;
+  return {
+    engineId: props.engineId,
+    speakerId: character.metas.speakerUuid,
+    styleId: style.styleId,
+  };
+}
 const seedText = ref("");
 const stepsValue = ref(IRODORI_DEFAULT_STEPS);
 const scheduleValue = ref<"linear" | "sway">(IRODORI_DEFAULT_SCHEDULE);
@@ -434,6 +627,8 @@ const cfgCaptionText = ref("");
 const cfgSpeakerText = ref("");
 const captionStrengthValue = ref(IRODORI_DEFAULT_CAPTION_STRENGTH);
 const referenceStrengthValue = ref(IRODORI_DEFAULT_REFERENCE_STRENGTH);
+const speakerStrengthValue = ref(IRODORI_DEFAULT_SPEAKER_STRENGTH);
+const advancedExpanded = ref(false);
 watch(
   irodori,
   (value) => {
@@ -447,6 +642,10 @@ watch(
     cfgSpeakerText.value = String(value.cfgSpeaker);
     captionStrengthValue.value = value.captionStrength;
     referenceStrengthValue.value = value.referenceStrength;
+    speakerStrengthValue.value = value.speakerStrength;
+    additionalSpeakersValue.value = value.additionalSpeakers.map((entry) => ({
+      ...entry,
+    }));
   },
   { immediate: true, deep: true },
 );
@@ -553,22 +752,72 @@ function saveCaption() {
   });
   clearAudioCache();
 }
-type StrengthKey = "captionStrength" | "referenceStrength";
+type StrengthKey = "captionStrength" | "referenceStrength" | "speakerStrength";
+function saveAdditionalSpeakers(entries: AdditionalSpeaker[]) {
+  if (
+    entries.length > 3 ||
+    new Set(entries.map((entry) => entry.styleId)).size !== entries.length ||
+    entries.some((entry) => entry.styleId === audioItem.value?.voice.styleId)
+  ) {
+    error.value = "追加話者は重複なしで最大3人までです";
+    return;
+  }
+  additionalSpeakersValue.value = entries;
+  error.value = "";
+  clearAudioCache();
+  void store.actions.COMMAND_SET_IRODORI_SETTINGS({
+    audioKey: props.activeAudioKey,
+    irodori: {
+      ...irodori.value,
+      additionalSpeakers: entries,
+      secondarySpeakerStyleId: null,
+    },
+  });
+}
+function selectAdditionalSpeaker(index: number, voice: Voice | undefined) {
+  const entries = additionalSpeakersValue.value.map((entry) => ({ ...entry }));
+  if (!voice) {
+    if (index < entries.length) entries.splice(index, 1);
+  } else if (index === entries.length && entries.length < 3) {
+    entries.push({ styleId: voice.styleId, strength: 0.5 });
+  } else if (index < entries.length) {
+    entries[index].styleId = voice.styleId;
+  }
+  saveAdditionalSpeakers(entries);
+}
+function saveAdditionalStrength(index: number, input: number | null) {
+  const strength = Number(input);
+  if (!Number.isFinite(strength) || strength < 0 || strength > 1) {
+    error.value = "強度は0〜1の数値だけ指定できます";
+    additionalSpeakersValue.value = irodori.value.additionalSpeakers.map(
+      (entry) => ({ ...entry }),
+    );
+    return;
+  }
+  const entries = additionalSpeakersValue.value.map((entry) => ({ ...entry }));
+  if (!entries[index]) return;
+  entries[index].strength = Number(strength.toFixed(2));
+  saveAdditionalSpeakers(entries);
+}
 function saveStrength(key: StrengthKey, input: number | null) {
   const value = Number(input);
   if (!Number.isFinite(value) || value < 0 || value > 1) {
     error.value = "強度は0〜1の数値だけ指定できます";
     if (key === "captionStrength") {
       captionStrengthValue.value = irodori.value.captionStrength;
-    } else {
+    } else if (key === "referenceStrength") {
       referenceStrengthValue.value = irodori.value.referenceStrength;
+    } else {
+      speakerStrengthValue.value = irodori.value.speakerStrength;
     }
     return;
   }
   error.value = "";
-  const normalized = Number(value.toFixed(1));
+  const normalized = Number(value.toFixed(key === "speakerStrength" ? 2 : 1));
   if (key === "captionStrength") captionStrengthValue.value = normalized;
-  else referenceStrengthValue.value = normalized;
+  else if (key === "referenceStrength")
+    referenceStrengthValue.value = normalized;
+  else speakerStrengthValue.value = normalized;
   clearAudioCache();
   void store.actions.COMMAND_SET_IRODORI_SETTINGS({
     audioKey: props.activeAudioKey,
@@ -805,16 +1054,143 @@ const showStepsQualityWarning = computed(
 
 <style scoped>
 .irodori-settings {
-  border-left: 3px solid #6c63ff;
-  background: linear-gradient(
-    180deg,
-    rgba(108, 99, 255, 0.08),
-    transparent 65%
-  );
+  border-left: 3px solid var(--color-primary);
+  background: var(--color-background);
+  color: var(--color-display);
 }
-.irodori-settings :deep(.q-btn--standard) {
-  background: #6c63ff;
-  color: #fff;
+.settings-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.settings-title {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 700;
+  line-height: 1.4;
+}
+.settings-card {
+  overflow: hidden;
+  border: 1px solid rgba(var(--color-display-rgb), 0.16);
+  border-radius: 10px;
+  background: var(--color-surface);
+  color: var(--color-display);
+}
+.settings-card-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  background: rgba(var(--color-primary-rgb), 0.07);
+  font-weight: 700;
+}
+.settings-card-heading small,
+.settings-hint {
+  color: rgba(var(--color-display-rgb), 0.65);
+  font-size: 0.75rem;
+  font-weight: 400;
+}
+.settings-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+}
+.settings-label {
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+.primary-voice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-weight: 600;
+}
+.primary-voice img {
+  width: 32px;
+  height: 32px;
+  object-fit: cover;
+  border-radius: 5px;
+}
+.strength-row,
+.additional-speaker-row {
+  display: grid;
+  grid-template-columns: minmax(112px, 1fr) minmax(88px, 1.3fr) 74px 28px;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.strength-row label {
+  font-size: 0.83rem;
+}
+.strength-row > :deep(.q-slider) {
+  min-width: 0;
+}
+.strength-row > :deep(.q-field),
+.additional-speaker-row > :deep(.q-field) {
+  width: 74px;
+  min-width: 0;
+}
+.strength-row :deep(.q-field__native),
+.additional-speaker-row :deep(.q-field__native) {
+  min-width: 0;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.primary-strength-row,
+.speed-row {
+  grid-template-columns: minmax(112px, 1fr) minmax(88px, 1.3fr) 74px;
+}
+.additional-strength {
+  min-width: 0;
+}
+.additional-speaker-row > :deep(.character-button) {
+  width: 100%;
+}
+.add-speaker-row > :deep(.character-button) {
+  width: 100%;
+  border-style: dashed;
+}
+.settings-hint {
+  margin: 0;
+}
+.strength-value {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.advanced-settings {
+  border: 1px solid rgba(var(--color-display-rgb), 0.16);
+}
+.advanced-settings :deep(.q-item) {
+  background: rgba(var(--color-primary-rgb), 0.06);
+  color: var(--color-display);
+}
+.settings-action {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  padding: 8px 0;
+  background: var(--color-background);
+}
+.settings-action :deep(.q-btn) {
+  min-height: 44px;
+}
+@media (max-width: 520px) {
+  .strength-row,
+  .additional-speaker-row {
+    grid-template-columns: minmax(90px, 1fr) minmax(70px, 1fr) 64px 24px;
+    gap: 5px;
+  }
+  .primary-strength-row,
+  .speed-row {
+    grid-template-columns: minmax(90px, 1fr) minmax(70px, 1fr) 64px;
+  }
+  .strength-row > :deep(.q-field),
+  .additional-speaker-row > :deep(.q-field) {
+    width: 64px;
+  }
 }
 .irodori-settings :deep(.irodori-number-input .q-field__control) {
   padding-right: 0;
@@ -845,19 +1221,6 @@ const showStepsQualityWarning = computed(
 }
 .irodori-settings :deep(.irodori-cfg-row) {
   align-items: stretch;
-}
-.irodori-strength-control {
-  padding: 0 4px;
-}
-.irodori-strength-label {
-  display: flex;
-  justify-content: space-between;
-  color: rgba(0, 0, 0, 0.72);
-  font-size: 0.875rem;
-  line-height: 1.25;
-}
-.irodori-strength-control :deep(.q-slider) {
-  margin: 0 4px;
 }
 .irodori-settings :deep(.irodori-number-input .q-field__native[type="number"]) {
   appearance: textfield;
@@ -890,18 +1253,18 @@ const showStepsQualityWarning = computed(
   height: 15px;
   min-height: 15px;
   padding: 0;
-  border: 1px solid rgba(108, 99, 255, 0.42);
+  border: 1px solid rgba(var(--color-primary-rgb), 0.42);
   border-radius: 4px;
-  color: #6c63ff;
-  background: rgba(108, 99, 255, 0.08);
+  color: var(--color-primary);
+  background: rgba(var(--color-primary-rgb), 0.08);
   transition:
     background-color 120ms ease,
     color 120ms ease,
     transform 120ms ease;
 }
 .irodori-number-stepper :deep(.q-btn:hover) {
-  background: #6c63ff;
-  color: #fff;
+  background: var(--color-primary);
+  color: var(--color-display-on-primary);
 }
 .irodori-number-stepper :deep(.q-btn:active) {
   transform: scale(0.92);
@@ -914,18 +1277,15 @@ const showStepsQualityWarning = computed(
   :deep(.irodori-number-input .q-field__native[type="number"]) {
   color-scheme: dark;
 }
-:global(:root[is-dark-theme="true"]) .irodori-strength-label {
-  color: rgba(255, 255, 255, 0.82);
-}
 :global(:root[is-dark-theme="true"]) .irodori-number-stepper :deep(.q-btn) {
-  border-color: rgba(168, 161, 255, 0.58);
-  color: #b0aaff;
-  background: rgba(168, 161, 255, 0.12);
+  border-color: rgba(var(--color-primary-rgb), 0.58);
+  color: var(--color-primary);
+  background: rgba(var(--color-primary-rgb), 0.12);
 }
 :global(:root[is-dark-theme="true"])
   .irodori-number-stepper
   :deep(.q-btn:hover) {
-  background: #8c83ff;
-  color: #1c1c28;
+  background: var(--color-primary);
+  color: var(--color-display-on-primary);
 }
 </style>

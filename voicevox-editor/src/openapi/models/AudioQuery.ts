@@ -53,6 +53,14 @@ export interface AudioQuery {
     irodoriCfgSpeaker?: number;
     /** Per-item Irodori reference-audio condition strength. */
     irodoriReferenceStrength?: number;
+    /** Per-item Irodori speaker cassette condition strength. */
+    irodoriSpeakerStrength?: number;
+    /** Per-item second speaker style ID. */
+    irodoriSecondarySpeakerStyleId?: number;
+    /** Per-item second speaker cassette strength. */
+    irodoriSecondarySpeakerStrength?: number;
+    /** Up to three additional speaker conditions for this line. */
+    irodoriAdditionalSpeakers?: Array<{ styleId: number; strength: number }>;
     /** Optional Irodori-TTS reference audio data URL. */
     irodoriReferenceAudio?: IrodoriReferenceAudio;
     /**
@@ -167,6 +175,10 @@ export function AudioQueryFromJSONTyped(json: any, ignoreDiscriminator: boolean)
         'irodoriCfgCaption': !exists(json, 'irodori_cfg_caption') ? undefined : json['irodori_cfg_caption'],
         'irodoriCfgSpeaker': !exists(json, 'irodori_cfg_speaker') ? undefined : json['irodori_cfg_speaker'],
         'irodoriReferenceStrength': !exists(json, 'irodori_reference_strength') ? undefined : json['irodori_reference_strength'],
+        'irodoriSpeakerStrength': !exists(json, 'irodori_speaker_strength') ? undefined : json['irodori_speaker_strength'],
+        'irodoriSecondarySpeakerStyleId': !exists(json, 'irodori_secondary_speaker_style_id') ? undefined : json['irodori_secondary_speaker_style_id'],
+        'irodoriSecondarySpeakerStrength': !exists(json, 'irodori_secondary_speaker_strength') ? undefined : json['irodori_secondary_speaker_strength'],
+        'irodoriAdditionalSpeakers': !exists(json, 'irodori_additional_speakers') ? undefined : json['irodori_additional_speakers'].map((entry: any) => ({ styleId: entry['style_id'], strength: entry['strength'] })),
         'irodoriReferenceAudio': !exists(json, 'irodori_reference_audio') ? undefined : json['irodori_reference_audio'],
         'accentPhrases': ((json['accent_phrases'] as Array<any>).map(AccentPhraseFromJSON)),
         'speedScale': json['speedScale'],
@@ -201,6 +213,10 @@ export function AudioQueryToJSON(value?: AudioQuery | null): any {
         'irodori_cfg_caption': value.irodoriCfgCaption,
         'irodori_cfg_speaker': value.irodoriCfgSpeaker,
         'irodori_reference_strength': value.irodoriReferenceStrength,
+        'irodori_speaker_strength': value.irodoriSpeakerStrength,
+        'irodori_secondary_speaker_style_id': value.irodoriSecondarySpeakerStyleId,
+        'irodori_secondary_speaker_strength': value.irodoriSecondarySpeakerStrength,
+        'irodori_additional_speakers': value.irodoriAdditionalSpeakers?.map((entry) => ({ style_id: entry.styleId, strength: entry.strength })),
         'irodori_reference_audio': value.irodoriReferenceAudio,
         'accent_phrases': ((value.accentPhrases as Array<any>).map(AccentPhraseToJSON)),
         'speedScale': value.speedScale,

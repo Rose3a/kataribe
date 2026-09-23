@@ -1,7 +1,14 @@
 <template>
   <!-- TODO: 複数エンジン対応 -->
   <!-- TODO: allEngineStateが "ERROR" のときエラーになったエンジンを探してトーストで案内 -->
-  <div v-if="allEngineState === 'FAILED_STARTING'" class="waiting-engine">
+  <div v-if="startupError" class="waiting-engine">
+    <div>
+      <div>起動の準備に失敗しました（{{ startupStage }}）</div>
+      <div class="q-my-sm">{{ startupError }}</div>
+      <QBtn outline @click="reloadApp">再読み込みする</QBtn>
+    </div>
+  </div>
+  <div v-else-if="allEngineState === 'FAILED_STARTING'" class="waiting-engine">
     <div>エンジンの起動に失敗しました。エンジンの再起動をお試しください。</div>
   </div>
   <div
@@ -14,15 +21,13 @@
       <QSpinner color="primary" size="2.5rem" />
       <div class="q-mt-xs">
         {{
-          allEngineState === "STARTING"
-            ? "エンジン起動中・・・"
-            : "データ準備中・・・"
+          allEngineState === "STARTING" ? "エンジン起動中・・・" : startupStage
         }}
       </div>
 
       <template v-if="isEngineWaitingLong">
         <QSeparator spaced />
-        エンジン起動に時間がかかっています。<br />
+        準備に時間がかかっています。<br />
         <QBtn
           v-if="isMultipleEngine"
           outline
@@ -44,6 +49,8 @@ import type { EngineState } from "@/store/type";
 const store = useStore();
 const props = defineProps<{
   isCompletedInitialStartup: boolean;
+  startupError: string;
+  startupStage: string;
 }>();
 
 const reloadingLocked = computed(() => store.state.reloadingLock);
@@ -75,20 +82,33 @@ const allEngineState = computed(() => {
 
 const isEngineWaitingLong = ref<boolean>(false);
 let engineTimer: number | undefined = undefined;
-watch(allEngineState, (newEngineState) => {
-  if (engineTimer != undefined) {
-    clearTimeout(engineTimer);
-    engineTimer = undefined;
+watch(
+  [allEngineState, () => props.isCompletedInitialStartup],
+  ([newEngineState, completed]) => {
+    if (engineTimer != undefined) {
+      clearTimeout(engineTimer);
+      engineTimer = undefined;
+    }
+    if (newEngineState === "STARTING" || !completed) {
+      isEngineWaitingLong.value = false;
+      engineTimer = window.setTimeout(() => {
+        isEngineWaitingLong.value = true;
+      }, 30000);
+    } else {
+      isEngineWaitingLong.value = false;
+    }
+  },
+  { immediate: true },
+);
+
+const reloadApp = () => {
+  try {
+    sessionStorage.removeItem("irodori-editor-startup-retries");
+  } catch {
+    // Manual reload remains available when storage is disabled.
   }
-  if (newEngineState === "STARTING") {
-    isEngineWaitingLong.value = false;
-    engineTimer = window.setTimeout(() => {
-      isEngineWaitingLong.value = true;
-    }, 30000);
-  } else {
-    isEngineWaitingLong.value = false;
-  }
-});
+  window.location.reload();
+};
 
 const reloadAppWithMultiEngineOffMode = () => {
   void store.actions.CHECK_EDITED_AND_NOT_SAVE({

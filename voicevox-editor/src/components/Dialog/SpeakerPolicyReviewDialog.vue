@@ -35,7 +35,33 @@
             <p>
               新しく検出または条件が更新された話者の利用条件です。話者ごとに条件が異なるため、使用前に確認してください。
             </p>
-            <QCard v-for="speaker in speakers" :key="speaker.id" flat bordered>
+            <div v-if="pageCount > 1" class="row items-center q-gutter-sm">
+              <QBtn
+                flat
+                dense
+                label="前へ"
+                :disable="pageIndex === 0"
+                @click="pageIndex--"
+              />
+              <span
+                >{{ pageIndex + 1 }} / {{ pageCount }} ページ（全{{
+                  speakers.length
+                }}話者）</span
+              >
+              <QBtn
+                flat
+                dense
+                label="次へ"
+                :disable="pageIndex >= pageCount - 1"
+                @click="pageIndex++"
+              />
+            </div>
+            <QCard
+              v-for="speaker in visibleSpeakers"
+              :key="speaker.id"
+              flat
+              bordered
+            >
               <QCardSection>
                 <div class="text-h6">{{ speaker.name }}</div>
               </QCardSection>
@@ -56,6 +82,7 @@
 </template>
 
 <script setup lang="ts">
+import { computed, ref, watch } from "vue";
 export type SpeakerPolicyReview = {
   id: string;
   name: string;
@@ -65,9 +92,30 @@ export type SpeakerPolicyReview = {
 
 const dialogOpened = defineModel<boolean>("dialogOpened", { default: false });
 
-defineProps<{
+const props = defineProps<{
   speakers: SpeakerPolicyReview[];
 }>();
+
+const pageIndex = ref(0);
+const pageSize = 20;
+const pageCount = computed(() =>
+  Math.max(1, Math.ceil(props.speakers.length / pageSize)),
+);
+const visibleSpeakers = computed(() =>
+  props.speakers.slice(
+    pageIndex.value * pageSize,
+    (pageIndex.value + 1) * pageSize,
+  ),
+);
+watch(
+  () => props.speakers,
+  () => {
+    pageIndex.value = 0;
+  },
+);
+watch(dialogOpened, (opened) => {
+  if (opened) pageIndex.value = 0;
+});
 
 defineEmits<{
   defer: [];

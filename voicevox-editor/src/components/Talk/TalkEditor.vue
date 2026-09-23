@@ -5,7 +5,11 @@
     <QPageContainer>
       <QPage class="main-row-panes">
         <ProgressView />
-        <EngineStartupOverlay :isCompletedInitialStartup />
+        <EngineStartupOverlay
+          :isCompletedInitialStartup
+          :startupError
+          :startupStage
+        />
 
         <QSplitter
           horizontal
@@ -175,6 +179,8 @@ import { handlePossiblyNotMorphableError } from "@/store/audioGenerate";
 const props = defineProps<{
   isEnginesReady: boolean;
   isProjectFileLoaded: boolean | "waiting";
+  startupError: string;
+  startupStage: string;
 }>();
 
 const store = useStore();

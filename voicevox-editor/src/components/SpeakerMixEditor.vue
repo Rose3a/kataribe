@@ -205,9 +205,19 @@
                   :step="0.01"
                   @update:model-value="setStrength(entry, $event)"
                 />
-                <div class="entry-value">
-                  {{ Math.round(entry.strength * 100) }}%
-                </div>
+                <QInput
+                  class="entry-value"
+                  :model-value="entry.strength"
+                  type="number"
+                  dense
+                  outlined
+                  :min="0"
+                  :max="1"
+                  :step="0.01"
+                  suffix="/ 1"
+                  aria-label="話者の強度"
+                  @change="setStrength(entry, Number($event))"
+                />
                 <QBtn
                   flat
                   dense
@@ -479,7 +489,9 @@ const previewIsStale = computed(
     previewHistory.value[0].fingerprint !== currentFingerprint.value,
 );
 const setStrength = (entry: Contribution, value: number | null) => {
-  entry.strength = Math.max(0, Math.min(1, Number(value ?? 0)));
+  const number = Number(value);
+  if (!Number.isFinite(number)) return;
+  entry.strength = Math.round(Math.max(0, Math.min(1, number)) * 100) / 100;
 };
 
 function addSpeaker(id: string, token: number) {
@@ -1090,7 +1102,7 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 .inspector-content .entry-value {
-  width: 42px;
+  width: 94px;
   text-align: right;
   color: var(--color-display);
   font-variant-numeric: tabular-nums;

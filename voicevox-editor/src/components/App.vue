@@ -13,6 +13,8 @@
           :key="openedEditor"
           :isEnginesReady
           :isProjectFileLoaded
+          :startupError
+          :startupStage
         />
       </KeepAlive>
       <IrodoriEthicsDialog
@@ -234,77 +236,118 @@ watchEffect(() => {
 const { hotkeyManager } = useHotkeyManager();
 const isEnginesReady = ref(false);
 const isProjectFileLoaded = ref<boolean | "waiting">("waiting");
+const startupError = ref("");
+const startupStage = ref("設定を読み込み中・・・");
+const startupRetryKey = "irodori-editor-startup-retries";
+const maxStartupRetries = 3;
 onMounted(async () => {
-  const queryString = window.location.search;
-  const urlParams = new URLSearchParams(queryString);
+  try {
+    const queryString = window.location.search;
+    const urlParams = new URLSearchParams(queryString);
 
-  await store.actions.INIT_VUEX();
+    await store.actions.INIT_VUEX();
 
-  // ショートカットキーの設定を登録
-  const hotkeySettings = store.state.hotkeySettings;
-  hotkeyManager.load(structuredClone(toRaw(hotkeySettings)));
+    // ショートカットキーの設定を登録
+    const hotkeySettings = store.state.hotkeySettings;
+    hotkeyManager.load(structuredClone(toRaw(hotkeySettings)));
 
-  // エンジンの初期化開始
+    // エンジンの初期化開始
 
-  // エンジン情報取得
-  await store.actions.PULL_AND_INIT_ENGINE_INFOS();
+    // エンジン情報取得
+    await store.actions.PULL_AND_INIT_ENGINE_INFOS();
 
-  // URLパラメータに従ってマルチエンジンをオフにする
-  const isMultiEngineOffMode = urlParams.get("isMultiEngineOffMode") === "true";
-  void store.actions.SET_IS_MULTI_ENGINE_OFF_MODE(isMultiEngineOffMode);
+    // URLパラメータに従ってマルチエンジンをオフにする
+    const isMultiEngineOffMode =
+      urlParams.get("isMultiEngineOffMode") === "true";
+    void store.actions.SET_IS_MULTI_ENGINE_OFF_MODE(isMultiEngineOffMode);
 
-  // マルチエンジンオフモードのときはデフォルトエンジンだけにする
-  let engineIds: EngineId[];
-  if (isMultiEngineOffMode) {
-    const main = Object.values(store.state.engineInfos).find(
-      (engine) => engine.isDefault,
-    );
-    if (!main) {
-      throw new Error("No default engine found");
-    }
-    engineIds = [main.uuid];
-  } else {
-    engineIds = store.state.engineIds;
-  }
-  await store.actions.LOAD_USER_CHARACTER_ORDER();
-  await store.actions.POST_ENGINE_START({
-    engineIds,
-  });
-
-  // 辞書を同期
-  await store.actions.SYNC_ALL_USER_DICT();
-
-  isEnginesReady.value = true;
-
-  if (isIrodoriFork) {
-    if (
-      store.state.irodoriEthicsNoticeVersion !== IRODORI_ETHICS_NOTICE_VERSION
-    ) {
-      isIrodoriEthicsDialogOpen.value = true;
+    // マルチエンジンオフモードのときはデフォルトエンジンだけにする
+    let engineIds: EngineId[];
+    if (isMultiEngineOffMode) {
+      const main = Object.values(store.state.engineInfos).find(
+        (engine) => engine.isDefault,
+      );
+      if (!main) {
+        throw new Error("No default engine found");
+      }
+      engineIds = [main.uuid];
     } else {
-      openSpeakerPolicyReviewIfNeeded();
+      engineIds = store.state.engineIds;
     }
-  }
-
-  // エンジン起動後にダイアログを開く
-  void store.actions.SET_DIALOG_OPEN({
-    isAcceptRetrieveTelemetryDialogOpen:
-      !isIrodoriFork && store.state.acceptRetrieveTelemetry === "Unconfirmed",
-    isAcceptTermsDialogOpen:
-      !isIrodoriFork &&
-      import.meta.env.MODE !== "development" &&
-      store.state.acceptTerms !== "Accepted",
-  });
-
-  // プロジェクトファイルが指定されていればロード
-  const projectFilePath = await store.actions.GET_INITIAL_PROJECT_FILE_PATH();
-  if (projectFilePath != undefined) {
-    isProjectFileLoaded.value = await store.actions.LOAD_PROJECT_FILE({
-      type: "path",
-      filePath: projectFilePath,
+    await store.actions.LOAD_USER_CHARACTER_ORDER();
+    startupStage.value = "話者情報を読み込み中・・・";
+    const engineStart = await store.actions.POST_ENGINE_START({
+      engineIds,
+      onCharacterProgress: (_engineId, completed, total) => {
+        startupStage.value = `話者情報を読み込み中・・・ ${completed}/${total}`;
+      },
     });
-  } else {
-    isProjectFileLoaded.value = false;
+    if (!engineStart.success) {
+      throw new Error("エンジンの準備が完了しませんでした");
+    }
+
+    // 辞書を同期
+    startupStage.value = "辞書を同期中・・・";
+    await store.actions.SYNC_ALL_USER_DICT();
+
+    isEnginesReady.value = true;
+
+    if (isIrodoriFork) {
+      if (
+        store.state.irodoriEthicsNoticeVersion !== IRODORI_ETHICS_NOTICE_VERSION
+      ) {
+        isIrodoriEthicsDialogOpen.value = true;
+      } else {
+        openSpeakerPolicyReviewIfNeeded();
+      }
+    }
+
+    // エンジン起動後にダイアログを開く
+    void store.actions.SET_DIALOG_OPEN({
+      isAcceptRetrieveTelemetryDialogOpen:
+        !isIrodoriFork && store.state.acceptRetrieveTelemetry === "Unconfirmed",
+      isAcceptTermsDialogOpen:
+        !isIrodoriFork &&
+        import.meta.env.MODE !== "development" &&
+        store.state.acceptTerms !== "Accepted",
+    });
+
+    // プロジェクトファイルが指定されていればロード
+    const projectFilePath = await store.actions.GET_INITIAL_PROJECT_FILE_PATH();
+    if (projectFilePath != undefined) {
+      isProjectFileLoaded.value = await store.actions.LOAD_PROJECT_FILE({
+        type: "path",
+        filePath: projectFilePath,
+      });
+    } else {
+      isProjectFileLoaded.value = false;
+    }
+    if (isIrodoriFork) {
+      try {
+        sessionStorage.removeItem(startupRetryKey);
+      } catch {
+        // Storage may be disabled by the browser; startup itself succeeded.
+      }
+    }
+  } catch (error) {
+    window.backend.logError(
+      error,
+      `Editor startup failed: ${startupStage.value}`,
+    );
+    startupError.value = error instanceof Error ? error.message : String(error);
+    if (isIrodoriFork) {
+      try {
+        const previous = Number(sessionStorage.getItem(startupRetryKey) ?? 0);
+        if (Number.isFinite(previous) && previous < maxStartupRetries) {
+          const attempt = previous + 1;
+          sessionStorage.setItem(startupRetryKey, String(attempt));
+          startupStage.value += `・自動再試行 ${attempt}/${maxStartupRetries}`;
+          window.setTimeout(() => window.location.reload(), 1000 * attempt);
+        }
+      } catch {
+        // Keep the visible error and manual reload when storage is unavailable.
+      }
+    }
   }
 });
 </script>

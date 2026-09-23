@@ -68,6 +68,14 @@ export const audioItemSchema = z.object({
     cfgCaption: z.number().min(0).max(20).optional(),
     cfgSpeaker: z.number().min(0).max(20).optional(),
     referenceStrength: z.number().min(0).max(1).optional(),
+    speakerStrength: z.number().min(0).max(1).optional(),
+    // Previous projects may still contain one additional speaker.
+    secondarySpeakerStyleId: z.number().int().nullable().optional(),
+    secondarySpeakerStrength: z.number().min(0).max(1).optional(),
+    additionalSpeakers: z.array(z.object({
+      styleId: z.number().int(),
+      strength: z.number().min(0).max(1),
+    })).max(3).optional(),
     // prettier-ignore
     referenceAudio: z.object({
       dataUrl: z.string(),

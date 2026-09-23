@@ -110,6 +110,10 @@ export type AudioItem = {
     cfgCaption?: number;
     cfgSpeaker?: number;
     referenceStrength?: number;
+    speakerStrength?: number;
+    secondarySpeakerStyleId?: number | null;
+    secondarySpeakerStrength?: number;
+    additionalSpeakers?: { styleId: number; strength: number }[];
     referenceAudio?: {
       dataUrl: string;
       mime?: string;
@@ -203,7 +207,10 @@ export type AudioStoreTypes = {
   };
 
   LOAD_CHARACTER: {
-    action(payload: { engineId: EngineId }): void;
+    action(payload: {
+      engineId: EngineId;
+      onProgress?: (completed: number, total: number) => void;
+    }): void;
   };
 
   SET_CHARACTER_INFOS: {
@@ -520,7 +527,10 @@ export type AudioCommandStoreState = {
 export type AudioCommandStoreTypes = {
   COMMAND_SET_IRODORI_SETTINGS: {
     mutation: { audioKey: AudioKey; irodori: AudioItem["irodori"] };
-    action(payload: { audioKey: AudioKey; irodori: AudioItem["irodori"] }): void;
+    action(payload: {
+      audioKey: AudioKey;
+      irodori: AudioItem["irodori"];
+    }): void;
   };
   COMMAND_REGISTER_AUDIO_ITEM: {
     mutation: {
@@ -1900,7 +1910,14 @@ export type EngineStoreTypes = {
   };
 
   POST_ENGINE_START: {
-    action(payload: { engineIds: EngineId[] }): Promise<{
+    action(payload: {
+      engineIds: EngineId[];
+      onCharacterProgress?: (
+        engineId: EngineId,
+        completed: number,
+        total: number,
+      ) => void;
+    }): Promise<{
       success: boolean;
       anyNewCharacters: boolean;
     }>;
@@ -2594,9 +2611,10 @@ export type IEngineConnectorFactoryActionsMapper = <
 
 export type ProxyStoreTypes = {
   INSTANTIATE_ENGINE_CONNECTOR: {
-    action(payload: {
-      engineId: EngineId;
-    }): Promise<{ invoke: IEngineConnectorFactoryActionsMapper }>;
+    action(payload: { engineId: EngineId }): Promise<{
+      invoke: IEngineConnectorFactoryActionsMapper;
+      request?: (path: string) => Promise<Response>;
+    }>;
   };
 };
 

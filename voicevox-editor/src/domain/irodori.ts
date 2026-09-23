@@ -10,6 +10,7 @@ export const IRODORI_DEFAULT_CFG_CAPTION = 3;
 export const IRODORI_DEFAULT_CFG_SPEAKER = 5;
 export const IRODORI_DEFAULT_CAPTION_STRENGTH = 1;
 export const IRODORI_DEFAULT_REFERENCE_STRENGTH = 1;
+export const IRODORI_DEFAULT_SPEAKER_STRENGTH = 1;
 
 /**
  * 選択中モデルに応じた既定ステップ数。

@@ -1,7 +1,11 @@
 <template>
   <ToolBar />
   <div class="sing-main" :class="{ 'sidebar-open': isSidebarOpen }">
-    <EngineStartupOverlay :isCompletedInitialStartup />
+    <EngineStartupOverlay
+      :isCompletedInitialStartup
+      :startupError
+      :startupStage
+    />
     <ExportOverlay />
 
     <QSplitter
@@ -43,6 +47,8 @@ import {
 const props = defineProps<{
   isEnginesReady: boolean;
   isProjectFileLoaded: boolean | "waiting";
+  startupError: string;
+  startupStage: string;
 }>();
 
 const store = useStore();

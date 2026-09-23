@@ -14,6 +14,7 @@ import {
   IRODORI_DEFAULT_CFG_TEXT,
   IRODORI_DEFAULT_CAPTION_STRENGTH,
   IRODORI_DEFAULT_REFERENCE_STRENGTH,
+  IRODORI_DEFAULT_SPEAKER_STRENGTH,
   IRODORI_DEFAULT_SEED,
   IRODORI_DEFAULT_SCHEDULE,
   irodoriDefaultSteps,
@@ -72,9 +73,10 @@ export async function fetchAudioFromAudioItem(
       morphRate: audioItem.morphingInfo.rate,
     });
   } else {
-    const effectiveSeed = audioItem.irodori?.seed === null
-      ? null
-      : audioItem.irodori?.seed ?? IRODORI_DEFAULT_SEED;
+    const effectiveSeed =
+      audioItem.irodori?.seed === null
+        ? null
+        : (audioItem.irodori?.seed ?? IRODORI_DEFAULT_SEED);
     blob = await instance.invoke("synthesis")({
       audioQuery: {
         ...engineAudioQuery,
@@ -83,18 +85,29 @@ export async function fetchAudioFromAudioItem(
         irodoriSeed: effectiveSeed,
         // 既定ステップ数はモデル依存（MeanFlow は4、RF は8）。
         irodoriSteps: audioItem.irodori?.steps ?? irodoriDefaultSteps.value,
-        irodoriSchedule: audioItem.irodori?.schedule ?? IRODORI_DEFAULT_SCHEDULE,
+        irodoriSchedule:
+          audioItem.irodori?.schedule ?? IRODORI_DEFAULT_SCHEDULE,
         irodoriSeconds: audioItem.irodori?.seconds ?? null,
         irodoriCaption: audioItem.irodori?.caption,
         irodoriCaptionStrength:
           audioItem.irodori?.captionStrength ??
           IRODORI_DEFAULT_CAPTION_STRENGTH,
         irodoriCfgText: audioItem.irodori?.cfgText ?? IRODORI_DEFAULT_CFG_TEXT,
-        irodoriCfgCaption: audioItem.irodori?.cfgCaption ?? IRODORI_DEFAULT_CFG_CAPTION,
-        irodoriCfgSpeaker: audioItem.irodori?.cfgSpeaker ?? IRODORI_DEFAULT_CFG_SPEAKER,
+        irodoriCfgCaption:
+          audioItem.irodori?.cfgCaption ?? IRODORI_DEFAULT_CFG_CAPTION,
+        irodoriCfgSpeaker:
+          audioItem.irodori?.cfgSpeaker ?? IRODORI_DEFAULT_CFG_SPEAKER,
         irodoriReferenceStrength:
           audioItem.irodori?.referenceStrength ??
           IRODORI_DEFAULT_REFERENCE_STRENGTH,
+        irodoriSpeakerStrength:
+          audioItem.irodori?.speakerStrength ??
+          IRODORI_DEFAULT_SPEAKER_STRENGTH,
+        irodoriSecondarySpeakerStyleId:
+          audioItem.irodori?.secondarySpeakerStyleId ?? undefined,
+        irodoriSecondarySpeakerStrength:
+          audioItem.irodori?.secondarySpeakerStrength ?? 0.5,
+        irodoriAdditionalSpeakers: audioItem.irodori?.additionalSpeakers,
         irodoriReferenceAudio: audioItem.irodori?.referenceAudio,
       },
       speaker,
@@ -169,9 +182,10 @@ async function generateUniqueIdAndQuery(
     audioQuery.outputStereo = state.savingSetting.outputStereo;
   }
 
-  const effectiveSeed = audioItem.irodori?.seed === null
-    ? null
-    : audioItem.irodori?.seed ?? IRODORI_DEFAULT_SEED;
+  const effectiveSeed =
+    audioItem.irodori?.seed === null
+      ? null
+      : (audioItem.irodori?.seed ?? IRODORI_DEFAULT_SEED);
   const cacheNonce = effectiveSeed === null ? crypto.randomUUID() : undefined;
   const id = await generateTempUniqueId([
     audioCacheRevision,

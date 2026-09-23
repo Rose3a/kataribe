@@ -39,7 +39,10 @@ import {
   IRODORI_DEFAULT_CFG_TEXT,
   IRODORI_DEFAULT_SEED,
 } from "@/domain/irodori";
-import { ContinuousPlayer, filterNonEmptyAudioKeys } from "./audioContinuousPlayer";
+import {
+  ContinuousPlayer,
+  filterNonEmptyAudioKeys,
+} from "./audioContinuousPlayer";
 import { convertAudioQueryFromEngineToEditor } from "./proxy";
 import {
   convertHiraToKana,
@@ -61,7 +64,14 @@ import {
   type StyleInfo,
   type Voice,
 } from "@/type/preload";
-import type { AudioQuery, AccentPhrase, Speaker, SpeakerInfo } from "@/openapi";
+import {
+  SpeakerFromJSON,
+  SpeakerInfoFromJSON,
+  type AudioQuery,
+  type AccentPhrase,
+  type Speaker,
+  type SpeakerInfo,
+} from "@/openapi";
 import { base64ImageToUri, base64ToUri } from "@/helpers/base64Helper";
 import { getValueOrThrow, ResultError } from "@/type/result";
 import { generateWriteErrorMessage } from "@/helpers/fileHelper";
@@ -74,6 +84,30 @@ import { generateTextFileData } from "@/helpers/fileDataGenerator";
 
 function generateAudioKey() {
   return AudioKey(uuid4());
+}
+
+/**
+ * Avoid flooding an engine (and the browser's image decoder) when a library
+ * contains many speakers.  The original Promise.all issued every
+ * `/speaker_info` request at once, which can leave startup waiting forever.
+ */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  maxConcurrency: number,
+  mapper: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let nextIndex = 0;
+  const worker = async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex++;
+      results[index] = await mapper(items[index]);
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(maxConcurrency, items.length) }, worker),
+  );
+  return results;
 }
 
 function parseTextFile(
@@ -266,7 +300,7 @@ export const audioStore = createPartialStore<AudioStoreTypes>({
    */
   LOAD_CHARACTER: {
     action: createUILockAction(
-      async ({ mutations, actions, state }, { engineId }) => {
+      async ({ mutations, actions, state }, { engineId, onProgress }) => {
         const instance = await actions.INSTANTIATE_ENGINE_CONNECTOR({
           engineId,
         });
@@ -342,6 +376,25 @@ export const audioStore = createPartialStore<AudioStoreTypes>({
 
           return styles;
         };
+        let bundledSpeakerInfos: Record<string, SpeakerInfo> | undefined;
+        const requestSpeakerInfo = async (
+          speakerUuid: Speaker["speakerUuid"],
+        ): Promise<SpeakerInfo> => {
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              return await instance.invoke("speakerInfo")({
+                speakerUuid,
+                ...(useResourceUrl && { resourceFormat: "url" }),
+              });
+            } catch (error) {
+              if (attempt === 2) throw error;
+              await new Promise((resolve) =>
+                setTimeout(resolve, 250 * (attempt + 1)),
+              );
+            }
+          }
+          throw new Error("Failed to get speakerInfo");
+        };
         const getCharacterInfo = async (
           speaker: Speaker | undefined,
           singer: Speaker | undefined,
@@ -350,15 +403,14 @@ export const audioStore = createPartialStore<AudioStoreTypes>({
           let speakerInfoPromise: Promise<SpeakerInfo> | undefined = undefined;
           let speakerStylePromise: Promise<StyleInfo[]> | undefined = undefined;
           if (speaker != undefined) {
-            speakerInfoPromise = instance
-              .invoke("speakerInfo")({
-                speakerUuid: speaker.speakerUuid,
-                ...(useResourceUrl && { resourceFormat: "url" }),
-              })
-              .catch((error) => {
-                window.backend.logError(error, `Failed to get speakerInfo.`);
-                throw error;
-              });
+            speakerInfoPromise = (
+              bundledSpeakerInfos?.[speaker.speakerUuid] != undefined
+                ? Promise.resolve(bundledSpeakerInfos[speaker.speakerUuid])
+                : requestSpeakerInfo(speaker.speakerUuid)
+            ).catch((error) => {
+              window.backend.logError(error, `Failed to get speakerInfo.`);
+              throw error;
+            });
             speakerStylePromise = speakerInfoPromise.then((speakerInfo) =>
               getStyles(speaker, speakerInfo),
             );
@@ -414,15 +466,58 @@ export const audioStore = createPartialStore<AudioStoreTypes>({
           return characterInfo;
         };
 
-        const [speakers, singers] = await Promise.all([
-          instance.invoke("speakers")({}),
-          state.engineManifests[engineId].supportedFeatures.sing
-            ? await instance.invoke("singers")({})
-            : Promise.resolve([]),
-        ]).catch((error) => {
-          window.backend.logError(error, `Failed to get Speakers.`);
-          throw error;
-        });
+        let speakers: Speaker[];
+        let singers: Speaker[];
+        if (
+          useResourceUrl &&
+          state.engineManifests[engineId].brandName === "Irodori-TTS" &&
+          instance.request
+        ) {
+          // A single bundle of hundreds of speakers can exhaust a browser's
+          // renderer while JSON and converted objects coexist in memory.
+          const listedSpeakers = await instance.invoke("speakers")({});
+          if (listedSpeakers.length > 64) {
+            speakers = listedSpeakers;
+            singers = [];
+          } else {
+            const response = await instance.request("/irodori/speaker_bundle");
+            if (response.ok) {
+              const bundle = (await response.json()) as {
+                speakers: unknown[];
+                speaker_infos: Record<string, unknown>;
+              };
+              if (!Array.isArray(bundle.speakers) || !bundle.speaker_infos) {
+                throw new Error("Invalid speaker bundle response");
+              }
+              speakers = bundle.speakers.map(SpeakerFromJSON);
+              bundledSpeakerInfos = Object.fromEntries(
+                Object.entries(bundle.speaker_infos).map(([uuid, info]) => [
+                  uuid,
+                  SpeakerInfoFromJSON(info),
+                ]),
+              );
+              singers = [];
+            } else if (response.status === 404) {
+              // Older Irodori engines still expose the standard speaker API.
+              speakers = listedSpeakers;
+              singers = [];
+            } else {
+              throw new Error(
+                `Failed to get speaker bundle (${response.status})`,
+              );
+            }
+          }
+        } else {
+          [speakers, singers] = await Promise.all([
+            instance.invoke("speakers")({}),
+            state.engineManifests[engineId].supportedFeatures.sing
+              ? instance.invoke("singers")({})
+              : Promise.resolve([]),
+          ]).catch((error) => {
+            window.backend.logError(error, `Failed to get Speakers.`);
+            throw error;
+          });
+        }
 
         // エンジン側の順番を保ってCharacterInfoを作る
         const allUuids = new Set([
@@ -430,19 +525,27 @@ export const audioStore = createPartialStore<AudioStoreTypes>({
           ...singers.map((singer) => singer.speakerUuid),
         ]);
 
-        const characterInfoPromises = Array.from(allUuids).map(
-          (speakerUuid) => {
-            const speaker = speakers.find(
-              (speaker) => speaker.speakerUuid === speakerUuid,
-            );
-            const singer = singers.find(
-              (singer) => singer.speakerUuid === speakerUuid,
-            );
-            return getCharacterInfo(speaker, singer);
-          },
+        const speakersByUuid = new Map(
+          speakers.map((speaker) => [speaker.speakerUuid, speaker]),
+        );
+        const singersByUuid = new Map(
+          singers.map((singer) => [singer.speakerUuid, singer]),
         );
 
-        const characterInfos = await Promise.all(characterInfoPromises);
+        let completed = 0;
+        onProgress?.(completed, allUuids.size);
+        const characterInfos = await mapWithConcurrency(
+          Array.from(allUuids),
+          6,
+          async (speakerUuid) => {
+            const characterInfo = await getCharacterInfo(
+              speakersByUuid.get(speakerUuid),
+              singersByUuid.get(speakerUuid),
+            );
+            onProgress?.(++completed, allUuids.size);
+            return characterInfo;
+          },
+        );
 
         mutations.SET_CHARACTER_INFOS({ engineId, characterInfos });
       },
@@ -877,7 +980,13 @@ export const audioStore = createPartialStore<AudioStoreTypes>({
   },
 
   SET_IRODORI_SETTINGS: {
-    mutation(state, { audioKey, irodori }: { audioKey: AudioKey; irodori: AudioItem["irodori"] }) {
+    mutation(
+      state,
+      {
+        audioKey,
+        irodori,
+      }: { audioKey: AudioKey; irodori: AudioItem["irodori"] },
+    ) {
       if (irodori == undefined) delete state.audioItems[audioKey].irodori;
       else state.audioItems[audioKey].irodori = irodori;
     },
@@ -1939,10 +2048,16 @@ export const audioCommandStoreState: AudioCommandStoreState = {};
 export const audioCommandStore = transformCommandStore(
   createPartialStore<AudioCommandStoreTypes>({
     COMMAND_SET_IRODORI_SETTINGS: {
-      mutation(draft, payload: { audioKey: AudioKey; irodori: AudioItem["irodori"] }) {
+      mutation(
+        draft,
+        payload: { audioKey: AudioKey; irodori: AudioItem["irodori"] },
+      ) {
         audioStore.mutations.SET_IRODORI_SETTINGS(draft, payload);
       },
-      action({ mutations }, payload: { audioKey: AudioKey; irodori: AudioItem["irodori"] }) {
+      action(
+        { mutations },
+        payload: { audioKey: AudioKey; irodori: AudioItem["irodori"] },
+      ) {
         mutations.COMMAND_SET_IRODORI_SETTINGS(payload);
       },
     },
@@ -2222,6 +2337,10 @@ export const audioCommandStore = transformCommandStore(
                 update: "AudioQuery",
                 query,
               };
+            } else if (audioItem.query.accentPhrases.length === 0) {
+              // Irodori's audio query has no mora data. A voice change only
+              // needs to update the voice; /mora_data is not implemented there.
+              changes[audioKey] = { update: "OnlyVoice" };
             } else {
               const newAccentPhrases: AccentPhrase[] =
                 await actions.FETCH_MORA_DATA({

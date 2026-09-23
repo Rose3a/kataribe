@@ -29,15 +29,16 @@ const proxyStoreCreator = (_engineFactory: IEngineConnectorFactory) => {
 
         const altPort: string | undefined = state.altPortInfos[engineId];
         const port = altPort ?? engineInfo.defaultPort;
-        const instance = _engineFactory.instance(
-          createEngineUrl({
-            protocol: engineInfo.protocol,
-            hostname: engineInfo.hostname,
-            port,
-            pathname: engineInfo.pathname,
-          }),
-        );
+        const host = createEngineUrl({
+          protocol: engineInfo.protocol,
+          hostname: engineInfo.hostname,
+          port,
+          pathname: engineInfo.pathname,
+        });
+        const instance = _engineFactory.instance(host);
+        const request = _engineFactory.request;
         return Promise.resolve({
+          request: request ? (path: string) => request(host, path) : undefined,
           // FIXME: anyを使わないようにする
           invoke: (v) => (arg) =>
             // eslint-disable-next-line @typescript-eslint/ban-ts-comment

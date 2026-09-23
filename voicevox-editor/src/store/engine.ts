@@ -248,7 +248,7 @@ export const engineStore = createPartialStore<EngineStoreTypes>({
   },
 
   POST_ENGINE_START: {
-    async action({ state, actions }, { engineIds }) {
+    async action({ state, actions }, { engineIds, onCharacterProgress }) {
       await actions.PULL_ALT_PORT_INFOS();
       const result = await Promise.all(
         engineIds.map(async (engineId) => {
@@ -258,7 +258,11 @@ export const engineStore = createPartialStore<EngineStoreTypes>({
             await actions.FETCH_AND_SET_ENGINE_SUPPORTED_DEVICES({
               engineId,
             });
-            await actions.LOAD_CHARACTER({ engineId });
+            await actions.LOAD_CHARACTER({
+              engineId,
+              onProgress: (completed, total) =>
+                onCharacterProgress?.(engineId, completed, total),
+            });
           }
 
           await actions.LOAD_DEFAULT_STYLE_IDS();
