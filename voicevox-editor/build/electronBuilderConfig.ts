@@ -127,7 +127,6 @@ const builderOptions: ElectronBuilderConfiguration = {
   },
   win: {
     executableName: "kataribe",
-    icon: "public/icon.png",
     target: [
       {
         target: "nsis-web",
@@ -153,7 +152,6 @@ const builderOptions: ElectronBuilderConfiguration = {
   linux: {
     artifactName: LINUX_ARTIFACT_NAME || undefined,
     executableName: LINUX_EXECUTABLE_NAME || undefined,
-    icon: "public/icon.png",
     category: "AudioVideo",
     mimeTypes: ["application/x-voicevox"],
     target: [

@@ -4,7 +4,6 @@
       v-if="$q.platform.is.mac && !isFullscreen"
       class="mac-traffic-light-space"
     ></div>
-    <img v-else src="/icon.png" class="window-logo" alt="application logo" />
     <QSpace />
     <div class="window-title">
       {{ titleText }}
@@ -94,10 +93,6 @@ onMounted(async () => {
     margin-left: 0;
     -webkit-app-region: no-drag; // Electronのドラッグ領域対象から外す
   }
-}
-
-.window-logo {
-  height: vars.$menubar-height;
 }
 
 .window-title {

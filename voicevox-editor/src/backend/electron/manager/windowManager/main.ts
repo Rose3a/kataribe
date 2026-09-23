@@ -98,7 +98,6 @@ class MainWindowManager {
       webPreferences: {
         preload: path.join(import.meta.dirname, "preload.cjs"),
       },
-      icon: path.join(this.staticDir, "icon.png"),
     });
 
     this._win = win;

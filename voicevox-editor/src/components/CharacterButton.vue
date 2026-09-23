@@ -29,7 +29,7 @@
     </div>
     <QMenu
       class="character-menu character-picker-menu"
-      style="width: min(90vw, 27rem)"
+      style="width: min(90vw, 27rem); min-width: min(90vw, 20rem)"
       transitionShow="none"
       transitionHide="none"
       :max-height="maxMenuHeight"
@@ -614,10 +614,13 @@ const onMenuBeforeShow = () => {
   }
 }
 
-// QMenu is rendered outside this component's DOM tree.  Keep these rules
-// global so the teleported menu receives the fixed width and ellipsis styles.
-:global(.character-picker-menu) {
+</style>
+
+<style lang="scss">
+// QMenu is teleported outside the component, so its layout rules are unscoped.
+.character-picker-menu {
   width: min(90vw, 27rem);
+  min-width: min(90vw, 20rem);
 
   .speaker-folder-tabs {
     min-width: 0;
@@ -648,6 +651,12 @@ const onMenuBeforeShow = () => {
 
   .character-item-container,
   .q-btn-group > .q-btn:first-child > .q-btn__content {
+    width: 100%;
+  }
+
+  .speaker-virtual-list,
+  .speaker-virtual-list .q-item,
+  .speaker-virtual-list .q-btn-group {
     width: 100%;
   }
 

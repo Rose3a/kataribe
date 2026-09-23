@@ -80,7 +80,6 @@ class WelcomeWindowManager {
       webPreferences: {
         preload: path.join(import.meta.dirname, "welcomePreload.cjs"),
       },
-      icon: path.join(this.staticDir, "icon.png"),
       titleBarStyle: "hidden",
       trafficLightPosition: { x: 6, y: 4 },
       frame: false,
