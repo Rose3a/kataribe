@@ -11,6 +11,12 @@ import uuid
 from english_reading import convert_english, to_hiragana
 
 KANA_STYLES = ("katakana", "hiragana")
+# 英単語・英文の読み: 変換しない / カタカナにする / ひらがなにする
+ENGLISH_READINGS = ("off", "katakana", "hiragana")
+
+
+def _english_to_hiragana(text):
+    return convert_english(text, hiragana=True)
 
 
 def normalize_width(text):
@@ -95,15 +101,19 @@ class ReadingDictionary:
         with self.lock:
             self._save({**self.words, **incoming} if override else {**incoming, **self.words})
 
-    def convert(self, text, english=True, kana_style="katakana"):
-        """ユーザー辞書を当て、残った英語をカタカナ読みにする。
+    def convert(self, text, english="katakana", kana_style="katakana"):
+        """ユーザー辞書を当て、残った英語をカナ読みにする。
 
-        english=False なら英字はそのまま残す。kana_style="hiragana" なら、
-        辞書と英語の読みを含む文中のカタカナをすべてひらがなにする。
+        english は英語の読み方（off なら英字はそのまま残す、hiragana なら英語の
+        読みだけひらがなにする）。kana_style="hiragana" なら、辞書と英語の読みを
+        含む文中のカタカナをすべてひらがなにする。
         """
+        if english not in ENGLISH_READINGS:
+            raise ValueError(f"english must be one of {ENGLISH_READINGS}")
         if kana_style not in KANA_STYLES:
             raise ValueError(f"kana_style must be one of {KANA_STYLES}")
-        text = self._apply_words(normalize_width(text), convert_english if english else str)
+        rest = {"off": str, "katakana": convert_english, "hiragana": _english_to_hiragana}[english]
+        text = self._apply_words(normalize_width(text), rest)
         return to_hiragana(text) if kana_style == "hiragana" else text
 
     def _apply_words(self, text, rest):

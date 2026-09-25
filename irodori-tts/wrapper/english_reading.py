@@ -449,8 +449,10 @@ def word_to_kana(word):
 WORD = re.compile(r"[A-Za-z]+(?:[-'’][A-Za-z]+)*")
 
 
-def convert_english(text):
-    """文中の英字の並びをカタカナ読みにする。数字や記号、空白はそのまま残す。"""
+def convert_english(text, hiragana=False):
+    """文中の英字の並びをカナ読みにする。数字や記号、空白、元の日本語はそのまま残す。"""
+    if hiragana:
+        return WORD.sub(lambda m: to_hiragana(word_to_kana(m.group())), text)
     return WORD.sub(lambda m: word_to_kana(m.group()), text)
 
 

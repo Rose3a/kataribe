@@ -121,18 +121,21 @@ class ReadingOptionTests(unittest.TestCase):
         self.assertEqual(adapter.tts.synthesize.call_args.kwargs["text"], "サーバー とサーバー")
         adapter.synthesize(dict(query, irodori_kana_style="hiragana"), 0)
         self.assertEqual(adapter.tts.synthesize.call_args.kwargs["text"], "さーばー とさーばー")
-        adapter.synthesize(dict(query, irodori_english_reading=False), 0)
+        adapter.synthesize(dict(query, irodori_english_reading="off"), 0)
         self.assertEqual(adapter.tts.synthesize.call_args.kwargs["text"], "server とサーバー")
-        for bad in (dict(irodori_kana_style="romaji"), dict(irodori_english_reading="yes")):
+        adapter.synthesize(dict(query, irodori_english_reading="hiragana"), 0)
+        self.assertEqual(adapter.tts.synthesize.call_args.kwargs["text"], "さーばー とサーバー")
+        for bad in (dict(irodori_kana_style="romaji"), dict(irodori_english_reading=True)):
             with self.assertRaises(ValueError):
                 adapter.synthesize(dict(query, **bad), 0)
 
     def test_query_validation_accepts_reading_fields(self):
         import voicevox_engine as engine
         base = engine._query("text")
-        engine._validate_query(dict(base, irodori_english_reading=False,
-                                    irodori_kana_style="hiragana"))
-        for bad in (dict(irodori_english_reading="false"), dict(irodori_kana_style="romaji")):
+        for english in ("off", "katakana", "hiragana"):
+            engine._validate_query(dict(base, irodori_english_reading=english,
+                                        irodori_kana_style="hiragana"))
+        for bad in (dict(irodori_english_reading=False), dict(irodori_kana_style="romaji")):
             with self.assertRaises(engine.RequestValidationError):
                 engine._validate_query(dict(base, **bad))
 
@@ -142,11 +145,12 @@ class ReadingOptionTests(unittest.TestCase):
         adapter.available_backends = lambda: {"cpu": True}
         adapter._validate_model_source = lambda model: None
         base = dict(editor_engine.EditorAdapter.DEFAULT_SETTINGS)
-        self.assertIs(base["english_reading"], True)
+        self.assertEqual(base["english_reading"], "katakana")
         self.assertEqual(base["kana_style"], "katakana")
         adapter.validate(base)
-        adapter.validate(dict(base, kana_style="hiragana", english_reading=False))
-        for bad in (dict(kana_style="romaji"), dict(english_reading=1)):
+        for english in ("off", "katakana", "hiragana"):
+            adapter.validate(dict(base, kana_style="hiragana", english_reading=english))
+        for bad in (dict(kana_style="romaji"), dict(english_reading=True)):
             with self.assertRaises(ValueError):
                 adapter.validate(dict(base, **bad))
 

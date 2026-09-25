@@ -21,7 +21,7 @@ class DictionaryTests(unittest.TestCase):
         self.dictionary = ReadingDictionary(self.path)
 
     def test_width_and_english_are_preserved_when_english_reading_is_off(self):
-        convert = lambda text: self.dictionary.convert(text, english=False)
+        convert = lambda text: self.dictionary.convert(text, english="off")
         self.assertEqual(convert("Ｈｅｌｌｏ！　world（カタカナ）＋１２３"),
                          "Hello! world(カタカナ)+123")
         self.assertEqual(convert("A DMM i love you"), "A DMM i love you")
@@ -38,7 +38,7 @@ class DictionaryTests(unittest.TestCase):
 
     def test_apostrophe_and_all_caps_tokens_do_not_raise(self):
         for text in ["ROCK'N ROLL", "O'BRIEN さん", "ROCK’N", "DON'T STOP"]:
-            self.assertEqual(self.dictionary.convert(text, english=False), text)
+            self.assertEqual(self.dictionary.convert(text, english="off"), text)
             self.assertNotRegex(self.dictionary.convert(text), "[A-Za-z]")
 
     def test_user_entry_wins_over_english_reading(self):
@@ -57,6 +57,16 @@ class DictionaryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             d.convert("text", kana_style="romaji")
 
+    def test_english_reading_can_be_hiragana_only_for_english(self):
+        d = self.dictionary
+        d.put(make_word("Zelda", "ゼルダ"))
+        # 英語の読みだけひらがなにし、元のカタカナ語と辞書の読みはそのまま。
+        self.assertEqual(d.convert("I love レンタルサーバー and Zelda", english="hiragana"),
+                         "あい らぶ レンタルサーバー あんど ゼルダ")
+        self.assertEqual(d.convert("I love you", english="off"), "I love you")
+        with self.assertRaises(ValueError):
+            d.convert("text", english=True)
+
     def test_user_entry_uses_longest_match(self):
         d = self.dictionary
         d.put(make_word("python3", "パイソンスリー"))
@@ -65,8 +75,8 @@ class DictionaryTests(unittest.TestCase):
         self.assertEqual(d.convert("python3"), "パイソンスリー")
         self.assertEqual(d.convert("githubactions"), "ギットハブアクションズ")
         # Without English reading, English remains unless a user entry matches.
-        self.assertEqual(d.convert("python", english=False), "python")
-        self.assertEqual(d.convert("github", english=False), "github")
+        self.assertEqual(d.convert("python", english="off"), "python")
+        self.assertEqual(d.convert("github", english="off"), "github")
         self.assertEqual(d.convert("python"), "パイソン")
 
     def test_override_longest_priority_and_no_cascade(self):

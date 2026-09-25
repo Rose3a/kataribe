@@ -67,12 +67,13 @@ export type IrodoriSettings = {
   model: string;
   seed: number;
   sway_coeff: number;
-  /** 英単語・英文をカタカナ読みに変換してから合成する。 */
-  english_reading: boolean;
+  /** 英単語・英文の読み。off なら変換せず、katakana / hiragana はその表記にする。 */
+  english_reading: IrodoriEnglishReading;
   /** 合成前のカナ表記。hiragana ならカタカナ語もひらがなにして読ませる。 */
   kana_style: IrodoriKanaStyle;
 };
 
+export type IrodoriEnglishReading = "off" | "katakana" | "hiragana";
 export type IrodoriKanaStyle = "katakana" | "hiragana";
 
 /** 選択中モデルの情報。 */

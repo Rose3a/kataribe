@@ -106,7 +106,7 @@ JSON のキーは snake_case で指定します。`irodoriSteps` のような ca
 | `irodori_additional_speakers` | array | 最大3件 | `[{"style_id": 123, "strength": 0.5}]`。音声参照と同時には使えない |
 | `irodori_reference_audio` | object / null | 最大10MB | `{"dataUrl": "data:audio/...;base64,...", "mime": "...", "name": "..."}` |
 | `irodori_reference_strength` | number | 0〜1、既定 1 | 参照音声の強さ |
-| `irodori_english_reading` | boolean | 既定 true | 英単語・英文をカタカナ読みにしてから合成する |
+| `irodori_english_reading` | string | `off` / `katakana`（既定） / `hiragana` | 英単語・英文の読み。`off` は英字のまま、ほかはその表記に変換してから合成する |
 | `irodori_kana_style` | string | `katakana`（既定） / `hiragana` | `hiragana` なら文中のカタカナをひらがなにして読ませる |
 | `speedScale` | number | 0.25〜4.0、既定 1 | 話速（VOICEVOX と同じ名前） |
 

@@ -41,7 +41,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from tts_cli import IrodoriTTS, resolve_embed_dirs  # noqa: E402
-from reading_dictionary import KANA_STYLES, READING_DICTIONARY, make_word
+from reading_dictionary import ENGLISH_READINGS, KANA_STYLES, READING_DICTIONARY, make_word
 from third_party_licenses import dependency_licenses
 from speaker_catalog import blink_thumbnail_for, credit_for, display_name_for, policy_for, mouth_open_thumbnail_for, mouth_parts_for, portrait_for, speaker_catalog, _fallback_icon  # noqa: E402
 
@@ -219,8 +219,8 @@ IRODORI_QUERY_FIELDS: dict[str, dict] = {
         "description": "エディタ経由では共通設定の値が優先される",
     },
     "irodori_english_reading": {
-        "type": "boolean", "default": True,
-        "description": "英単語・英文をカタカナ読みに変換してから合成する。エディタ経由では共通設定の値が優先される",
+        "type": "string", "enum": list(ENGLISH_READINGS), "default": "katakana",
+        "description": "英単語・英文の読み。off は変換しない、katakana / hiragana はその表記に変換してから合成する。エディタ経由では共通設定の値が優先される",
     },
     "irodori_kana_style": {
         "type": "string", "enum": list(KANA_STYLES), "default": "katakana",
@@ -244,10 +244,7 @@ def _check_value(value, schema: dict, loc: list) -> list[dict]:
         return [] if schema.get("nullable") else [
             _field_error(loc, "null は指定できません", "none_forbidden", value)]
     kind = schema.get("type")
-    if kind == "boolean":
-        if not isinstance(value, bool):
-            return [_field_error(loc, "true / false を指定してください", "bool_type", value)]
-    elif kind == "integer":
+    if kind == "integer":
         if isinstance(value, bool) or not isinstance(value, int):
             return [_field_error(loc, "整数を指定してください", "int_type", value)]
     elif kind == "number":
@@ -644,10 +641,11 @@ def _speaker_table(tts: IrodoriTTS, progress_callback=None) -> tuple[list[dict],
 
 def _reading_options(query: dict) -> dict:
     """英単語の読み変換とカナ表記の指定（エディタの共通設定から届く）。"""
-    english = query.get("irodori_english_reading", True)
+    english = query.get("irodori_english_reading", "katakana")
     kana_style = query.get("irodori_kana_style", "katakana")
-    if not isinstance(english, bool):
-        raise ValueError("irodori_english_reading must be a boolean")
+    if english not in ENGLISH_READINGS:
+        raise ValueError(
+            f"irodori_english_reading must be one of {', '.join(ENGLISH_READINGS)}")
     if kana_style not in KANA_STYLES:
         raise ValueError(f"irodori_kana_style must be one of {', '.join(KANA_STYLES)}")
     return dict(english=english, kana_style=kana_style)

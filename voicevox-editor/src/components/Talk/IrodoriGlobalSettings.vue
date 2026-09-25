@@ -63,21 +63,23 @@
       <div v-if="modelInfo?.meanflow" class="text-caption q-mb-sm">
         MeanFlow モデル: ステップ数4が既定。ScheduleとCFGは未使用。
       </div>
-      <QToggle
+      <QSelect
         v-model="settings.english_reading"
+        outlined
         dense
-        label="英単語・英文をカタカナ読みにする"
+        label="英単語・英文の読み"
+        :options="englishReadings"
+        emitValue
+        mapOptions
         :disable="locked"
-        class="q-mb-xs"
+        hint="API → エーピーアイ、server → サーバー。ユーザー辞書の登録が優先です"
+        class="q-mb-md"
       />
-      <div class="text-caption q-mb-sm">
-        API → エーピーアイ、server → サーバー。ユーザー辞書の登録が優先です。
-      </div>
       <QSelect
         v-model="settings.kana_style"
         outlined
         dense
-        label="カナの読ませ方"
+        label="文中のカタカナ語"
         :options="kanaStyles"
         emitValue
         mapOptions
@@ -230,6 +232,11 @@ const backendDefinitions = [
   { label: "NVIDIA / CUDA", value: "cuda" },
   { label: "NVIDIA / TensorRT", value: "trt" },
   { label: "AMD / DirectML", value: "radeon" },
+];
+const englishReadings = [
+  { label: "変換しない（英字のまま）", value: "off" },
+  { label: "カタカナで読む", value: "katakana" },
+  { label: "ひらがなで読む", value: "hiragana" },
 ];
 const kanaStyles = [
   { label: "カタカナのまま", value: "katakana" },
