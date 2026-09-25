@@ -35,8 +35,9 @@ def dictionary():
                         for line in stream:
                             word, _, phones = line.rstrip("\n").partition(" ")
                             words[word] = phones
-                except OSError:
-                    pass
+                except OSError as exc:
+                    # 配布物に辞書が入っていないと、英単語が綴り読みに落ちる。
+                    print(f"[irodori] english reading dictionary unavailable: {exc}", flush=True)
                 _words = words
     return _words
 
@@ -61,7 +62,7 @@ LOANWORDS = {
     "iphone": "アイフォン", "youtube": "ユーチューブ", "twitter": "ツイッター",
     "github": "ギットハブ", "wi": "ワイ", "pokemon": "ポケモン", "anime": "アニメ",
     "karaoke": "カラオケ", "sushi": "スシ", "tokyo": "トウキョウ", "kyoto": "キョウト",
-    "osaka": "オオサカ", "soccer": "サッカー", "nintendo": "ニンテンドー", "text": "テキスト",
+    "osaka": "オオサカ", "soccer": "サッカー", "nintendo": "ニンテンドー", "text": "テキスト", "channel": "チャンネル",
 }
 
 # 大文字だけの2文字語でも、略語ではなく単語として読むもの。
@@ -197,13 +198,16 @@ def _resolve_vowels(word, phones):
             value = ("i", "" if open_next or not stress and not final else "ー")
         elif base == "OW":
             # piano -> ピアノ、window -> ウィンドー
-            value = ("o", "" if final and not stress and not word.endswith("ow") else "ー")
+            # 語中の第1強勢以外の OW も伸ばさない（productivity -> プロダクティビティー）。
+            short = stress != 1 and (not final or not word.endswith("ow"))
+            value = ("o", "" if short else "ー")
         elif base == "OY":
             value = ("o", "イ")
         elif base == "UH":
             value = ("u", "")
         else:  # UW
-            value = ("u", "" if open_next else "ー")
+            # 語中の第1強勢以外は伸ばさない（university -> ユニバーシティー）。
+            value = ("u", "" if open_next or stress != 1 and not final else "ー")
         result[i] = value
     return result
 

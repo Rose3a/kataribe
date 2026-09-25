@@ -30,7 +30,8 @@ class EnglishReadingTests(unittest.TestCase):
             "quick": "クイック", "love": "ラブ", "player": "プレイヤー", "power": "パワー",
             "fire": "ファイヤー", "happy": "ハッピー", "fashion": "ファッション",
             "software": "ソフトウェア", "different": "ディファレント", "beautiful": "ビューティフル",
-            "piano": "ピアノ", "thank": "サンク", "legend": "レジェンド", "zelda": "ゼルダ",
+            "piano": "ピアノ", "university": "ユニバーシティー", "menu": "メニュー",
+            "productivity": "プロダクティビティー", "rainbow": "レインボー", "channel": "チャンネル", "thank": "サンク", "legend": "レジェンド", "zelda": "ゼルダ",
         }
         for word, kana in expected.items():
             with self.subTest(word=word):
@@ -63,6 +64,14 @@ class EnglishReadingTests(unittest.TestCase):
         self.assertEqual(er.convert_english("レンタルサーバーはAWSで、python3を使う"),
                          "レンタルサーバーはエーダブリューエスで、パイソン3を使う")
         self.assertEqual(er.convert_english("I'm fine, thank you."), "アイム ファイン, サンク ユー.")
+
+    def test_long_english_text(self):
+        text = ("Welcome to our channel! Today, I'm going to show you how to set up a rental "
+                "server and deploy your first web application in less than ten minutes.")
+        kana = er.convert_english(text)
+        self.assertNotRegex(kana, "[A-Za-z]")
+        self.assertLessEqual(len(kana), len(text))
+        self.assertTrue(kana.startswith("ウェルカム トゥー アワー チャンネル! トゥデイ, アイム"))
 
     def test_every_dictionary_word_becomes_katakana(self):
         bad = [w for w in er.dictionary() if not re.fullmatch(r"[ァ-ヴー]+", er.word_to_kana(w))]
