@@ -1,5 +1,13 @@
 [
   {
+    "version": "0.1.1",
+    "descriptions": [
+      "TensorRT 経路の高速化（codec の FP16 TensorRT 化、条件エンコーダの CUDA Graph 化、ディスク I/O の廃止など。1 行あたり約 2.7 倍速）",
+      "TensorRT 利用時の VRAM を削減（待機時 約 4.0GB → 約 2.5GB、音声出力は変わりません）"
+    ],
+    "contributors": []
+  },
+  {
     "version": "0.1.0",
     "descriptions": [
       "公開版の初期リリース",

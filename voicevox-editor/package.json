@@ -1,6 +1,6 @@
 {
   "name": "voicevox-irodori",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": "Rose3a and VOICEVOX contributors",
   "private": true,
   "main": "./dist/main.js",
