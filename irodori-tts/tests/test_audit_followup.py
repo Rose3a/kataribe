@@ -71,7 +71,7 @@ class RouteTests(unittest.TestCase):
         response = self.request("/irodori/session")
         self.assertEqual(response.status, 200)
         token = json.loads(response.read())["token"]
-        response = self.request("/audio_query?text=hello", method="POST", token=token)
+        response = self.request("/audio_query?text=hello&speaker=0", method="POST", token=token)
         self.assertEqual(response.status, 200)
         response = self.request("/synthesis?speaker=0", method="POST", body={"irodori_text": "hello", "irodori_seed": 123}, token=token)
         self.assertEqual(response.read(), b"RIFFtest")

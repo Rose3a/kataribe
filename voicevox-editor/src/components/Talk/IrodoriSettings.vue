@@ -158,6 +158,9 @@
               @change="handleSpeedScaleChange"
             />
           </div>
+          <p v-if="speedTargetCount > 1" class="settings-hint">
+            話速は選択中の{{ speedTargetCount }}行すべてに適用されます。
+          </p>
           <QFile
             v-model="referenceFile"
             outlined
@@ -266,7 +269,11 @@
             dense
             type="number"
             label="ステップ数 (1〜80)"
-            :hint="`既定値: ${defaultSteps}（このモデル）`"
+            :hint="
+              showStepsQualityWarning
+                ? `既定値 ${defaultSteps} より少ないため、音声の質が下がる場合があります`
+                : `既定値: ${defaultSteps}（このモデル）。多いほど高品質・低速`
+            "
             :min="1"
             :max="80"
             :step="1"
@@ -321,7 +328,12 @@
             :options="scheduleModes"
             emit-value
             map-options
-            :disable="locked"
+            :hint="
+              meanflow
+                ? 'MeanFlowモデルでは使われません'
+                : 'ステップの刻み方。sway は生成の序盤を細かく刻む（既定）、linear は均等'
+            "
+            :disable="locked || meanflow"
             @update:model-value="saveSchedule"
           />
           <QSelect
@@ -343,7 +355,7 @@
             type="number"
             :disable="locked"
             class="irodori-number-input"
-            @update:model-value="saveSeed"
+            @change="saveSeed"
           >
             <template #append>
               <div
@@ -382,7 +394,7 @@
               :min="0"
               :max="20"
               :step="0.5"
-              :disable="locked"
+              :disable="locked || meanflow"
               class="col-4 irodori-number-input"
               @change="saveLineCfg('cfgText', cfgTextText)"
             />
@@ -397,7 +409,7 @@
               :min="0"
               :max="20"
               :step="0.5"
-              :disable="locked"
+              :disable="locked || meanflow"
               class="col-4 irodori-number-input"
               @change="saveLineCfg('cfgCaption', cfgCaptionText)"
             />
@@ -412,11 +424,20 @@
               :min="0"
               :max="20"
               :step="0.5"
-              :disable="locked"
+              :disable="locked || meanflow"
               class="col-4 irodori-number-input"
               @change="saveLineCfg('cfgSpeaker', cfgSpeakerText)"
             />
           </div>
+          <p class="settings-hint">
+            <template v-if="meanflow">
+              MeanFlowモデルではCFGは使われません。
+            </template>
+            <template v-else>
+              CFGは、テキスト・キャプション・話者にどれだけ忠実に従うかの強さです。
+              上げるほど指定に沿いますが、上げすぎると不自然になることがあります。
+            </template>
+          </p>
         </div>
       </QExpansionItem>
 
@@ -452,7 +473,7 @@ import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useStore } from "@/store";
 import CharacterButton from "@/components/CharacterButton.vue";
 import { createEngineUrl } from "@/domain/url";
-import { fetchIrodoriDefaultSteps } from "@/helpers/irodoriEngine";
+import { fetchIrodoriModelInfo } from "@/helpers/irodoriEngine";
 import {
   clearAudioCache,
   handlePossiblyNotMorphableError,
@@ -467,6 +488,7 @@ import {
   IRODORI_DEFAULT_SEED,
   IRODORI_DEFAULT_SCHEDULE,
   irodoriDefaultSteps,
+  irodoriMeanflow,
   IRODORI_DEFAULT_STEPS,
 } from "@/domain/irodori";
 import {
@@ -527,13 +549,15 @@ watch(
     });
     const info = store.state.engineInfos[engineId];
     if (!info) return;
-    const steps = await fetchIrodoriDefaultSteps(
+    const modelInfo = await fetchIrodoriModelInfo(
       createEngineUrl({
         ...info,
         port: store.state.altPortInfos[engineId] ?? info.defaultPort,
       }),
     );
-    if (!cancelled && steps != undefined) irodoriDefaultSteps.value = steps;
+    if (cancelled || modelInfo == undefined) return;
+    irodoriDefaultSteps.value = modelInfo.defaultSteps;
+    irodoriMeanflow.value = modelInfo.meanflow;
   },
   { immediate: true },
 );
@@ -669,6 +693,12 @@ const lineCfgDefaults: Record<LineCfgKey, number> = {
   cfgCaption: IRODORI_DEFAULT_CFG_CAPTION,
   cfgSpeaker: IRODORI_DEFAULT_CFG_SPEAKER,
 };
+// エラー表示では内部のキー名ではなく、画面の欄名を使う。
+const lineCfgLabels: Record<LineCfgKey, string> = {
+  cfgText: "テキストCFG",
+  cfgCaption: "キャプションCFG",
+  cfgSpeaker: "スピーカーCFG",
+};
 function saveSteps(input: string | number | null = stepsValue.value) {
   const value = Number(input);
   if (!Number.isInteger(value) || value < 1 || value > 80) {
@@ -722,7 +752,7 @@ function saveLineCfg(key: LineCfgKey, input: string | number | null) {
   }
   const value = Number(raw);
   if (!Number.isFinite(value) || value < 0 || value > 20) {
-    error.value = `${key}は0〜20の数値だけ入力してください`;
+    error.value = `${lineCfgLabels[key]}は0〜20の数値だけ入力してください`;
     const currentValue = irodori.value[key];
     if (key === "cfgText") cfgTextText.value = String(currentValue);
     if (key === "cfgCaption") cfgCaptionText.value = String(currentValue);
@@ -737,11 +767,21 @@ function saveLineCfg(key: LineCfgKey, input: string | number | null) {
     irodori: { ...irodori.value, [key]: Number(value.toFixed(4)) },
   });
 }
+// 入力確定時（@change）にだけ保存し、1文字ごとに元に戻す履歴を積まない。
 function saveSeed() {
-  const value = seedText.value.trim();
+  const raw = seedText.value.trim();
+  const seed = raw === "" ? null : Number(raw);
+  if (seed != null && !Number.isSafeInteger(seed)) {
+    error.value = "シードは整数で入力するか、空欄にしてください";
+    seedText.value =
+      irodori.value.seed == null ? "" : String(irodori.value.seed);
+    return;
+  }
+  error.value = "";
+  if (seed === irodori.value.seed) return;
   void store.actions.COMMAND_SET_IRODORI_SETTINGS({
     audioKey: props.activeAudioKey,
-    irodori: { ...irodori.value, seed: value === "" ? null : Number(value) },
+    irodori: { ...irodori.value, seed },
   });
 }
 function saveCaption() {
@@ -944,12 +984,20 @@ function summarizeEngineError(cause: unknown, detail: string): string {
     : "再生に失敗しました。エンジンの再起動をお試しください。";
 }
 // 失敗時にエンジンが返したJSONの detail を取り出す。
+// 422 は VOICEVOX と同じく [{ loc, msg }] の配列で返る。
 async function engineErrorDetail(cause: unknown): Promise<string> {
   const response = (cause as { response?: Response } | undefined)?.response;
   if (response == undefined || typeof response.clone !== "function") return "";
   try {
     const body = await response.clone().text();
     const detail = (JSON.parse(body) as { detail?: unknown }).detail;
+    if (Array.isArray(detail)) {
+      return detail
+        .map((item: { loc?: unknown[]; msg?: string }) =>
+          `${item.loc?.at(-1) ?? ""}: ${item.msg ?? ""}`.trim(),
+        )
+        .join(" / ");
+    }
     return typeof detail === "string" ? detail : "";
   } catch {
     return "";
@@ -1050,6 +1098,10 @@ const locked = computed(() => store.getters.UI_LOCKED);
 const showStepsQualityWarning = computed(
   () => stepsValue.value < defaultSteps.value,
 );
+// MeanFlow モデルでは Schedule と CFG がエンジン側で無効化される。
+const meanflow = computed(() => irodoriMeanflow.value);
+// 話速だけは VOICEVOX 本体と同じく、複数選択中の全行に適用される。
+const speedTargetCount = computed(() => selectedAudioKeys.value.length);
 </script>
 
 <style scoped>

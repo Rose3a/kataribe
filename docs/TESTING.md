@@ -85,6 +85,8 @@ Vite 開発サーバー（`bat\serve_browser.bat`）とエンジンを起動し�
 
 ローカルAPIの入口を確かめて `logs\verify-api-auth.json` を残す。トークン無しの設定取得・保存が
 403 になること、許可外オリジンにはトークンを渡さないこと、古いトークンが拒否されることを見る。
+Origin を付けないローカルクライアント（一般の VOICEVOX クライアント）がトークン無しで
+`/audio_query` を使えること、許可外オリジンからは拒否されることも確かめる。
 
 ```bat
 .local\venv\Scripts\python.exe tools\verify_token_recovery.py

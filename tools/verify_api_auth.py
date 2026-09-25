@@ -68,6 +68,13 @@ def main() -> int:
     status, _ = call("GET", "/version")
     checks.append(("VOICEVOX 互換の /version はトークン不要", status == 200, f"status={status}"))
 
+    status, _ = call("POST", "/audio_query?text=a&speaker=0", origin=None)
+    checks.append(("Origin 無しのローカルクライアントはトークン不要（VOICEVOX 互換）",
+                   status == 200, f"status={status}"))
+
+    status, _ = call("POST", "/audio_query?text=a&speaker=0", origin=FOREIGN_ORIGIN)
+    checks.append(("許可外オリジンからの合成系は拒否", status == 403, f"status={status}"))
+
     report["checks"] = [{"name": name, "ok": ok, "detail": detail}
                         for name, ok, detail in checks]
     report["ok"] = all(ok for _, ok, _ in checks)

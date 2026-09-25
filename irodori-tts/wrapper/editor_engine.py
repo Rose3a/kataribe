@@ -18,7 +18,7 @@ from http.server import ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 from voicevox_engine import (Handler, VoicevoxAdapter, ROOT, ENGINE_UUID_NAMESPACE,
-                              TINY_PNG, _query, SESSION_TOKEN, MAX_BODY_BYTES, MAX_TEXT_CHARS,
+                              TINY_PNG, SESSION_TOKEN, MAX_BODY_BYTES, MAX_TEXT_CHARS,
                               DEFAULT_SPEAKER_NAME, _speaker_resource_index,
                               _speaker_uuid_index)
 from speaker_catalog import (
@@ -921,7 +921,9 @@ class EditorHandler(Handler):
             if not self._authorized():
                 return self._json(403, {"detail": "invalid local origin/session"})
             self._json(200, self.adapter.status())
-        elif path == "/irodori/timeline" and self._authorized():
+        elif path == "/irodori/timeline":
+            if not self._authorized():
+                return self._json(403, {"detail": "invalid local origin/session"})
             # GET でも使えるように（デバッグ用に ?text= と ?wav= は無し）
             try:
                 self._json(200, self.adapter.asr_timeline({"text": parse_qs(urlparse(self.path).query).get("text", [""])[0]}))
@@ -972,9 +974,6 @@ class EditorHandler(Handler):
                 return self._json(200, {"opened": str(folder)})
             except OSError as exc:
                 return self._json(500, {"detail": str(exc)})
-        if urlparse(self.path).path == "/audio_query":
-            text = parse_qs(urlparse(self.path).query).get("text", [""])[0]
-            return self._json(200, _query(text))
         if urlparse(self.path).path != "/irodori/settings":
             return super().do_POST()
         try:

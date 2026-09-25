@@ -68,7 +68,7 @@ if isinstance(settings, dict):
 
 # 3. 読み辞書まわりの回帰確認（ブラウザの「読み」と同じ経路）
 text = "ROCK'N ROLL と python3 と AI と こんにちは"
-status, query, _ = call("POST", "/audio_query?text=" + urllib.parse.quote(text), token)
+status, query, _ = call("POST", "/audio_query?speaker=0&text=" + urllib.parse.quote(text), token)
 report["audio_query_status"] = status
 if isinstance(query, dict):
     report["kana"] = query.get("kana")

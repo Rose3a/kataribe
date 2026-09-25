@@ -116,7 +116,7 @@ class DictionaryApiTests(DictionaryTests):
             status, key = request("POST", "/user_dict_word?" + params)
             self.assertEqual(status, 200)
             self.assertIn(key, request("GET", "/user_dict")[1])
-            query = request("POST", "/audio_query?" + urlencode(dict(text="BOX！")))[1]
+            query = request("POST", "/audio_query?" + urlencode(dict(text="BOX！", speaker=0)))[1]
             self.assertEqual(query["kana"], "ハコ!")
             self.assertEqual(query["irodori_text"], "BOX！")
             self.assertEqual(request("PUT", f"/user_dict_word/{key}?" + params)[0], 204)

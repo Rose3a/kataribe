@@ -63,6 +63,9 @@
       <div v-if="modelInfo?.meanflow" class="text-caption q-mb-sm">
         MeanFlow モデル: ステップ数4が既定。ScheduleとCFGは未使用。
       </div>
+      <div v-if="hasUnappliedChanges" class="text-caption text-warning q-mb-sm">
+        未適用の変更があります。「設定を適用」を押すと反映されます。
+      </div>
       <QBtn
         color="primary"
         label="設定を適用"
@@ -138,7 +141,11 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useStore } from "@/store";
 import { createEngineUrl } from "@/domain/url";
 import { clearAudioCache } from "@/store/audioGenerate";
-import { IRODORI_DEFAULT_STEPS, irodoriDefaultSteps } from "@/domain/irodori";
+import {
+  IRODORI_DEFAULT_STEPS,
+  irodoriDefaultSteps,
+  irodoriMeanflow,
+} from "@/domain/irodori";
 import type {
   IrodoriModelInfo as ModelInfo,
   IrodoriSettings as Settings,
@@ -162,8 +169,20 @@ const defaultSteps = computed(
     IRODORI_DEFAULT_STEPS,
 );
 const settings = ref<Settings>();
+// エンジンに保存済みの設定。画面上の選択と比べて未適用の変更を知らせる。
+const appliedSettings = ref<Settings>();
+const hasUnappliedChanges = computed(
+  () =>
+    settings.value != undefined &&
+    appliedSettings.value != undefined &&
+    (settings.value.backend !== appliedSettings.value.backend ||
+      settings.value.model !== appliedSettings.value.model),
+);
 watch(defaultSteps, (value) => {
   irodoriDefaultSteps.value = value;
+});
+watch(modelInfo, (value) => {
+  if (value) irodoriMeanflow.value = value.meanflow;
 });
 const modelFolder = ref("");
 const speakerFolder = ref("");
@@ -285,6 +304,7 @@ async function run(save: boolean, refreshSpeakers = false) {
   try {
     const result = await loadSettings(save);
     settings.value = result.settings;
+    appliedSettings.value = { ...result.settings };
     ensureModelOption(result.settings.model);
     progress.value = result.progress;
     modelInfo.value = result.modelInfo ?? modelInfo.value;
@@ -330,6 +350,7 @@ watch(
   () => {
     forgetIrodoriSession();
     settings.value = undefined;
+    appliedSettings.value = undefined;
     void run(false);
   },
   { immediate: true },

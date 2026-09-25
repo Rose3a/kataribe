@@ -57,7 +57,7 @@ def main() -> int:
     report["backend"] = settings.get("settings", {}).get("backend") if isinstance(settings, dict) else None
     report["asr_before"] = settings.get("asr") if isinstance(settings, dict) else None
 
-    status, query = call("POST", "/audio_query?text=" + urllib.parse.quote(TEXT), token)
+    status, query = call("POST", "/audio_query?speaker=0&text=" + urllib.parse.quote(TEXT), token)
     report["audio_query_status"] = status
     if status != 200:
         report["error"] = f"audio_query failed: {query}"

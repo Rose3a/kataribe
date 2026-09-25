@@ -21,6 +21,12 @@ export const IRODORI_DEFAULT_SPEAKER_STRENGTH = 1;
 export const irodoriDefaultSteps = ref(IRODORI_DEFAULT_STEPS);
 
 /**
+ * 選択中モデルが MeanFlow か。MeanFlow では Schedule と CFG が使われないため、
+ * 行設定の画面でそれらの入力を無効にする。
+ */
+export const irodoriMeanflow = ref(false);
+
+/**
  * ここから下はエンジン（ローカルの HTTP サーバ）とのやり取りの型。
  *
  * `/irodori/*` の契約はこのファイルだけに書き、呼び出し側

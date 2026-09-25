@@ -46,7 +46,7 @@ from third_party_licenses import dependency_licenses
 from speaker_catalog import blink_thumbnail_for, credit_for, display_name_for, policy_for, mouth_open_thumbnail_for, mouth_parts_for, portrait_for, speaker_catalog, _fallback_icon  # noqa: E402
 
 
-ENGINE_VERSION = "0.1.0"
+ENGINE_VERSION = "0.1.1"
 ENGINE_UUID_NAMESPACE = uuid.UUID("1d9f9d29-5a2a-4a4d-81e9-bb5f78a89d4b")
 DEFAULT_SPEAKER_NAME = "tsukuyomi"
 MAX_BODY_BYTES = 16 * 1024 * 1024
@@ -128,6 +128,196 @@ class RequestBodyError(ValueError):
     def __init__(self, status: int, message: str):
         super().__init__(message)
         self.status = status
+
+
+class RequestValidationError(ValueError):
+    """Invalid request parameters, reported like VOICEVOX (FastAPI) as HTTP 422.
+
+    ``errors`` uses the FastAPI shape ``{"type", "loc", "msg", "input"}`` so that
+    VOICEVOX clients that already understand 422 responses can read it as is.
+    """
+
+    def __init__(self, errors: list[dict]):
+        super().__init__("; ".join(error["msg"] for error in errors))
+        self.errors = errors
+
+
+def _field_error(loc: list, msg: str, kind: str, value=None) -> dict:
+    return {"type": kind, "loc": loc, "msg": msg, "input": value}
+
+
+# 話速。0 などを受け付けると、何も言わずに極端に長い音声が返るため範囲を決める。
+SPEED_SCALE_MIN = 0.25
+SPEED_SCALE_MAX = 4.0
+
+_STRENGTH = {"type": "number", "minimum": 0.0, "maximum": 1.0}
+
+# 音声クエリで受け付ける Irodori 拡張フィールド。入力チェック（_validate_query）と
+# /openapi.json の両方がこの表を参照するので、仕様と実装がずれない。
+IRODORI_QUERY_FIELDS: dict[str, dict] = {
+    "irodori_text": {
+        "type": "string",
+        "description": "元の文章。合成時に読み辞書を再適用する。省略時は kana を使う",
+    },
+    "irodori_seed": {
+        "type": "integer", "nullable": True, "default": 4763674,
+        "description": "シード。null でランダム",
+    },
+    "irodori_steps": {
+        "type": "integer", "minimum": 1, "maximum": 80,
+        "description": "ステップ数。省略時はモデル既定（RF は8、MeanFlow は4）",
+    },
+    "irodori_schedule": {
+        "type": "string", "enum": ["sway", "linear"], "default": "sway",
+        "description": "ステップの刻み方。MeanFlow モデルでは無視される",
+    },
+    "irodori_seconds": {
+        "type": "number", "nullable": True, "minimum": 0.1, "maximum": 60.0,
+        "description": "音声長（秒）。null で自動",
+    },
+    "irodori_caption": {
+        "type": "string", "nullable": True, "maxLength": 2000,
+        "description": "場面・話し方・感情などの指示",
+    },
+    "irodori_caption_strength": {**_STRENGTH, "default": 1.0},
+    "irodori_reference_strength": {**_STRENGTH, "default": 1.0},
+    "irodori_speaker_strength": {**_STRENGTH, "default": 1.0},
+    "irodori_cfg_text": {
+        "type": "number", "minimum": 0.0, "maximum": 20.0, "default": 3.0,
+        "description": "MeanFlow モデルでは無視される",
+    },
+    "irodori_cfg_caption": {
+        "type": "number", "minimum": 0.0, "maximum": 20.0, "default": 3.0,
+        "description": "MeanFlow モデルでは無視される",
+    },
+    "irodori_cfg_speaker": {
+        "type": "number", "minimum": 0.0, "maximum": 20.0, "default": 5.0,
+        "description": "MeanFlow モデルでは無視される",
+    },
+    "irodori_additional_speakers": {
+        "type": "array", "nullable": True, "maxItems": 3,
+        "items": {
+            "type": "object", "required": ["style_id"],
+            "properties": {
+                "style_id": {"type": "integer"},
+                "strength": {**_STRENGTH, "default": 0.5},
+            },
+        },
+        "description": "混ぜる話者（最大3人）。音声参照とは同時に使えない",
+    },
+    "irodori_reference_audio": {
+        "type": "object", "nullable": True, "required": ["dataUrl"],
+        "properties": {
+            "dataUrl": {"type": "string", "description": "data:audio/...;base64,...（最大10MB）"},
+            "mime": {"type": "string"},
+            "name": {"type": "string"},
+        },
+        "description": "話者・声質の参考音声",
+    },
+    "irodori_sway_coeff": {
+        "type": "number",
+        "description": "エディタ経由では共通設定の値が優先される",
+    },
+    "irodori_secondary_speaker_style_id": {
+        "type": "integer", "nullable": True, "deprecated": True,
+        "description": "旧形式。irodori_additional_speakers を使う",
+    },
+    "irodori_secondary_speaker_strength": {**_STRENGTH, "deprecated": True},
+}
+
+
+def _snake_case(name: str) -> str:
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+
+
+def _check_value(value, schema: dict, loc: list) -> list[dict]:
+    """Check one value against a small subset of JSON Schema used above."""
+    if value is None:
+        return [] if schema.get("nullable") else [
+            _field_error(loc, "null は指定できません", "none_forbidden", value)]
+    kind = schema.get("type")
+    if kind == "integer":
+        if isinstance(value, bool) or not isinstance(value, int):
+            return [_field_error(loc, "整数を指定してください", "int_type", value)]
+    elif kind == "number":
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(value)):
+            return [_field_error(loc, "数値を指定してください", "float_type", value)]
+    elif kind == "string":
+        if not isinstance(value, str):
+            return [_field_error(loc, "文字列を指定してください", "string_type", value)]
+        if "enum" in schema and value not in schema["enum"]:
+            return [_field_error(
+                loc, f"{' / '.join(schema['enum'])} のいずれかを指定してください", "enum", value)]
+        if "maxLength" in schema and len(value) > schema["maxLength"]:
+            return [_field_error(
+                loc, f"{schema['maxLength']}文字以内にしてください", "string_too_long", None)]
+    elif kind == "array":
+        if not isinstance(value, list):
+            return [_field_error(loc, "配列を指定してください", "list_type", value)]
+        if len(value) > schema.get("maxItems", len(value)):
+            return [_field_error(
+                loc, f"最大{schema['maxItems']}件までです", "too_long", None)]
+        errors = []
+        for index, item in enumerate(value):
+            errors += _check_value(item, schema["items"], [*loc, index])
+        return errors
+    elif kind == "object":
+        if not isinstance(value, dict):
+            return [_field_error(loc, "オブジェクトを指定してください", "dict_type", value)]
+        errors = [
+            _field_error([*loc, name], "必須です", "missing")
+            for name in schema.get("required", []) if name not in value
+        ]
+        for name, child in schema.get("properties", {}).items():
+            if name in value:
+                errors += _check_value(value[name], child, [*loc, name])
+        return errors
+    if "minimum" in schema and not schema["minimum"] <= value <= schema["maximum"]:
+        return [_field_error(
+            loc, f"{schema['minimum']}〜{schema['maximum']}の範囲で指定してください",
+            "range", value)]
+    return []
+
+
+def _validate_query(query: dict) -> None:
+    """Reject invalid Irodori fields before synthesis instead of ignoring them.
+
+    VOICEVOX clients never send ``irodori*`` keys, so unknown keys with that
+    prefix are almost always a typo or a camelCase name, which would otherwise
+    silently fall back to defaults.
+    """
+    errors = []
+    for key, value in query.items():
+        if not key.lower().startswith("irodori"):
+            continue
+        schema = IRODORI_QUERY_FIELDS.get(key)
+        if schema is None:
+            suggestion = _snake_case(key)
+            hint = (f"。{suggestion} のことですか？"
+                    if suggestion in IRODORI_QUERY_FIELDS else "")
+            errors.append(_field_error(
+                ["body", key], f"未知のフィールドです{hint}", "extra_forbidden", value))
+            continue
+        errors += _check_value(value, schema, ["body", key])
+    errors += _check_value(
+        query.get("speedScale", 1.0),
+        {"type": "number", "minimum": SPEED_SCALE_MIN, "maximum": SPEED_SCALE_MAX},
+        ["body", "speedScale"])
+    if errors:
+        raise RequestValidationError(errors)
+
+
+def _int_query_param(params: dict, name: str) -> int:
+    """Read a required integer query parameter (VOICEVOX's ``speaker`` etc.)."""
+    values = params.get(name)
+    if not values:
+        raise RequestValidationError([_field_error(["query", name], "必須です", "missing")])
+    try:
+        return int(values[0])
+    except ValueError:
+        raise RequestValidationError([_field_error(
+            ["query", name], "整数を指定してください", "int_parsing", values[0])]) from None
 
 
 def _reference_audio_extension(reference: dict) -> str:
@@ -261,6 +451,92 @@ def _manifest_sampling_fields(adapter) -> dict:
         "irodori_default_steps": int(getattr(
             adapter, "default_steps",
             DEFAULT_STEPS_MEANFLOW if flow == "meanflow" else DEFAULT_STEPS_RF)),
+    }
+
+
+def _openapi_document() -> dict:
+    """Describe the VOICEVOX-compatible subset and the Irodori extensions.
+
+    The Irodori fields come from IRODORI_QUERY_FIELDS, the same table the
+    request validation uses.
+    """
+    speaker = {"name": "speaker", "in": "query", "required": True,
+               "schema": {"type": "integer"}, "description": "/speakers の styles[].id"}
+    json_ok = {"description": "OK", "content": {"application/json": {}}}
+    invalid = {"description": "入力エラー（VOICEVOX と同じ FastAPI 形式）",
+               "content": {"application/json": {
+                   "schema": {"$ref": "#/components/schemas/HTTPValidationError"}}}}
+    return {
+        "openapi": "3.0.3",
+        "info": {
+            "title": "Irodori-TTS VOICEVOX compatible engine",
+            "version": ENGINE_VERSION,
+            "description": (
+                "VOICEVOX エンジン互換の API。ブラウザ以外のローカルクライアント（Origin ヘッダーなし）は"
+                "トークン不要で使える。ブラウザからは許可された Origin と /irodori/session の"
+                "トークン（X-Irodori-Session）が必要。"
+            ),
+        },
+        "paths": {
+            "/version": {"get": {"responses": {"200": json_ok}}},
+            "/core_versions": {"get": {"responses": {"200": json_ok}}},
+            "/speakers": {"get": {"responses": {"200": json_ok}}},
+            "/speaker_info": {"get": {
+                "parameters": [{"name": "speaker_uuid", "in": "query", "required": True,
+                                "schema": {"type": "string"}}],
+                "responses": {"200": json_ok, "404": json_ok}}},
+            "/engine_manifest": {"get": {"responses": {"200": json_ok}}},
+            "/user_dict": {"get": {"responses": {"200": json_ok}}},
+            "/audio_query": {"post": {
+                "parameters": [
+                    {"name": "text", "in": "query", "required": True,
+                     "schema": {"type": "string"}, "description": "最大256文字"},
+                    speaker,
+                ],
+                "responses": {
+                    "200": {"description": "OK", "content": {"application/json": {
+                        "schema": {"$ref": "#/components/schemas/AudioQuery"}}}},
+                    "422": invalid,
+                }}},
+            "/synthesis": {"post": {
+                "parameters": [speaker],
+                "requestBody": {"required": True, "content": {"application/json": {
+                    "schema": {"$ref": "#/components/schemas/AudioQuery"}}}},
+                "responses": {
+                    "200": {"description": "WAV", "content": {"audio/wav": {}}},
+                    "400": json_ok,
+                    "422": invalid,
+                    "429": {"description": "合成の同時実行数の上限。Retry-After 秒後に再試行"},
+                }}},
+        },
+        "components": {"schemas": {
+            "AudioQuery": {
+                "type": "object",
+                "description": "VOICEVOX の AudioQuery。accent_phrases などの韻律フィールドは互換のため"
+                               "受け付けるが、Irodori は文章から直接合成するため使わない",
+                "properties": {
+                    "accent_phrases": {"type": "array", "items": {"type": "object"}},
+                    "speedScale": {"type": "number", "minimum": SPEED_SCALE_MIN,
+                                   "maximum": SPEED_SCALE_MAX, "default": 1.0},
+                    "pitchScale": {"type": "number"},
+                    "intonationScale": {"type": "number"},
+                    "volumeScale": {"type": "number"},
+                    "prePhonemeLength": {"type": "number"},
+                    "postPhonemeLength": {"type": "number"},
+                    "outputSamplingRate": {"type": "integer"},
+                    "outputStereo": {"type": "boolean"},
+                    "kana": {"type": "string"},
+                    **IRODORI_QUERY_FIELDS,
+                },
+            },
+            "HTTPValidationError": {"type": "object", "properties": {"detail": {
+                "type": "array", "items": {"type": "object", "properties": {
+                    "type": {"type": "string"},
+                    "loc": {"type": "array", "items": {}},
+                    "msg": {"type": "string"},
+                    "input": {},
+                }}}}},
+        }},
     }
 
 
@@ -528,8 +804,10 @@ class Handler(BaseHTTPRequestHandler):
         sys.stderr.write("[voicevox] " + (fmt % args) + "\n")
 
     def _send(self, status: int, body: bytes, content_type: str = "application/json; charset=utf-8",
-              cache_control: str | None = None):
+              cache_control: str | None = None, retry_after: int | None = None):
         self.send_response(status)
+        if retry_after is not None:
+            self.send_header("Retry-After", str(retry_after))
         origin = self.headers.get("Origin")
         if origin in ALLOWED_ORIGINS:
             self.send_header("Access-Control-Allow-Origin", origin)
@@ -543,8 +821,9 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _json(self, status: int, value: object):
-        self._send(status, json.dumps(value, ensure_ascii=False).encode("utf-8"))
+    def _json(self, status: int, value: object, retry_after: int | None = None):
+        self._send(status, json.dumps(value, ensure_ascii=False).encode("utf-8"),
+                   retry_after=retry_after)
 
     def _body_json(self) -> dict:
         raw_length = self.headers.get("Content-Length")
@@ -576,13 +855,33 @@ class Handler(BaseHTTPRequestHandler):
 
     def _bootstrap_allowed(self) -> bool:
         origin = self.headers.get("Origin")
+        return self._loopback_host() and origin in ALLOWED_ORIGINS
+
+    def _loopback_host(self) -> bool:
+        # Host の確認は DNS rebinding 対策。
         host = self.headers.get("Host", "")
         hostname = host.rsplit(":", 1)[0] if ":" in host and not host.startswith("[") else host
         if host.startswith("["):
             hostname = host[1:].split("]", 1)[0]
-        return hostname in ("127.0.0.1", "localhost", "::1") and origin in ALLOWED_ORIGINS
+        return hostname in ("127.0.0.1", "localhost", "::1")
+
+    def _native_client(self) -> bool:
+        """VOICEVOX と同じく、ブラウザ以外のローカルクライアントはトークンなしで通す。
+
+        ブラウザは POST や CORS の要求に必ず Origin を付け、no-cors の GET
+        （img タグなど）にも Sec-Fetch-Site を付ける。どちらも無い要求は同じ PC の
+        プログラムからのもの。そうしたプログラムは Origin を偽装すればトークンも
+        取れるので、トークンを求めても防御にはならない。
+        """
+        if "Origin" in self.headers:
+            return False
+        if self.headers.get("Sec-Fetch-Site", "none") not in ("none", "same-origin"):
+            return False
+        return self.client_address[0] in ("127.0.0.1", "::1") and self._loopback_host()
 
     def _authorized(self) -> bool:
+        if self._native_client():
+            return True
         return self._bootstrap_allowed() and self.headers.get("X-Irodori-Session") == SESSION_TOKEN
 
     def _resource_url(self, value: str) -> str:
@@ -698,6 +997,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send_resource(parsed.path.removeprefix("/irodori/resource/"))
         elif parsed.path == "/version":
             self._json(200, ENGINE_VERSION)
+        elif parsed.path == "/core_versions":
+            self._json(200, [ENGINE_VERSION])
+        elif parsed.path == "/openapi.json":
+            self._json(200, _openapi_document())
         elif parsed.path == "/speakers":
             self._json(200, _speaker_list_payload(self.adapter.speakers_json))
         elif parsed.path == "/irodori/speaker_bundle":
@@ -803,18 +1106,21 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(204, b"")
                 return
             if parsed.path == "/audio_query":
-                params = parse_qs(parsed.query)
-                text = (params.get("text") or [""])[0]
-                if not text:
-                    raise ValueError("text query parameter is required")
-                self._json(200, _query(text))
+                # VOICEVOX と同じく text と speaker は必須。空の text は許す。
+                params = parse_qs(parsed.query, keep_blank_values=True)
+                if "text" not in params:
+                    raise RequestValidationError(
+                        [_field_error(["query", "text"], "必須です", "missing")])
+                _int_query_param(params, "speaker")
+                self._json(200, _query(params["text"][0]))
                 return
             if parsed.path == "/synthesis":
                 params = parse_qs(parsed.query)
-                speaker = int((params.get("speaker") or ["0"])[0])
+                speaker = _int_query_param(params, "speaker")
                 query = self._body_json()
+                _validate_query(query)
                 if not self.adapter.synthesis_slots.acquire(timeout=0.1):
-                    self._json(429, {"detail": "synthesis queue is full"})
+                    self._json(429, {"detail": "synthesis queue is full"}, retry_after=1)
                     return
                 try:
                     data = self.adapter.synthesize(query, speaker)
@@ -829,6 +1135,9 @@ class Handler(BaseHTTPRequestHandler):
         except RequestBodyError as exc:
             self.log_message("request rejected (%s): %s", exc.status, exc)
             self._json(exc.status, {"detail": str(exc)})
+        except RequestValidationError as exc:
+            self.log_message("request rejected (422): %s", exc)
+            self._json(422, {"detail": exc.errors})
         except (ValueError, KeyError) as exc:
             self.log_message("request rejected (400): %s", exc)
             self._json(400, {"detail": str(exc)})
