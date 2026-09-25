@@ -36,6 +36,7 @@ from asr_timeline import (AsrTimeline, decode_wav, ensure_asr_model, asr_package
                           MODEL_DIR as ASR_MODEL_DIR)
 from tts_cli import SpeakerCassette, resolve_embed_dirs
 from speaker_mix import compose_speaker_mix
+from reading_dictionary import KANA_STYLES
 
 # 初回のASRモデル取得でリクエストを待たせる上限（秒）。待ち切れなくても
 # ダウンロードは続くので、次の要求で揃っていれば使える。
@@ -82,7 +83,7 @@ def _wav_seconds(data):
 
 class EditorAdapter:
     DEFAULT_SETTINGS = dict(backend="cpu", model="Aratako/Irodori-TTS-v4.1-Small", seed=4763674,
-                            sway_coeff=-1.0)
+                            sway_coeff=-1.0, english_reading=True, kana_style="katakana")
 
     def __init__(self):
         self.backend_name = "editor"
@@ -104,7 +105,7 @@ class EditorAdapter:
         self._model_info_cache = {}
         self.config_path = ROOT / "editor-settings.json"
         self.settings = dict(backend="cpu", model="Aratako/Irodori-TTS-v4.1-Small", seed=4763674,
-                             sway_coeff=-1.0)
+                             sway_coeff=-1.0, english_reading=True, kana_style="katakana")
         try:
             saved = json.loads(self.config_path.read_text(encoding="utf-8"))
             if isinstance(saved, dict):
@@ -331,6 +332,10 @@ class EditorAdapter:
             raise ValueError("sway_coeff must be a finite number") from exc
         if not math.isfinite(sway_coeff):
             raise ValueError("sway_coeff must be a finite number")
+        if not isinstance(value.get("english_reading", True), bool):
+            raise ValueError("english_reading は true / false で指定してください")
+        if value.get("kana_style", "katakana") not in KANA_STYLES:
+            raise ValueError("kana_style は katakana / hiragana のどちらかです")
 
     @staticmethod
     def _line_cfg(query, key, default):
@@ -877,7 +882,9 @@ class EditorAdapter:
                          irodori_cfg_speaker=self._line_cfg(query, "irodori_cfg_speaker", 5.0),
                          irodori_cfg_caption=self._line_cfg(query, "irodori_cfg_caption", 3.0),
                          irodori_schedule=line_schedule,
-                         irodori_sway_coeff=float(self.settings["sway_coeff"]))
+                         irodori_sway_coeff=float(self.settings["sway_coeff"]),
+                         irodori_english_reading=self.settings.get("english_reading", True),
+                         irodori_kana_style=self.settings.get("kana_style", "katakana"))
             if "irodori_seed" not in query:
                 query["irodori_seed"] = self.settings["seed"]
             started = time.perf_counter()

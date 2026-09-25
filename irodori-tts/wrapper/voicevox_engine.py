@@ -41,7 +41,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from tts_cli import IrodoriTTS, resolve_embed_dirs  # noqa: E402
-from reading_dictionary import READING_DICTIONARY, make_word
+from reading_dictionary import KANA_STYLES, READING_DICTIONARY, make_word
 from third_party_licenses import dependency_licenses
 from speaker_catalog import blink_thumbnail_for, credit_for, display_name_for, policy_for, mouth_open_thumbnail_for, mouth_parts_for, portrait_for, speaker_catalog, _fallback_icon  # noqa: E402
 
@@ -218,6 +218,14 @@ IRODORI_QUERY_FIELDS: dict[str, dict] = {
         "type": "number",
         "description": "エディタ経由では共通設定の値が優先される",
     },
+    "irodori_english_reading": {
+        "type": "boolean", "default": True,
+        "description": "英単語・英文をカタカナ読みに変換してから合成する。エディタ経由では共通設定の値が優先される",
+    },
+    "irodori_kana_style": {
+        "type": "string", "enum": list(KANA_STYLES), "default": "katakana",
+        "description": "hiragana なら文中のカタカナをひらがなにして読ませる。エディタ経由では共通設定の値が優先される",
+    },
     "irodori_secondary_speaker_style_id": {
         "type": "integer", "nullable": True, "deprecated": True,
         "description": "旧形式。irodori_additional_speakers を使う",
@@ -236,7 +244,10 @@ def _check_value(value, schema: dict, loc: list) -> list[dict]:
         return [] if schema.get("nullable") else [
             _field_error(loc, "null は指定できません", "none_forbidden", value)]
     kind = schema.get("type")
-    if kind == "integer":
+    if kind == "boolean":
+        if not isinstance(value, bool):
+            return [_field_error(loc, "true / false を指定してください", "bool_type", value)]
+    elif kind == "integer":
         if isinstance(value, bool) or not isinstance(value, int):
             return [_field_error(loc, "整数を指定してください", "int_type", value)]
     elif kind == "number":
@@ -631,6 +642,17 @@ def _speaker_table(tts: IrodoriTTS, progress_callback=None) -> tuple[list[dict],
     return output, id_to_name
 
 
+def _reading_options(query: dict) -> dict:
+    """英単語の読み変換とカナ表記の指定（エディタの共通設定から届く）。"""
+    english = query.get("irodori_english_reading", True)
+    kana_style = query.get("irodori_kana_style", "katakana")
+    if not isinstance(english, bool):
+        raise ValueError("irodori_english_reading must be a boolean")
+    if kana_style not in KANA_STYLES:
+        raise ValueError(f"irodori_kana_style must be one of {', '.join(KANA_STYLES)}")
+    return dict(english=english, kana_style=kana_style)
+
+
 def _query(text: str) -> dict:
     # Irodori accepts text directly and does not currently expose VOICEVOX's
     # accent-phrase/mora editor.  Keep a valid empty phrase list and preserve
@@ -688,7 +710,7 @@ class VoicevoxAdapter:
 
     def synthesize(self, query: dict, speaker_id: int) -> bytes:
         text = str(query.get("irodori_text") or query.get("kana") or "").strip()
-        text = READING_DICTIONARY.convert(text)
+        text = READING_DICTIONARY.convert(text, **_reading_options(query))
         if not text:
             raise ValueError("audio query does not contain text (irodori_text/kana)")
         if len(text) > MAX_TEXT_CHARS:

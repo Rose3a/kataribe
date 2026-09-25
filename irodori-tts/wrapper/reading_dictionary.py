@@ -8,6 +8,10 @@ import threading
 import unicodedata
 import uuid
 
+from english_reading import convert_english, to_hiragana
+
+KANA_STYLES = ("katakana", "hiragana")
+
 
 def normalize_width(text):
     # Keep Japanese punctuation and full-width kana intact.
@@ -91,8 +95,19 @@ class ReadingDictionary:
         with self.lock:
             self._save({**self.words, **incoming} if override else {**incoming, **self.words})
 
-    def convert(self, text):
-        text = normalize_width(text)
+    def convert(self, text, english=True, kana_style="katakana"):
+        """ユーザー辞書を当て、残った英語をカタカナ読みにする。
+
+        english=False なら英字はそのまま残す。kana_style="hiragana" なら、
+        辞書と英語の読みを含む文中のカタカナをすべてひらがなにする。
+        """
+        if kana_style not in KANA_STYLES:
+            raise ValueError(f"kana_style must be one of {KANA_STYLES}")
+        text = self._apply_words(normalize_width(text), convert_english if english else str)
+        return to_hiragana(text) if kana_style == "hiragana" else text
+
+    def _apply_words(self, text, rest):
+        # ユーザー辞書に当たらなかった部分だけを rest で変換する（辞書の読みは再変換しない）。
         words = sorted(self.snapshot().values(),
                        key=lambda w: (-len(w["surface"]), -w["priority"]))
         readings = {}
@@ -105,16 +120,16 @@ class ReadingDictionary:
                 readings[surface] = word["pronunciation"]
                 user_surfaces.add(surface)
         if not readings:
-            return text
+            return rest(text)
         # Longest key first: Python's alternation keeps the first match, so a
         # shorter user entry would otherwise swallow a longer one.
         ordered = sorted(readings, key=len, reverse=True)
         pattern = re.compile('|'.join(re.escape(k) for k in ordered), re.IGNORECASE | re.ASCII)
         result, start = [], 0
         for match in pattern.finditer(text):
-            result.extend((text[start:match.start()], readings[match[0].lower()]))
+            result.extend((rest(text[start:match.start()]), readings[match[0].lower()]))
             start = match.end()
-        return ''.join(result) + text[start:]
+        return ''.join(result) + rest(text[start:])
 
 
 READING_DICTIONARY = ReadingDictionary(Path(__file__).resolve().parents[2] / "user_dictionary.json")

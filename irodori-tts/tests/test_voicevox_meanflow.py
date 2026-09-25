@@ -137,7 +137,7 @@ class AdapterRequestTests(unittest.TestCase):
     def test_meanflow_request_uses_four_steps_and_zero_cfg(self):
         adapter, captured = self.build_adapter("meanflow")
         with patch.object(voicevox_engine, "READING_DICTIONARY") as dictionary:
-            dictionary.convert.side_effect = lambda text: text
+            dictionary.convert.side_effect = lambda text, **_: text
             data = adapter.synthesize({"irodori_text": "こんにちは"}, 1)
         self.assertEqual(data, b"RIFFtest")
         self.assertEqual(captured["num_steps"], 4)
@@ -149,7 +149,7 @@ class AdapterRequestTests(unittest.TestCase):
     def test_rf_request_keeps_eight_steps_and_cfg(self):
         adapter, captured = self.build_adapter("rf_velocity")
         with patch.object(voicevox_engine, "READING_DICTIONARY") as dictionary:
-            dictionary.convert.side_effect = lambda text: text
+            dictionary.convert.side_effect = lambda text, **_: text
             adapter.synthesize({"irodori_text": "こんにちは"}, 1)
         self.assertEqual(captured["num_steps"], 8)
         self.assertEqual(captured["cfg_scale_text"], 3.0)
@@ -159,7 +159,7 @@ class AdapterRequestTests(unittest.TestCase):
     def test_explicit_steps_still_reach_the_runtime(self):
         adapter, captured = self.build_adapter("meanflow")
         with patch.object(voicevox_engine, "READING_DICTIONARY") as dictionary:
-            dictionary.convert.side_effect = lambda text: text
+            dictionary.convert.side_effect = lambda text, **_: text
             adapter.synthesize({"irodori_text": "こんにちは", "irodori_steps": 8}, 1)
         self.assertEqual(captured["num_steps"], 8)
 
