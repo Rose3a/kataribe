@@ -80,7 +80,7 @@ class DictionaryApiTests(DictionaryTests):
         adapter.lock = threading.Lock()
         adapter.progress_callback = None
         adapter.tts = Mock()
-        adapter.tts.synthesize.side_effect = lambda **kwargs: Path(kwargs["out_wav"]).write_bytes(b"wav")
+        adapter.tts.synthesize.side_effect = lambda **kwargs: kwargs["out_wav"].write(b"wav")
         with patch.object(engine, "READING_DICTIONARY", self.dictionary):
             query = engine._query("BOX！")
             key = self.dictionary.put(make_word("BOX", "ハコ"))

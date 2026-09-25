@@ -220,10 +220,16 @@ def build(label: str) -> Path:
     # Read-only copy: never mutate the lab's shapes.json.
     shapes = json.loads((WORK / "shapes.json").read_text(encoding="utf-8"))
     profile = builder.create_optimization_profile()
+    # Tune kernels for typical requests: 8 s of audio (200 frames) and a
+    # compacted sentence (48 tokens).  MeanFlow runs batch 1; RF CFG batch 3.
+    # Measured on an RTX 3060: ~5% faster per call at 36-183 frames, ~1%
+    # slower at 700 frames, compared with opt=(batch 3, 625 frames, 128 tokens).
+    opt_batch = 1 if "delta_t" in shapes else 3
+    opt_frames, opt_text = 200, 48
     ranges = {
-        "text_mask": (1, 128, 256), "speaker_mask": (1, 16, 64),
-        "caption_mask": (1, 1, 512), "kv_0": (1, 128, 256),
-        "kv_1": (1, 128, 256), "kv_2": (1, 16, 64), "kv_3": (1, 16, 64),
+        "text_mask": (1, opt_text, 256), "speaker_mask": (1, 16, 64),
+        "caption_mask": (1, 1, 512), "kv_0": (1, opt_text, 256),
+        "kv_1": (1, opt_text, 256), "kv_2": (1, 16, 64), "kv_3": (1, 16, 64),
         "kv_4": (1, 1, 512), "kv_5": (1, 1, 512),
     }
     for i in range(network.num_inputs):
@@ -231,13 +237,13 @@ def build(label: str) -> Path:
         opt = list(shapes[name])
         low, high = opt.copy(), opt.copy()
         if name in {"x", "t", "delta_t", "text_mask", "speaker_mask", "caption_mask"}:
-            low[0], opt[0], high[0] = 1, 3, 3
+            low[0], opt[0], high[0] = 1, opt_batch, 3
         if name.startswith("kv_"):
-            low[1], opt[1], high[1] = 1, 3, 3
+            low[1], opt[1], high[1] = 1, opt_batch, 3
         if name == "x":
-            low[1], opt[1], high[1] = 1, 625, 750
+            low[1], opt[1], high[1] = 1, opt_frames, 750
         elif name.startswith("rope_"):
-            low[0], opt[0], high[0] = 1, 625, 750
+            low[0], opt[0], high[0] = 1, opt_frames, 750
         if name in ranges:
             axis = 1 if name.endswith("mask") else 2
             low[axis], opt[axis], high[axis] = ranges[name]
@@ -252,7 +258,8 @@ def build(label: str) -> Path:
     record = {"onnx": str(onnx_path), "plan": str(out), "bytes": out.stat().st_size,
               "sha256": sha256(out), "build_s": time.perf_counter() - started,
               "workspace_bytes": 4 << 30, "optimization_level": 3,
-              "profiling_verbosity": "DETAILED"}
+              "profiling_verbosity": "DETAILED",
+              "opt_shape": {"batch": opt_batch, "frames": opt_frames, "text": opt_text}}
     manifest_path.write_text(json.dumps(record, indent=2), encoding="utf-8")
     log.info("build complete: %s", json.dumps(record, sort_keys=True))
     return out

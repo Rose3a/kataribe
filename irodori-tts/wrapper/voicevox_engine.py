@@ -16,6 +16,8 @@ ONNX codec are available on this machine.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
 import hashlib
 import math
@@ -471,11 +473,14 @@ class VoicevoxAdapter:
             f"speaker={speaker_name or '(none)'}",
             file=sys.stderr, flush=True,
         )
+        reference = query.get("irodori_reference_audio")
         with self.lock:
-            with tempfile.TemporaryDirectory(prefix="irodori-vv-", dir=str(ROOT / "wrapper")) as tmp:
-                wav_path = Path(tmp) / "audio.wav"
+            # The runtime reads reference audio from a file, so only that case
+            # needs a temporary folder; the output WAV stays in memory.
+            with (tempfile.TemporaryDirectory(prefix="irodori-vv-", dir=str(ROOT / "wrapper"))
+                  if reference else contextlib.nullcontext()) as tmp:
+                wav = io.BytesIO()
                 ref_wav = None
-                reference = query.get("irodori_reference_audio")
                 if reference:
                     data_url = str(reference.get("dataUrl", ""))
                     if not data_url.startswith("data:audio/") or ";base64," not in data_url:
@@ -495,7 +500,7 @@ class VoicevoxAdapter:
                 self.tts.synthesize(
                     text=text,
                     speaker=speaker_name,
-                    out_wav=wav_path,
+                    out_wav=wav,
                     seed=(None if seed_value is None else int(seed_value)),
                     num_steps=sampling["num_steps"],
                     seconds=query.get("irodori_seconds"),
@@ -513,7 +518,7 @@ class VoicevoxAdapter:
                     ref_wav=ref_wav,
                     log_fn=self.progress_callback,
                 )
-                return wav_path.read_bytes()
+                return wav.getvalue()
 
 
 class Handler(BaseHTTPRequestHandler):

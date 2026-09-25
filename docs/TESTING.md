@@ -17,8 +17,23 @@ pytest を使う場合:
 ```
 
 `test_voicevox_meanflow.py`、`test_meanflow_condition_reuse.py`、`test_trt_meanflow.py`、
-`test_trt_numerical_checks.py` は torch（TensorRT 系は tensorrt も）を import するため、
-依存が入っていない環境ではコレクション時に失敗する。それ以外は素の Python でも動く。
+`test_trt_numerical_checks.py`、`test_inference_speedups.py` は torch（TensorRT 系は tensorrt も）を
+import するため、依存が入っていない環境ではコレクション時に失敗する。それ以外は素の Python でも動く。
+`test_inference_speedups.py` の CUDA Graph と CUDA 上の末尾トリムのテストは、GPU が無いとスキップされる。
+
+## TensorRT 経路の速度と一致の確認（実モデル）
+
+```bat
+.local\venv\Scripts\python.exe tools\bench_trt_pipeline.py --out work\bench\after
+.local\venv\Scripts\python.exe tools\bench_trt_pipeline.py --compare work\bench\before work\bench\after
+```
+
+エディタと同じ `VoicevoxAdapter.synthesize` を短文・中文・長文で繰り返し、段ごとの中央値と WAV を
+`--out` に残す。`--compare` は2回分の時間差と WAV の一致（`IDENTICAL` はバイト一致）を出す。
+`--plan` で DiT の plan を固定できるので、コード変更だけの効果を同じ plan で比べられる。
+`IRODORI_TRT_CODEC=0` / `IRODORI_CUDA_GRAPHS=0` を付けると、それぞれを外した状態で測れる。
+codec の TensorRT plan は構築時に FP32 の PyTorch codec と比べ、BF16 の PyTorch codec より
+FP32 から離れていたら採用しない（`.cache\trt-codec\<key>\ready.json` に SNR を記録）。
 
 ## エンジンの検証
 

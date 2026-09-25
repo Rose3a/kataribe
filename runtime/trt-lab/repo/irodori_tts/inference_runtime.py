@@ -175,13 +175,17 @@ def find_flattening_point(
         dtype=latent.dtype,
     )
     padded = torch.cat([latent, pad], dim=0)
-    for i in range(padded.shape[0] - window_size):
-        window = padded[i : i + window_size]
-        window_std = window.std(unbiased=False)
-        window_mean = window.mean()
-        if window_std < std_threshold and torch.abs(window_mean - target_value) < mean_threshold:
-            return int(i)
-    return total_steps
+    # All T trailing windows at once. This used to be a Python loop with two
+    # host syncs per frame (~30 ms for 8 s of audio). Statistics accumulate in
+    # FP32 and round to the latent dtype, then compare exactly as the loop did.
+    windows = padded.unfold(0, window_size, 1)[:total_steps].reshape(total_steps, -1).float()
+    window_mean = windows.mean(dim=1)
+    window_std = (windows - window_mean[:, None]).square().mean(dim=1).sqrt()
+    window_mean = window_mean.to(latent.dtype)
+    window_std = window_std.to(latent.dtype)
+    flat = (window_std < std_threshold) & (torch.abs(window_mean - target_value) < mean_threshold)
+    hits = flat.nonzero()
+    return int(hits[0, 0]) if hits.numel() else total_steps
 
 
 @dataclass(frozen=True)
@@ -208,7 +212,8 @@ class SamplingRequest:
     ref_wavs: list[str] | None = None
     ref_latent: str | None = None
     ref_latents: list[str] | None = None
-    ref_embed: str | None = None
+    # Path to a .speaker.safetensors file, or the speaker_embedding tensor itself.
+    ref_embed: str | torch.Tensor | None = None
     no_ref: bool = False
     ref_normalize_db: float | None = -16.0
     ref_ensure_max: bool = True
@@ -1016,7 +1021,12 @@ class InferenceRuntime:
             )
 
         runtime_dtype = next(self.model.parameters()).dtype
-        speaker_embedding = load_speaker_inversion_payload(req.ref_embed)["speaker_embedding"]
+        if isinstance(req.ref_embed, torch.Tensor):
+            # In-memory embedding from a resident caller: same tensor the
+            # .speaker.safetensors round trip would have produced.
+            speaker_embedding = req.ref_embed
+        else:
+            speaker_embedding = load_speaker_inversion_payload(req.ref_embed)["speaker_embedding"]
         state, mask = speaker_inversion_batch_tensors(
             speaker_embedding,
             batch_size=batch_size,

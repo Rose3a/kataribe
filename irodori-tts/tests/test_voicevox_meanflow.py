@@ -123,7 +123,7 @@ class AdapterRequestTests(unittest.TestCase):
         class FakeTts:
             def synthesize(self, **kwargs):
                 captured.update(kwargs)
-                Path(kwargs["out_wav"]).write_bytes(b"RIFFtest")
+                kwargs["out_wav"].write(b"RIFFtest")
 
         adapter = VoicevoxAdapter.__new__(VoicevoxAdapter)
         adapter.tts = FakeTts()

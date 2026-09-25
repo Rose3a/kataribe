@@ -87,12 +87,29 @@ def _import_runtime():
         local_runtime / "trt-lab",
     )
     for candidate in candidates:
-        if (candidate / "irodori_tts").is_dir():
+        # Called on every request; do not grow sys.path each time.
+        if (candidate / "irodori_tts").is_dir() and str(candidate) not in sys.path:
             sys.path.insert(0, str(candidate))
     from irodori_tts.inference_runtime import (
         InferenceRuntime, RuntimeKey, SamplingRequest, save_wav,
     )
     return runtime_dir, InferenceRuntime, RuntimeKey, SamplingRequest, save_wav
+
+
+def write_wav(target, audio: torch.Tensor, sample_rate: int) -> None:
+    """Write a waveform to a path, or to a binary file object such as BytesIO.
+
+    The in-memory form writes the same bytes as the runtime's ``save_wav``
+    (its torchaudio attempt fails here and falls back to soundfile), without
+    touching the disk.
+    """
+    if isinstance(target, (str, os.PathLike)):
+        _import_runtime()[4](str(target), audio, sample_rate)
+        return
+    import soundfile as sf
+    audio_cpu = audio.detach().to(device="cpu", dtype=torch.float32)
+    audio_np = audio_cpu.squeeze(0).numpy() if audio_cpu.shape[0] == 1 else audio_cpu.T.numpy()
+    sf.write(target, audio_np, sample_rate, format="WAV")
 
 
 def _import_engine():
@@ -258,24 +275,12 @@ class TorchBackend:
             compile_dynamic=False,
         ))
 
-    def synthesize(self, request, speaker_tensor: torch.Tensor, out_wav: Path, log_fn=None) -> dict:
-        if speaker_tensor is not None:
-            request.ref_embed = self._speaker_path(speaker_tensor)
+    def synthesize(self, request, speaker_tensor: torch.Tensor, out_wav, log_fn=None) -> dict:
+        # IrodoriTTS.synthesize has already put the speaker tensor on the request.
         result = self.runtime.synthesize(request, log_fn=log_fn)
-        save_wav = _import_runtime()[4]
-        save_wav(str(out_wav), result.audio, result.sample_rate)
+        write_wav(out_wav, result.audio, result.sample_rate)
         return {"backend": self.name, "wall_s": result.total_to_decode,
                 "audio_s": result.audio.shape[-1] / result.sample_rate}
-
-    @staticmethod
-    def _speaker_path(tensor: torch.Tensor) -> str:
-        from safetensors.torch import save_file
-        cache_dir = env_path("IRODORI_CACHE_DIR", DEFAULT_CACHE_DIR)
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        target = cache_dir / "active_speaker.speaker.safetensors"
-        cpu = tensor.detach().to("cpu").contiguous()
-        save_file({"speaker_embedding": cpu}, str(target))
-        return str(target)
 
 
 class TrtBackend:
@@ -315,21 +320,40 @@ class TrtBackend:
         self.stream = torch.cuda.Stream()
         self.stream.wait_stream(torch.cuda.current_stream())
         self.trt_version = trt_version
+        # Both accelerations below keep or improve numerics and can be turned
+        # off for comparison: IRODORI_CUDA_GRAPHS=0, IRODORI_TRT_CODEC=0.
+        self.graphs = {}
+        if os.environ.get("IRODORI_CUDA_GRAPHS", "1") != "0":
+            import cuda_graphs
+            self.graphs = cuda_graphs.install(self.runtime.model)
+        self.codec = None
+        codec_plan = os.environ.get("IRODORI_TRT_CODEC_PLAN")
+        if codec_plan and os.environ.get("IRODORI_TRT_CODEC", "1") != "0":
+            import trt_codec
+            try:
+                with torch.cuda.stream(self.stream):
+                    self.codec = trt_codec.install(self.runtime, Path(codec_plan))
+            except Exception as exc:  # noqa: BLE001 - the PyTorch codec still works
+                print(f"[trt] codec plan unusable, using the PyTorch codec: {exc}",
+                      file=sys.stderr, flush=True)
+        # Weights only the plans use go to CPU RAM, and idle cache goes back
+        # to the driver (IRODORI_TRT_LOW_VRAM=0 keeps everything resident).
+        self.busy = threading.Lock()
+        self.idle_release = None
+        if os.environ.get("IRODORI_TRT_LOW_VRAM", "1") != "0":
+            import vram_trim
+            moved = vram_trim.install(self)
+            self.idle_release = vram_trim.IdleRelease(self.busy)
+            print(f"[trt] moved {moved / 2**20:.0f} MB of plan-duplicated weights to CPU RAM",
+                  file=sys.stderr, flush=True)
 
-    def synthesize(self, request, speaker_tensor: torch.Tensor, out_wav: Path, log_fn=None) -> dict:
-        if speaker_tensor is not None:
-            from safetensors.torch import save_file
-            cache_dir = env_path("IRODORI_CACHE_DIR", DEFAULT_CACHE_DIR)
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            target = cache_dir / "active_speaker.speaker.safetensors"
-            save_file({"speaker_embedding": speaker_tensor.detach().to("cpu").contiguous()},
-                      str(target))
-            request.ref_embed = str(target)
-        with torch.cuda.stream(self.stream):
+    def synthesize(self, request, speaker_tensor: torch.Tensor, out_wav, log_fn=None) -> dict:
+        with self.busy, torch.cuda.stream(self.stream):
             result = self.runtime.synthesize(request, log_fn=log_fn)
             torch.cuda.synchronize()
-        save_wav = _import_runtime()[4]
-        save_wav(str(out_wav), result.audio, result.sample_rate)
+        if self.idle_release is not None:
+            self.idle_release.touch()
+        write_wav(out_wav, result.audio, result.sample_rate)
         return {"backend": self.name, "wall_s": result.total_to_decode,
                 "audio_s": result.audio.shape[-1] / result.sample_rate}
 
@@ -411,14 +435,10 @@ class RadeonBackend:
                 return ids[:, :length].contiguous(), mask[:, :length].contiguous()
             tokenizer.batch_encode = compact_encode
 
-    def synthesize(self, request, speaker_tensor: torch.Tensor, out_wav: Path, log_fn=None) -> dict:
-        if speaker_tensor is not None:
-            request.ref_embed = TorchBackend._speaker_path(speaker_tensor)
-            request.no_ref = False
+    def synthesize(self, request, speaker_tensor: torch.Tensor, out_wav, log_fn=None) -> dict:
         self.bridge.reset_stats()
         result = self.runtime.synthesize(request, log_fn=log_fn)
-        save_wav = _import_runtime()[4]
-        save_wav(str(out_wav), result.audio, result.sample_rate)
+        write_wav(out_wav, result.audio, result.sample_rate)
         return {"backend": self.name, "wall_s": result.total_to_decode,
                 "audio_s": result.audio.shape[-1] / result.sample_rate,
                 "bridge": self.bridge.stats}
@@ -559,8 +579,11 @@ class IrodoriTTS:
             combined[:second.shape[0]] += second.to(
                 device=primary.device, dtype=torch.float32) * strength
             speaker_tensor = combined.to(primary.dtype)
-        out_wav = Path(out_wav) if out_wav else Path(f"outputs/{speaker_name}_{seed}.wav")
-        out_wav.parent.mkdir(parents=True, exist_ok=True)
+        # out_wav may also be a binary file object (io.BytesIO) to keep the
+        # resident engine off the disk.
+        if out_wav is None or isinstance(out_wav, (str, os.PathLike)):
+            out_wav = Path(out_wav) if out_wav else Path(f"outputs/{speaker_name}_{seed}.wav")
+            out_wav.parent.mkdir(parents=True, exist_ok=True)
         _, _, _, SamplingRequest, _ = _import_runtime()
         request = SamplingRequest(
             text=text, caption=caption,
@@ -579,13 +602,9 @@ class IrodoriTTS:
         if ref_wav is not None:
             pass
         elif speaker_tensor is not None:
-            from safetensors.torch import save_file
-            cache_dir = env_path("IRODORI_CACHE_DIR", DEFAULT_CACHE_DIR)
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            cache_file = cache_dir / "active_speaker.speaker.safetensors"
-            save_file({"speaker_embedding": speaker_tensor.detach().to("cpu").contiguous()},
-                      str(cache_file))
-            request.ref_embed = str(cache_file)
+            # Hand the tensor over directly instead of a .speaker.safetensors
+            # round trip; the runtime receives identical values.
+            request.ref_embed = speaker_tensor.detach().contiguous()
         else:
             request.no_ref = True
         start = time.perf_counter()
@@ -598,7 +617,7 @@ class IrodoriTTS:
             "audio_s": result["audio_s"],
             "speaker": speaker_name,
             "seed": seed,
-            "out_wav": str(out_wav),
+            "out_wav": str(out_wav) if isinstance(out_wav, Path) else None,
         }
 
     def close(self) -> None:

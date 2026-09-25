@@ -69,6 +69,15 @@ open_browser.bat
 bat\trt_setup.bat
 ```
 
+TensorRT バックエンドでは、音声を波形に戻す codec も FP16 の TensorRT で動かします。初回だけ codec の変換（1〜2分）が入り、
+変換結果は FP32 基準で今までの BF16 codec 以上の精度が出ることを確かめたうえで `.cache\trt-codec` に保存されます。
+変換に失敗した場合は従来の PyTorch codec のまま動きます。`IRODORI_TRT_CODEC=0` で codec の TensorRT 化を、
+`IRODORI_CUDA_GRAPHS=0` で条件エンコーダの CUDA Graph 化を止められます（比較用）。
+
+TensorRT バックエンドは、TensorRT 側が持っている重みの PyTorch 側の複製を CPU メモリへ移し、生成が
+5 秒止まるとキャッシュした VRAM をドライバへ返します（RTX 3060・MF モデルで待機時の使用量が
+約 4.0GB → 約 2.5GB、出力は変わりません）。`IRODORI_TRT_LOW_VRAM=0` で従来どおり全部を VRAM に置きます。
+
 > **注意:** すべての CUDA 対応 GPU での動作を保証するものではありません。未確認の環境もあります。
 >
 > **動作確認済み環境:** RTX 3060（MFモデル / step4）では、約20秒の音声を1秒未満で推論できることを確認しています。

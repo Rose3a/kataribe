@@ -3,6 +3,7 @@ import argparse
 import base64
 import gc
 import hashlib
+import io
 import json
 import math
 import os
@@ -10,7 +11,6 @@ import re
 import struct
 import threading
 import time
-import tempfile
 import uuid
 from collections import deque
 from pathlib import Path
@@ -620,8 +620,25 @@ class EditorAdapter:
         if self.settings['backend'] == 'trt':
             from trt_cache import ensure_plan
             plan = ensure_plan(local_model, self._set_progress, self._runtime_log)
+            self._prepare_trt_codec()
         return VoicevoxAdapter(self.settings["backend"], 50125, resolve_embed_dirs(),
                                plan, self._progress_event)
+
+    def _prepare_trt_codec(self):
+        """Build/reuse the FP16 TensorRT codec; TrtBackend reads it from the env.
+
+        Optional: on any failure the backend keeps the PyTorch codec.
+        """
+        os.environ.pop("IRODORI_TRT_CODEC_PLAN", None)
+        if os.environ.get("IRODORI_TRT_CODEC", "1") == "0":
+            return
+        try:
+            from trt_codec import ensure_codec_plan
+            codec_plan = ensure_codec_plan(self._set_progress, self._runtime_log)
+        except Exception as exc:  # noqa: BLE001
+            self._runtime_log(f"TensorRT codec unavailable, using PyTorch codec: {exc}")
+            return
+        os.environ["IRODORI_TRT_CODEC_PLAN"] = str(codec_plan)
 
     def schedule_prewarm(self):
         with self._prewarm_lock:
@@ -744,17 +761,16 @@ class EditorAdapter:
             if self.delegate is None:
                 self.delegate = self._build_delegate()
             with self.delegate.lock:
-                with tempfile.TemporaryDirectory(prefix="irodori-mix-", dir=str(ROOT / "wrapper")) as temp:
-                    output = Path(temp) / "preview.wav"
-                    self.delegate.tts.synthesize(
-                        text=text.strip(), speaker="", out_wav=output,
-                        seed=int(self.settings["seed"]),
-                        num_steps=self.delegate.default_steps,
-                        cfg_scale_text=3.0, cfg_scale_speaker=5.0,
-                        cfg_scale_caption=3.0,
-                        speaker_tensor_override=tensor,
-                    )
-                    return output.read_bytes()
+                output = io.BytesIO()
+                self.delegate.tts.synthesize(
+                    text=text.strip(), speaker="", out_wav=output,
+                    seed=int(self.settings["seed"]),
+                    num_steps=self.delegate.default_steps,
+                    cfg_scale_text=3.0, cfg_scale_speaker=5.0,
+                    cfg_scale_caption=3.0,
+                    speaker_tensor_override=tensor,
+                )
+                return output.getvalue()
 
     def mix_save(self, payload):
         name = payload.get("name") if isinstance(payload, dict) else None
