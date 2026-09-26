@@ -5,6 +5,13 @@ export const IRODORI_DEFAULT_STEPS = 8;
 /** MeanFlow（蒸留）モデルの既定ステップ数。 */
 export const IRODORI_MEANFLOW_DEFAULT_STEPS = 4;
 export const IRODORI_DEFAULT_SCHEDULE = "sway" as const;
+/** 英単語・英文の読み。off なら変換せず、katakana / hiragana はその表記にする。 */
+export type IrodoriEnglishReading = "off" | "katakana" | "hiragana";
+/** 合成前のカナ表記。hiragana ならカタカナ語もひらがなにして読ませる。 */
+export type IrodoriKanaStyle = "katakana" | "hiragana";
+export const IRODORI_DEFAULT_ENGLISH_READING: IrodoriEnglishReading =
+  "katakana";
+export const IRODORI_DEFAULT_KANA_STYLE: IrodoriKanaStyle = "katakana";
 export const IRODORI_DEFAULT_CFG_TEXT = 3;
 export const IRODORI_DEFAULT_CFG_CAPTION = 3;
 export const IRODORI_DEFAULT_CFG_SPEAKER = 5;
@@ -67,14 +74,7 @@ export type IrodoriSettings = {
   model: string;
   seed: number;
   sway_coeff: number;
-  /** 英単語・英文の読み。off なら変換せず、katakana / hiragana はその表記にする。 */
-  english_reading: IrodoriEnglishReading;
-  /** 合成前のカナ表記。hiragana ならカタカナ語もひらがなにして読ませる。 */
-  kana_style: IrodoriKanaStyle;
 };
-
-export type IrodoriEnglishReading = "off" | "katakana" | "hiragana";
-export type IrodoriKanaStyle = "katakana" | "hiragana";
 
 /** 選択中モデルの情報。 */
 export type IrodoriModelInfo = {

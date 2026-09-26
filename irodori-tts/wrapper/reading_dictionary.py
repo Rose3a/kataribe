@@ -113,10 +113,11 @@ class ReadingDictionary:
         if kana_style not in KANA_STYLES:
             raise ValueError(f"kana_style must be one of {KANA_STYLES}")
         rest = {"off": str, "katakana": convert_english, "hiragana": _english_to_hiragana}[english]
-        text = self._apply_words(normalize_width(text), rest)
+        # 英語をカナにするときは、辞書の読みの前後の空白も英単語と同じく詰める。
+        text = self._apply_words(normalize_width(text), rest, join=english != "off")
         return to_hiragana(text) if kana_style == "hiragana" else text
 
-    def _apply_words(self, text, rest):
+    def _apply_words(self, text, rest, join=False):
         # ユーザー辞書に当たらなかった部分だけを rest で変換する（辞書の読みは再変換しない）。
         words = sorted(self.snapshot().values(),
                        key=lambda w: (-len(w["surface"]), -w["priority"]))
@@ -134,10 +135,13 @@ class ReadingDictionary:
         # Longest key first: Python's alternation keeps the first match, so a
         # shorter user entry would otherwise swallow a longer one.
         ordered = sorted(readings, key=len, reverse=True)
-        pattern = re.compile('|'.join(re.escape(k) for k in ordered), re.IGNORECASE | re.ASCII)
+        pattern = '(' + '|'.join(re.escape(k) for k in ordered) + ')'
+        if join:
+            pattern = r'[ 	　]*' + pattern + r'[ 	　]*'
+        pattern = re.compile(pattern, re.IGNORECASE | re.ASCII)
         result, start = [], 0
         for match in pattern.finditer(text):
-            result.extend((rest(text[start:match.start()]), readings[match[0].lower()]))
+            result.extend((rest(text[start:match.start()]), readings[match[1].lower()]))
             start = match.end()
         return ''.join(result) + rest(text[start:])
 

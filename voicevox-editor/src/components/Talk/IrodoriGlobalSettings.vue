@@ -63,30 +63,6 @@
       <div v-if="modelInfo?.meanflow" class="text-caption q-mb-sm">
         MeanFlow モデル: ステップ数4が既定。ScheduleとCFGは未使用。
       </div>
-      <QSelect
-        v-model="settings.english_reading"
-        outlined
-        dense
-        label="英単語・英文の読み"
-        :options="englishReadings"
-        emitValue
-        mapOptions
-        :disable="locked"
-        hint="API → エーピーアイ、server → サーバー。ユーザー辞書の登録が優先です"
-        class="q-mb-md"
-      />
-      <QSelect
-        v-model="settings.kana_style"
-        outlined
-        dense
-        label="文中のカタカナ語"
-        :options="kanaStyles"
-        emitValue
-        mapOptions
-        :disable="locked"
-        hint="カタカナ語で言いよどむときは、ひらがなで読ませると改善する場合があります"
-        class="q-mb-sm"
-      />
       <div v-if="hasUnappliedChanges" class="text-caption text-warning q-mb-sm">
         未適用の変更があります。「設定を適用」を押すと反映されます。
       </div>
@@ -200,10 +176,7 @@ const hasUnappliedChanges = computed(
     settings.value != undefined &&
     appliedSettings.value != undefined &&
     (settings.value.backend !== appliedSettings.value.backend ||
-      settings.value.model !== appliedSettings.value.model ||
-      settings.value.english_reading !==
-        appliedSettings.value.english_reading ||
-      settings.value.kana_style !== appliedSettings.value.kana_style),
+      settings.value.model !== appliedSettings.value.model),
 );
 watch(defaultSteps, (value) => {
   irodoriDefaultSteps.value = value;
@@ -232,15 +205,6 @@ const backendDefinitions = [
   { label: "NVIDIA / CUDA", value: "cuda" },
   { label: "NVIDIA / TensorRT", value: "trt" },
   { label: "AMD / DirectML", value: "radeon" },
-];
-const englishReadings = [
-  { label: "変換しない（英字のまま）", value: "off" },
-  { label: "カタカナで読む", value: "katakana" },
-  { label: "ひらがなで読む", value: "hiragana" },
-];
-const kanaStyles = [
-  { label: "カタカナのまま", value: "katakana" },
-  { label: "カタカナをひらがなにする", value: "hiragana" },
 ];
 const availableBackends = ref<Record<string, boolean>>({ cpu: true });
 const backends = computed(() =>

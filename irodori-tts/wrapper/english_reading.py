@@ -447,13 +447,16 @@ def word_to_kana(word):
 
 
 WORD = re.compile(r"[A-Za-z]+(?:[-'’][A-Za-z]+)*")
+# 変換した語の前後の空白（改行は除く）。カナの間に空白があると Irodori が
+# 語ごとに区切って読むので、詰めてつなげて読ませる（アイ ラブ ユー → アイラブユー）。
+WORD_WITH_SPACES = re.compile(r"[ \t　]*(" + WORD.pattern + r")[ \t　]*")
 
 
 def convert_english(text, hiragana=False):
-    """文中の英字の並びをカナ読みにする。数字や記号、空白、元の日本語はそのまま残す。"""
+    """文中の英字の並びをカナ読みにする。数字や記号、元の日本語はそのまま残す。"""
     if hiragana:
-        return WORD.sub(lambda m: to_hiragana(word_to_kana(m.group())), text)
-    return WORD.sub(lambda m: word_to_kana(m.group()), text)
+        return WORD_WITH_SPACES.sub(lambda m: to_hiragana(word_to_kana(m.group(1))), text)
+    return WORD_WITH_SPACES.sub(lambda m: word_to_kana(m.group(1)), text)
 
 
 _KATAKANA = {code: code - 0x60 for code in range(0x30A1, 0x30F7)}

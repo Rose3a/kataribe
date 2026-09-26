@@ -59,11 +59,11 @@ class EnglishReadingTests(unittest.TestCase):
         self.assertEqual(er.word_to_kana("zzzxxyy"), "ゼットゼットゼットエックスエックスワイワイ")
 
     def test_sentences_keep_spacing_digits_and_japanese(self):
-        self.assertEqual(er.convert_english("I love you."), "アイ ラブ ユー.")
-        self.assertEqual(er.convert_english("The Legend of Zelda"), "ザ レジェンド オブ ゼルダ")
+        self.assertEqual(er.convert_english("I love you."), "アイラブユー.")
+        self.assertEqual(er.convert_english("The Legend of Zelda"), "ザレジェンドオブゼルダ")
         self.assertEqual(er.convert_english("レンタルサーバーはAWSで、python3を使う"),
                          "レンタルサーバーはエーダブリューエスで、パイソン3を使う")
-        self.assertEqual(er.convert_english("I'm fine, thank you."), "アイム ファイン, サンク ユー.")
+        self.assertEqual(er.convert_english("I'm fine, thank you."), "アイムファイン,サンクユー.")
 
     def test_long_english_text(self):
         text = ("Welcome to our channel! Today, I'm going to show you how to set up a rental "
@@ -71,7 +71,7 @@ class EnglishReadingTests(unittest.TestCase):
         kana = er.convert_english(text)
         self.assertNotRegex(kana, "[A-Za-z]")
         self.assertLessEqual(len(kana), len(text))
-        self.assertTrue(kana.startswith("ウェルカム トゥー アワー チャンネル! トゥデイ, アイム"))
+        self.assertTrue(kana.startswith("ウェルカムトゥーアワーチャンネル!トゥデイ,アイム"))
 
     def test_every_dictionary_word_becomes_katakana(self):
         bad = [w for w in er.dictionary() if not re.fullmatch(r"[ァ-ヴー]+", er.word_to_kana(w))]
@@ -118,13 +118,13 @@ class ReadingOptionTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         query = engine._query("server とサーバー")
         adapter.synthesize(dict(query), 0)
-        self.assertEqual(adapter.tts.synthesize.call_args.kwargs["text"], "サーバー とサーバー")
+        self.assertEqual(adapter.tts.synthesize.call_args.kwargs["text"], "サーバーとサーバー")
         adapter.synthesize(dict(query, irodori_kana_style="hiragana"), 0)
-        self.assertEqual(adapter.tts.synthesize.call_args.kwargs["text"], "さーばー とさーばー")
+        self.assertEqual(adapter.tts.synthesize.call_args.kwargs["text"], "さーばーとさーばー")
         adapter.synthesize(dict(query, irodori_english_reading="off"), 0)
         self.assertEqual(adapter.tts.synthesize.call_args.kwargs["text"], "server とサーバー")
         adapter.synthesize(dict(query, irodori_english_reading="hiragana"), 0)
-        self.assertEqual(adapter.tts.synthesize.call_args.kwargs["text"], "さーばー とサーバー")
+        self.assertEqual(adapter.tts.synthesize.call_args.kwargs["text"], "さーばーとサーバー")
         for bad in (dict(irodori_kana_style="romaji"), dict(irodori_english_reading=True)):
             with self.assertRaises(ValueError):
                 adapter.synthesize(dict(query, **bad), 0)
@@ -139,21 +139,15 @@ class ReadingOptionTests(unittest.TestCase):
             with self.assertRaises(engine.RequestValidationError):
                 engine._validate_query(dict(base, **bad))
 
-    def test_editor_validates_reading_settings(self):
+    def test_editor_settings_no_longer_hold_reading_options(self):
         import editor_engine
-        adapter = editor_engine.EditorAdapter.__new__(editor_engine.EditorAdapter)
-        adapter.available_backends = lambda: {"cpu": True}
-        adapter._validate_model_source = lambda model: None
-        base = dict(editor_engine.EditorAdapter.DEFAULT_SETTINGS)
-        self.assertEqual(base["english_reading"], "katakana")
-        self.assertEqual(base["kana_style"], "katakana")
-        adapter.validate(base)
-        for english in ("off", "katakana", "hiragana"):
-            adapter.validate(dict(base, kana_style="hiragana", english_reading=english))
-        for bad in (dict(kana_style="romaji"), dict(english_reading=True)):
-            with self.assertRaises(ValueError):
-                adapter.validate(dict(base, **bad))
-
+        # 読み方はセリフごとの設定。共通設定には持たず、開発版の保存値は読み込み時に捨てる。
+        base = editor_engine.EditorAdapter.DEFAULT_SETTINGS
+        self.assertNotIn("english_reading", base)
+        self.assertNotIn("kana_style", base)
+        source = Path(editor_engine.__file__).read_text(encoding="utf-8")
+        self.assertIn('saved.pop("english_reading", None)', source)
+        self.assertNotIn("irodori_english_reading=self.settings", source)
 
 if __name__ == "__main__":
     unittest.main()

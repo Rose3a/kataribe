@@ -39,6 +39,10 @@ export interface AudioQuery {
     irodoriSteps?: number;
     /** Per-item Irodori timestep schedule. */
     irodoriSchedule?: 'linear' | 'sway';
+    /** Per-item English reading: off keeps Latin text, katakana / hiragana convert it. */
+    irodoriEnglishReading?: 'off' | 'katakana' | 'hiragana';
+    /** Per-item kana style: hiragana converts katakana in the text to hiragana. */
+    irodoriKanaStyle?: 'katakana' | 'hiragana';
     /** Per-item Irodori target duration in seconds; null uses automatic duration. */
     irodoriSeconds?: number | null;
     /** Per-item Irodori caption. */
@@ -168,6 +172,8 @@ export function AudioQueryFromJSONTyped(json: any, ignoreDiscriminator: boolean)
         'irodoriSeed': !exists(json, 'irodori_seed') ? undefined : json['irodori_seed'],
         'irodoriSteps': !exists(json, 'irodori_steps') ? undefined : json['irodori_steps'],
         'irodoriSchedule': !exists(json, 'irodori_schedule') ? undefined : json['irodori_schedule'],
+        'irodoriEnglishReading': !exists(json, 'irodori_english_reading') ? undefined : json['irodori_english_reading'],
+        'irodoriKanaStyle': !exists(json, 'irodori_kana_style') ? undefined : json['irodori_kana_style'],
         'irodoriSeconds': !exists(json, 'irodori_seconds') ? undefined : json['irodori_seconds'],
         'irodoriCaption': !exists(json, 'irodori_caption') ? undefined : json['irodori_caption'],
         'irodoriCaptionStrength': !exists(json, 'irodori_caption_strength') ? undefined : json['irodori_caption_strength'],
@@ -206,6 +212,8 @@ export function AudioQueryToJSON(value?: AudioQuery | null): any {
         'irodori_seed': value.irodoriSeed,
         'irodori_steps': value.irodoriSteps,
         'irodori_schedule': value.irodoriSchedule,
+        'irodori_english_reading': value.irodoriEnglishReading,
+        'irodori_kana_style': value.irodoriKanaStyle,
         'irodori_seconds': value.irodoriSeconds,
         'irodori_caption': value.irodoriCaption,
         'irodori_caption_strength': value.irodoriCaptionStrength,

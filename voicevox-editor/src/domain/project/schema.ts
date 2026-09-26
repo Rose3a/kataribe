@@ -61,6 +61,8 @@ export const audioItemSchema = z.object({
     seed: z.number().nullable().optional(),
     steps: z.number().int().min(1).max(80).optional(),
     schedule: z.enum(["linear", "sway"]).optional(),
+    englishReading: z.enum(["off", "katakana", "hiragana"]).optional(),
+    kanaStyle: z.enum(["katakana", "hiragana"]).optional(),
     seconds: z.number().min(0.1).max(60).nullable().optional(),
     caption: z.string().max(2000).optional(),
     captionStrength: z.number().min(0).max(1).optional(),

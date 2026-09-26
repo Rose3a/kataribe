@@ -220,11 +220,11 @@ IRODORI_QUERY_FIELDS: dict[str, dict] = {
     },
     "irodori_english_reading": {
         "type": "string", "enum": list(ENGLISH_READINGS), "default": "katakana",
-        "description": "英単語・英文の読み。off は変換しない、katakana / hiragana はその表記に変換してから合成する。エディタ経由では共通設定の値が優先される",
+        "description": "英単語・英文の読み（セリフごと）。off は変換しない、katakana / hiragana はその表記に変換してから合成する",
     },
     "irodori_kana_style": {
         "type": "string", "enum": list(KANA_STYLES), "default": "katakana",
-        "description": "hiragana なら文中のカタカナをひらがなにして読ませる。エディタ経由では共通設定の値が優先される",
+        "description": "hiragana なら文中のカタカナをひらがなにして読ませる（セリフごと）",
     },
     "irodori_secondary_speaker_style_id": {
         "type": "integer", "nullable": True, "deprecated": True,
@@ -640,7 +640,7 @@ def _speaker_table(tts: IrodoriTTS, progress_callback=None) -> tuple[list[dict],
 
 
 def _reading_options(query: dict) -> dict:
-    """英単語の読み変換とカナ表記の指定（エディタの共通設定から届く）。"""
+    """英単語の読み変換とカナ表記の指定（セリフごとの設定）。"""
     english = query.get("irodori_english_reading", "katakana")
     kana_style = query.get("irodori_kana_style", "katakana")
     if english not in ENGLISH_READINGS:

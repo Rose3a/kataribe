@@ -112,8 +112,10 @@ JSON のキーは snake_case で指定します。`irodoriSteps` のような ca
 
 - `irodori_text` は元の文章として保持してください。`kana` だけを置き換えると、合成時
   に辞書が再適用されず、Editor と同じ結果にならない場合があります。
-- `irodori_english_reading` と `irodori_kana_style` は、Editor 経由（`/synthesis`）では
-  共通設定の値で上書きされます。
+- `irodori_english_reading` と `irodori_kana_style` はセリフごとの設定です。Editor の
+  「セリフの設定」→「読み方」で選んだ値がそのまま送られます。
+- 英語をカナにするとき（`off` 以外）は、変換した語とユーザー辞書の読みの前後の空白を詰めます
+  （`I love you.` → `アイラブユー.`）。空白があると語ごとに区切って読むためです。
 - `pitchScale` や `accent_phrases` などの VOICEVOX の韻律フィールドは、互換のため受け付けますが
   使いません（Irodori は文章から直接合成します）。
 

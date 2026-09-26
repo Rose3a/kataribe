@@ -103,6 +103,8 @@ export type AudioItem = {
     seed?: number | null;
     steps?: number;
     schedule?: "linear" | "sway";
+    englishReading?: "off" | "katakana" | "hiragana";
+    kanaStyle?: "katakana" | "hiragana";
     seconds?: number | null;
     caption?: string;
     captionStrength?: number;
