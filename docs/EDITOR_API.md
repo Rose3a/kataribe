@@ -107,15 +107,16 @@ JSON のキーは snake_case で指定します。`irodoriSteps` のような ca
 | `irodori_reference_audio` | object / null | 最大10MB | `{"dataUrl": "data:audio/...;base64,...", "mime": "...", "name": "..."}` |
 | `irodori_reference_strength` | number | 0〜1、既定 1 | 参照音声の強さ |
 | `irodori_english_reading` | string | `off` / `katakana`（既定） / `hiragana` | 英単語・英文の読み。`off` は英字のまま、ほかはその表記に変換してから合成する |
+| `irodori_english_spacing` | string | `keep`（既定） / `join` | 変換した英語の前後の空白。`join` なら詰めてつなげて読む（`アイ ラブ ユー.` → `アイラブユー.`）。`off` のときは使わない |
 | `irodori_kana_style` | string | `katakana`（既定） / `hiragana` | `hiragana` なら文中のカタカナをひらがなにして読ませる |
 | `speedScale` | number | 0.25〜4.0、既定 1 | 話速（VOICEVOX と同じ名前） |
 
 - `irodori_text` は元の文章として保持してください。`kana` だけを置き換えると、合成時
   に辞書が再適用されず、Editor と同じ結果にならない場合があります。
-- `irodori_english_reading` と `irodori_kana_style` はセリフごとの設定です。Editor の
-  「セリフの設定」→「読み方」で選んだ値がそのまま送られます。
-- 英語をカナにするとき（`off` 以外）は、変換した語とユーザー辞書の読みの前後の空白を詰めます
-  （`I love you.` → `アイラブユー.`）。空白があると語ごとに区切って読むためです。
+- `irodori_english_reading`・`irodori_english_spacing`・`irodori_kana_style` はセリフごとの
+  設定です。Editor の「セリフの設定」→「読み方」で選んだ値がそのまま送られます。
+- `irodori_english_spacing=join` は、変換した語とユーザー辞書の読みの前後の空白を詰めます。
+  空白があると Irodori は語ごとに区切って読むためです。改行は詰めません。
 - `pitchScale` や `accent_phrases` などの VOICEVOX の韻律フィールドは、互換のため受け付けますが
   使いません（Irodori は文章から直接合成します）。
 

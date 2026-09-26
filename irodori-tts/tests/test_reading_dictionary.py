@@ -31,9 +31,9 @@ class DictionaryTests(unittest.TestCase):
     def test_english_is_read_as_katakana_by_default(self):
         d = self.dictionary
         self.assertEqual(d.convert("Ｈｅｌｌｏ！　world（カタカナ）＋１２３"),
-                         "ハロー!ワールド(カタカナ)+123")
-        self.assertEqual(d.convert("A DMM i love you"), "エーディーエムエムアイラブユー")
-        self.assertEqual(d.convert("Irodori github gradio"), "イロドリギットハブグラディオ")
+                         "ハロー! ワールド(カタカナ)+123")
+        self.assertEqual(d.convert("A DMM i love you"), "エー ディーエムエム アイ ラブ ユー")
+        self.assertEqual(d.convert("Irodori github gradio"), "イロドリ ギットハブ グラディオ")
         self.assertEqual(d.convert("zzzxxyy"), "ゼットゼットゼットエックスエックスワイワイ")
 
     def test_apostrophe_and_all_caps_tokens_do_not_raise(self):
@@ -46,13 +46,13 @@ class DictionaryTests(unittest.TestCase):
         d.put(make_word("Zelda", "ぜるだ"))
         d.put(make_word("server", "サーバ"))
         self.assertEqual(d.convert("The Legend of Zelda の server"),
-                         "ザレジェンドオブゼルダのサーバ")
+                         "ザ レジェンド オブ ゼルダ の サーバ")
 
     def test_hiragana_style_converts_all_katakana(self):
         d = self.dictionary
         d.put(make_word("ゼルダの伝説", "ぜるだのでんせつ"))
         self.assertEqual(d.convert("レンタルサーバーでゼルダの伝説を server", kana_style="hiragana"),
-                         "れんたるさーばーでぜるだのでんせつをさーばー")
+                         "れんたるさーばーでぜるだのでんせつを さーばー")
         self.assertEqual(d.convert("ｶﾀｶﾅ", kana_style="hiragana"), "かたかな")
         with self.assertRaises(ValueError):
             d.convert("text", kana_style="romaji")
@@ -62,10 +62,21 @@ class DictionaryTests(unittest.TestCase):
         d.put(make_word("Zelda", "ゼルダ"))
         # 英語の読みだけひらがなにし、元のカタカナ語と辞書の読みはそのまま。
         self.assertEqual(d.convert("I love レンタルサーバー and Zelda", english="hiragana"),
-                         "あいらぶレンタルサーバーあんどゼルダ")
+                         "あい らぶ レンタルサーバー あんど ゼルダ")
         self.assertEqual(d.convert("I love you", english="off"), "I love you")
         with self.assertRaises(ValueError):
             d.convert("text", english=True)
+
+    def test_join_spacing_also_joins_dictionary_readings(self):
+        d = self.dictionary
+        d.put(make_word("Zelda", "ゼルダ"))
+        self.assertEqual(d.convert("The Legend of Zelda の server", spacing="join"),
+                         "ザレジェンドオブゼルダのサーバー")
+        # 英語を変換しないときは空白も触らない。
+        self.assertEqual(d.convert("I love Zelda", english="off", spacing="join"),
+                         "I love ゼルダ")
+        with self.assertRaises(ValueError):
+            d.convert("text", spacing="none")
 
     def test_user_entry_uses_longest_match(self):
         d = self.dictionary
@@ -85,7 +96,7 @@ class DictionaryTests(unittest.TestCase):
         d.put(make_word("hello world", "ながい"))
         d.put(make_word("トクシュ", "ベツ"))
         d.put(make_word("HELLO", "ユウセン", priority=10))
-        self.assertEqual(d.convert("Ｈｅｌｌｏ world! hello"), "ナガイ!ユウセン")
+        self.assertEqual(d.convert("Ｈｅｌｌｏ world! hello"), "ナガイ! ユウセン")
         self.assertEqual(ReadingDictionary(self.path).convert("hello"), "ユウセン")
 
     def test_update_delete_and_atomic_import(self):

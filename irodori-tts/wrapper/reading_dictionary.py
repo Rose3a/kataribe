@@ -13,10 +13,8 @@ from english_reading import convert_english, to_hiragana
 KANA_STYLES = ("katakana", "hiragana")
 # 英単語・英文の読み: 変換しない / カタカナにする / ひらがなにする
 ENGLISH_READINGS = ("off", "katakana", "hiragana")
-
-
-def _english_to_hiragana(text):
-    return convert_english(text, hiragana=True)
+# 変換した英語の前後の空白: 残して語ごとに区切る / 詰めてつなげて読む
+ENGLISH_SPACINGS = ("keep", "join")
 
 
 def normalize_width(text):
@@ -101,20 +99,28 @@ class ReadingDictionary:
         with self.lock:
             self._save({**self.words, **incoming} if override else {**incoming, **self.words})
 
-    def convert(self, text, english="katakana", kana_style="katakana"):
+    def convert(self, text, english="katakana", kana_style="katakana", spacing="keep"):
         """ユーザー辞書を当て、残った英語をカナ読みにする。
 
         english は英語の読み方（off なら英字はそのまま残す、hiragana なら英語の
         読みだけひらがなにする）。kana_style="hiragana" なら、辞書と英語の読みを
-        含む文中のカタカナをすべてひらがなにする。
+        含む文中のカタカナをすべてひらがなにする。spacing="join" なら、変換した
+        英語とユーザー辞書の読みの前後の空白を詰める（英語を変換するときだけ）。
         """
         if english not in ENGLISH_READINGS:
             raise ValueError(f"english must be one of {ENGLISH_READINGS}")
         if kana_style not in KANA_STYLES:
             raise ValueError(f"kana_style must be one of {KANA_STYLES}")
-        rest = {"off": str, "katakana": convert_english, "hiragana": _english_to_hiragana}[english]
-        # 英語をカナにするときは、辞書の読みの前後の空白も英単語と同じく詰める。
-        text = self._apply_words(normalize_width(text), rest, join=english != "off")
+        if spacing not in ENGLISH_SPACINGS:
+            raise ValueError(f"spacing must be one of {ENGLISH_SPACINGS}")
+        join = english != "off" and spacing == "join"
+
+        def rest(part):
+            if english == "off":
+                return part
+            return convert_english(part, hiragana=english == "hiragana", join=join)
+
+        text = self._apply_words(normalize_width(text), rest, join=join)
         return to_hiragana(text) if kana_style == "hiragana" else text
 
     def _apply_words(self, text, rest, join=False):

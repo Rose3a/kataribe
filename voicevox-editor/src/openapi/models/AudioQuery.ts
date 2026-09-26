@@ -43,6 +43,8 @@ export interface AudioQuery {
     irodoriEnglishReading?: 'off' | 'katakana' | 'hiragana';
     /** Per-item kana style: hiragana converts katakana in the text to hiragana. */
     irodoriKanaStyle?: 'katakana' | 'hiragana';
+    /** Per-item spacing around converted English: keep separates words, join reads them together. */
+    irodoriEnglishSpacing?: 'keep' | 'join';
     /** Per-item Irodori target duration in seconds; null uses automatic duration. */
     irodoriSeconds?: number | null;
     /** Per-item Irodori caption. */
@@ -174,6 +176,7 @@ export function AudioQueryFromJSONTyped(json: any, ignoreDiscriminator: boolean)
         'irodoriSchedule': !exists(json, 'irodori_schedule') ? undefined : json['irodori_schedule'],
         'irodoriEnglishReading': !exists(json, 'irodori_english_reading') ? undefined : json['irodori_english_reading'],
         'irodoriKanaStyle': !exists(json, 'irodori_kana_style') ? undefined : json['irodori_kana_style'],
+        'irodoriEnglishSpacing': !exists(json, 'irodori_english_spacing') ? undefined : json['irodori_english_spacing'],
         'irodoriSeconds': !exists(json, 'irodori_seconds') ? undefined : json['irodori_seconds'],
         'irodoriCaption': !exists(json, 'irodori_caption') ? undefined : json['irodori_caption'],
         'irodoriCaptionStrength': !exists(json, 'irodori_caption_strength') ? undefined : json['irodori_caption_strength'],
@@ -214,6 +217,7 @@ export function AudioQueryToJSON(value?: AudioQuery | null): any {
         'irodori_schedule': value.irodoriSchedule,
         'irodori_english_reading': value.irodoriEnglishReading,
         'irodori_kana_style': value.irodoriKanaStyle,
+        'irodori_english_spacing': value.irodoriEnglishSpacing,
         'irodori_seconds': value.irodoriSeconds,
         'irodori_caption': value.irodoriCaption,
         'irodori_caption_strength': value.irodoriCaptionStrength,

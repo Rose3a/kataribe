@@ -41,7 +41,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from tts_cli import IrodoriTTS, resolve_embed_dirs  # noqa: E402
-from reading_dictionary import ENGLISH_READINGS, KANA_STYLES, READING_DICTIONARY, make_word
+from reading_dictionary import (ENGLISH_READINGS, ENGLISH_SPACINGS, KANA_STYLES,
+                                READING_DICTIONARY, make_word)
 from third_party_licenses import dependency_licenses
 from speaker_catalog import blink_thumbnail_for, credit_for, display_name_for, policy_for, mouth_open_thumbnail_for, mouth_parts_for, portrait_for, speaker_catalog, _fallback_icon  # noqa: E402
 
@@ -221,6 +222,10 @@ IRODORI_QUERY_FIELDS: dict[str, dict] = {
     "irodori_english_reading": {
         "type": "string", "enum": list(ENGLISH_READINGS), "default": "katakana",
         "description": "英単語・英文の読み（セリフごと）。off は変換しない、katakana / hiragana はその表記に変換してから合成する",
+    },
+    "irodori_english_spacing": {
+        "type": "string", "enum": list(ENGLISH_SPACINGS), "default": "keep",
+        "description": "変換した英語の前後の空白（セリフごと）。keep は残して語ごとに区切り、join は詰めてつなげて読む",
     },
     "irodori_kana_style": {
         "type": "string", "enum": list(KANA_STYLES), "default": "katakana",
@@ -643,12 +648,16 @@ def _reading_options(query: dict) -> dict:
     """英単語の読み変換とカナ表記の指定（セリフごとの設定）。"""
     english = query.get("irodori_english_reading", "katakana")
     kana_style = query.get("irodori_kana_style", "katakana")
+    spacing = query.get("irodori_english_spacing", "keep")
     if english not in ENGLISH_READINGS:
         raise ValueError(
             f"irodori_english_reading must be one of {', '.join(ENGLISH_READINGS)}")
     if kana_style not in KANA_STYLES:
         raise ValueError(f"irodori_kana_style must be one of {', '.join(KANA_STYLES)}")
-    return dict(english=english, kana_style=kana_style)
+    if spacing not in ENGLISH_SPACINGS:
+        raise ValueError(
+            f"irodori_english_spacing must be one of {', '.join(ENGLISH_SPACINGS)}")
+    return dict(english=english, kana_style=kana_style, spacing=spacing)
 
 
 def _query(text: str) -> dict:

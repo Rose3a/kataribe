@@ -59,11 +59,20 @@ class EnglishReadingTests(unittest.TestCase):
         self.assertEqual(er.word_to_kana("zzzxxyy"), "ゼットゼットゼットエックスエックスワイワイ")
 
     def test_sentences_keep_spacing_digits_and_japanese(self):
-        self.assertEqual(er.convert_english("I love you."), "アイラブユー.")
-        self.assertEqual(er.convert_english("The Legend of Zelda"), "ザレジェンドオブゼルダ")
+        self.assertEqual(er.convert_english("I love you."), "アイ ラブ ユー.")
+        self.assertEqual(er.convert_english("The Legend of Zelda"), "ザ レジェンド オブ ゼルダ")
         self.assertEqual(er.convert_english("レンタルサーバーはAWSで、python3を使う"),
                          "レンタルサーバーはエーダブリューエスで、パイソン3を使う")
-        self.assertEqual(er.convert_english("I'm fine, thank you."), "アイムファイン,サンクユー.")
+        self.assertEqual(er.convert_english("I'm fine, thank you."), "アイム ファイン, サンク ユー.")
+
+    def test_join_removes_spaces_around_converted_words(self):
+        self.assertEqual(er.convert_english("I love you.", join=True), "アイラブユー.")
+        self.assertEqual(er.convert_english("GitHub Actions で CI を回す", join=True),
+                         "ギットハブアクションズでシーアイを回す")
+        self.assertEqual(er.convert_english("I love you", hiragana=True, join=True), "あいらぶゆー")
+        # 改行と、英語に接していない空白は残す。
+        self.assertEqual(er.convert_english("hello\nworld です よ", join=True),
+                         "ハロー\nワールドです よ")
 
     def test_long_english_text(self):
         text = ("Welcome to our channel! Today, I'm going to show you how to set up a rental "
@@ -71,7 +80,7 @@ class EnglishReadingTests(unittest.TestCase):
         kana = er.convert_english(text)
         self.assertNotRegex(kana, "[A-Za-z]")
         self.assertLessEqual(len(kana), len(text))
-        self.assertTrue(kana.startswith("ウェルカムトゥーアワーチャンネル!トゥデイ,アイム"))
+        self.assertTrue(kana.startswith("ウェルカム トゥー アワー チャンネル! トゥデイ, アイム"))
 
     def test_every_dictionary_word_becomes_katakana(self):
         bad = [w for w in er.dictionary() if not re.fullmatch(r"[ァ-ヴー]+", er.word_to_kana(w))]
@@ -118,14 +127,17 @@ class ReadingOptionTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         query = engine._query("server とサーバー")
         adapter.synthesize(dict(query), 0)
-        self.assertEqual(adapter.tts.synthesize.call_args.kwargs["text"], "サーバーとサーバー")
+        self.assertEqual(adapter.tts.synthesize.call_args.kwargs["text"], "サーバー とサーバー")
         adapter.synthesize(dict(query, irodori_kana_style="hiragana"), 0)
-        self.assertEqual(adapter.tts.synthesize.call_args.kwargs["text"], "さーばーとさーばー")
+        self.assertEqual(adapter.tts.synthesize.call_args.kwargs["text"], "さーばー とさーばー")
         adapter.synthesize(dict(query, irodori_english_reading="off"), 0)
         self.assertEqual(adapter.tts.synthesize.call_args.kwargs["text"], "server とサーバー")
         adapter.synthesize(dict(query, irodori_english_reading="hiragana"), 0)
-        self.assertEqual(adapter.tts.synthesize.call_args.kwargs["text"], "さーばーとサーバー")
-        for bad in (dict(irodori_kana_style="romaji"), dict(irodori_english_reading=True)):
+        self.assertEqual(adapter.tts.synthesize.call_args.kwargs["text"], "さーばー とサーバー")
+        adapter.synthesize(dict(query, irodori_english_spacing="join"), 0)
+        self.assertEqual(adapter.tts.synthesize.call_args.kwargs["text"], "サーバーとサーバー")
+        for bad in (dict(irodori_kana_style="romaji"), dict(irodori_english_reading=True),
+                    dict(irodori_english_spacing="none")):
             with self.assertRaises(ValueError):
                 adapter.synthesize(dict(query, **bad), 0)
 
@@ -133,9 +145,12 @@ class ReadingOptionTests(unittest.TestCase):
         import voicevox_engine as engine
         base = engine._query("text")
         for english in ("off", "katakana", "hiragana"):
-            engine._validate_query(dict(base, irodori_english_reading=english,
-                                        irodori_kana_style="hiragana"))
-        for bad in (dict(irodori_english_reading=False), dict(irodori_kana_style="romaji")):
+            for spacing in ("keep", "join"):
+                engine._validate_query(dict(base, irodori_english_reading=english,
+                                            irodori_kana_style="hiragana",
+                                            irodori_english_spacing=spacing))
+        for bad in (dict(irodori_english_reading=False), dict(irodori_kana_style="romaji"),
+                    dict(irodori_english_spacing=True)):
             with self.assertRaises(engine.RequestValidationError):
                 engine._validate_query(dict(base, **bad))
 
@@ -148,6 +163,7 @@ class ReadingOptionTests(unittest.TestCase):
         source = Path(editor_engine.__file__).read_text(encoding="utf-8")
         self.assertIn('saved.pop("english_reading", None)', source)
         self.assertNotIn("irodori_english_reading=self.settings", source)
+
 
 if __name__ == "__main__":
     unittest.main()

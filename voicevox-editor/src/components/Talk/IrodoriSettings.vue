@@ -266,6 +266,22 @@
             @update:model-value="saveEnglishReading"
           />
           <QSelect
+            v-model="englishSpacingValue"
+            outlined
+            dense
+            label="英単語の区切り"
+            :options="englishSpacings"
+            emit-value
+            map-options
+            :hint="
+              englishReadingValue === 'off'
+                ? '英字のまま読むときは使われません'
+                : 'つなげると、語ごとに区切らず続けて読みます（アイ ラブ ユー → アイラブユー）'
+            "
+            :disable="locked || englishReadingValue === 'off'"
+            @update:model-value="saveEnglishSpacing"
+          />
+          <QSelect
             v-model="kanaStyleValue"
             outlined
             dense
@@ -515,7 +531,9 @@ import {
   IRODORI_DEFAULT_SCHEDULE,
   IRODORI_DEFAULT_ENGLISH_READING,
   IRODORI_DEFAULT_KANA_STYLE,
+  IRODORI_DEFAULT_ENGLISH_SPACING,
   type IrodoriEnglishReading,
+  type IrodoriEnglishSpacing,
   type IrodoriKanaStyle,
   irodoriDefaultSteps,
   irodoriMeanflow,
@@ -599,6 +617,7 @@ const irodori = computed(() => {
     schedule: value?.schedule ?? IRODORI_DEFAULT_SCHEDULE,
     englishReading: value?.englishReading ?? IRODORI_DEFAULT_ENGLISH_READING,
     kanaStyle: value?.kanaStyle ?? IRODORI_DEFAULT_KANA_STYLE,
+    englishSpacing: value?.englishSpacing ?? IRODORI_DEFAULT_ENGLISH_SPACING,
     seconds: value?.seconds ?? null,
     cfgText: value?.cfgText ?? IRODORI_DEFAULT_CFG_TEXT,
     cfgCaption: value?.cfgCaption ?? IRODORI_DEFAULT_CFG_CAPTION,
@@ -680,6 +699,9 @@ const englishReadingValue = ref<IrodoriEnglishReading>(
   IRODORI_DEFAULT_ENGLISH_READING,
 );
 const kanaStyleValue = ref<IrodoriKanaStyle>(IRODORI_DEFAULT_KANA_STYLE);
+const englishSpacingValue = ref<IrodoriEnglishSpacing>(
+  IRODORI_DEFAULT_ENGLISH_SPACING,
+);
 const secondsValue = ref<number | null>(null);
 const captionText = ref("");
 const cfgTextText = ref("");
@@ -697,6 +719,7 @@ watch(
     scheduleValue.value = value.schedule;
     englishReadingValue.value = value.englishReading;
     kanaStyleValue.value = value.kanaStyle;
+    englishSpacingValue.value = value.englishSpacing;
     secondsValue.value = value.seconds;
     captionText.value = value.caption ?? "";
     cfgTextText.value = String(value.cfgText);
@@ -770,6 +793,14 @@ function saveEnglishReading(value: IrodoriEnglishReading | null) {
   void store.actions.COMMAND_SET_IRODORI_SETTINGS({
     audioKey: props.activeAudioKey,
     irodori: { ...irodori.value, englishReading: value },
+  });
+}
+function saveEnglishSpacing(value: IrodoriEnglishSpacing | null) {
+  if (value == null || !englishSpacings.some((o) => o.value === value)) return;
+  englishSpacingValue.value = value;
+  void store.actions.COMMAND_SET_IRODORI_SETTINGS({
+    audioKey: props.activeAudioKey,
+    irodori: { ...irodori.value, englishSpacing: value },
   });
 }
 function saveKanaStyle(value: IrodoriKanaStyle | null) {
@@ -1152,6 +1183,10 @@ const englishReadings: { label: string; value: IrodoriEnglishReading }[] = [
   { label: "カタカナで読む", value: "katakana" },
   { label: "ひらがなで読む", value: "hiragana" },
   { label: "変換しない（英字のまま）", value: "off" },
+];
+const englishSpacings: { label: string; value: IrodoriEnglishSpacing }[] = [
+  { label: "語ごとに区切る", value: "keep" },
+  { label: "つなげて読む", value: "join" },
 ];
 const kanaStyles: { label: string; value: IrodoriKanaStyle }[] = [
   { label: "カタカナのまま", value: "katakana" },

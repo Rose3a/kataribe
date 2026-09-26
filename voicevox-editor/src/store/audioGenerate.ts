@@ -19,6 +19,7 @@ import {
   IRODORI_DEFAULT_SCHEDULE,
   IRODORI_DEFAULT_ENGLISH_READING,
   IRODORI_DEFAULT_KANA_STYLE,
+  IRODORI_DEFAULT_ENGLISH_SPACING,
   irodoriDefaultSteps,
 } from "@/domain/irodori";
 
@@ -93,6 +94,8 @@ export async function fetchAudioFromAudioItem(
           audioItem.irodori?.englishReading ?? IRODORI_DEFAULT_ENGLISH_READING,
         irodoriKanaStyle:
           audioItem.irodori?.kanaStyle ?? IRODORI_DEFAULT_KANA_STYLE,
+        irodoriEnglishSpacing:
+          audioItem.irodori?.englishSpacing ?? IRODORI_DEFAULT_ENGLISH_SPACING,
         irodoriSeconds: audioItem.irodori?.seconds ?? null,
         irodoriCaption: audioItem.irodori?.caption,
         irodoriCaptionStrength:
