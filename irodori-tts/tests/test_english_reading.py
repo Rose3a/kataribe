@@ -29,6 +29,8 @@ class EnglishReadingTests(unittest.TestCase):
             "seven": "セブン", "garden": "ガーデン", "support": "サポート", "music": "ミュージック",
             "quick": "クイック", "love": "ラブ", "player": "プレイヤー", "power": "パワー",
             "fire": "ファイヤー", "happy": "ハッピー", "fashion": "ファッション",
+            "international": "インターナショナル", "national": "ナショナル", "special": "スペシャル",
+            "mission": "ミッション",
             "software": "ソフトウェア", "different": "ディファレント", "beautiful": "ビューティフル",
             "piano": "ピアノ", "university": "ユニバーシティー", "menu": "メニュー",
             "productivity": "プロダクティビティー", "rainbow": "レインボー", "channel": "チャンネル", "thank": "サンク", "legend": "レジェンド", "zelda": "ゼルダ",

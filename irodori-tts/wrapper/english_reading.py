@@ -108,7 +108,8 @@ SHORT = {"AE", "EH", "IH", "AH", "UH", "AA", "AO"}
 # 短母音の直後で語末に来ると促音が入る子音（cat -> キャット、bed -> ベッド）。
 GEMINATE = {"P", "T", "K", "D", "G", "CH", "JH", "SH"}
 # 語中でも、綴りが重なっていれば促音にする（happy -> ハッピー、soccer -> サッカー）。
-DOUBLED = {"P": "pp", "K": "cc|kk", "G": "gg", "CH": "tch"}
+# SH は sh / ss の綴りだけ（fashion -> ファッション、national -> ナショナル）。
+DOUBLED = {"P": "pp", "K": "cc|kk", "G": "gg", "CH": "tch", "SH": "sh|ss"}
 
 
 def _spelling_groups(word):
@@ -274,7 +275,7 @@ def phones_to_kana(word, pronunciation):
             continue
         previous = names[i - 1] if i else None
         if (i + 1 < n and previous in SHORT and phones[i - 1][1] == 1 and not vowels[i - 1][1]
-                and (name == "SH" or DOUBLED.get(name) and re.search(DOUBLED[name], word))):
+                and DOUBLED.get(name) and re.search(DOUBLED[name], word)):
             out.append("ッ")  # happy -> ハッピー、fashion -> ファッション
         if vowel_at(i + 1):
             vowel, tail = vowels[i + 1]
