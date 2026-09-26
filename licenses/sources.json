@@ -14,5 +14,6 @@
   "sherpa-onnx": "https://pypi.org/project/sherpa-onnx/1.13.8/",
   "tensorboard": "https://pypi.org/project/tensorboard/2.20.0/",
   "uv-license-mit": "https://raw.githubusercontent.com/astral-sh/uv/0.9.7/LICENSE-MIT",
-  "uv-license-apache": "https://raw.githubusercontent.com/astral-sh/uv/0.9.7/LICENSE-APACHE"
+  "uv-license-apache": "https://raw.githubusercontent.com/astral-sh/uv/0.9.7/LICENSE-APACHE",
+  "cmudict": "https://raw.githubusercontent.com/cmusphinx/cmudict/74790861f652b15e4ac49015a90074ad62a27690/LICENSE"
 }

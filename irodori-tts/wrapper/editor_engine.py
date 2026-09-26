@@ -114,6 +114,9 @@ class EditorAdapter:
                 saved.pop("steps", None)
                 saved.pop("t_schedule_mode", None)
                 saved.pop("seconds", None)
+                # 読み方は開発版では共通設定だったが、今はセリフごとの設定。
+                saved.pop("english_reading", None)
+                saved.pop("kana_style", None)
                 if saved.get("model") == "model.safetensors":
                     saved["model"] = self.DEFAULT_SETTINGS["model"]
             saved = {**self.DEFAULT_SETTINGS, **saved}

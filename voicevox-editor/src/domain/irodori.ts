@@ -5,6 +5,16 @@ export const IRODORI_DEFAULT_STEPS = 8;
 /** MeanFlow（蒸留）モデルの既定ステップ数。 */
 export const IRODORI_MEANFLOW_DEFAULT_STEPS = 4;
 export const IRODORI_DEFAULT_SCHEDULE = "sway" as const;
+/** 英単語・英文の読み。off なら変換せず、katakana / hiragana はその表記にする。 */
+export type IrodoriEnglishReading = "off" | "katakana" | "hiragana";
+/** 合成前のカナ表記。hiragana ならカタカナ語もひらがなにして読ませる。 */
+export type IrodoriKanaStyle = "katakana" | "hiragana";
+/** 変換した英語の前後の空白。keep は語ごとに区切り、join は詰めてつなげて読む。 */
+export type IrodoriEnglishSpacing = "keep" | "join";
+export const IRODORI_DEFAULT_ENGLISH_READING: IrodoriEnglishReading =
+  "katakana";
+export const IRODORI_DEFAULT_KANA_STYLE: IrodoriKanaStyle = "katakana";
+export const IRODORI_DEFAULT_ENGLISH_SPACING: IrodoriEnglishSpacing = "keep";
 export const IRODORI_DEFAULT_CFG_TEXT = 3;
 export const IRODORI_DEFAULT_CFG_CAPTION = 3;
 export const IRODORI_DEFAULT_CFG_SPEAKER = 5;

@@ -8,6 +8,14 @@ import threading
 import unicodedata
 import uuid
 
+from english_reading import convert_english, to_hiragana
+
+KANA_STYLES = ("katakana", "hiragana")
+# 英単語・英文の読み: 変換しない / カタカナにする / ひらがなにする
+ENGLISH_READINGS = ("off", "katakana", "hiragana")
+# 変換した英語の前後の空白: 残して語ごとに区切る / 詰めてつなげて読む
+ENGLISH_SPACINGS = ("keep", "join")
+
 
 def normalize_width(text):
     # Keep Japanese punctuation and full-width kana intact.
@@ -91,8 +99,32 @@ class ReadingDictionary:
         with self.lock:
             self._save({**self.words, **incoming} if override else {**incoming, **self.words})
 
-    def convert(self, text):
-        text = normalize_width(text)
+    def convert(self, text, english="katakana", kana_style="katakana", spacing="keep"):
+        """ユーザー辞書を当て、残った英語をカナ読みにする。
+
+        english は英語の読み方（off なら英字はそのまま残す、hiragana なら英語の
+        読みだけひらがなにする）。kana_style="hiragana" なら、辞書と英語の読みを
+        含む文中のカタカナをすべてひらがなにする。spacing="join" なら、変換した
+        英語とユーザー辞書の読みの前後の空白を詰める（英語を変換するときだけ）。
+        """
+        if english not in ENGLISH_READINGS:
+            raise ValueError(f"english must be one of {ENGLISH_READINGS}")
+        if kana_style not in KANA_STYLES:
+            raise ValueError(f"kana_style must be one of {KANA_STYLES}")
+        if spacing not in ENGLISH_SPACINGS:
+            raise ValueError(f"spacing must be one of {ENGLISH_SPACINGS}")
+        join = english != "off" and spacing == "join"
+
+        def rest(part):
+            if english == "off":
+                return part
+            return convert_english(part, hiragana=english == "hiragana", join=join)
+
+        text = self._apply_words(normalize_width(text), rest, join=join)
+        return to_hiragana(text) if kana_style == "hiragana" else text
+
+    def _apply_words(self, text, rest, join=False):
+        # ユーザー辞書に当たらなかった部分だけを rest で変換する（辞書の読みは再変換しない）。
         words = sorted(self.snapshot().values(),
                        key=lambda w: (-len(w["surface"]), -w["priority"]))
         readings = {}
@@ -105,16 +137,19 @@ class ReadingDictionary:
                 readings[surface] = word["pronunciation"]
                 user_surfaces.add(surface)
         if not readings:
-            return text
+            return rest(text)
         # Longest key first: Python's alternation keeps the first match, so a
         # shorter user entry would otherwise swallow a longer one.
         ordered = sorted(readings, key=len, reverse=True)
-        pattern = re.compile('|'.join(re.escape(k) for k in ordered), re.IGNORECASE | re.ASCII)
+        pattern = '(' + '|'.join(re.escape(k) for k in ordered) + ')'
+        if join:
+            pattern = r'[ 	　]*' + pattern + r'[ 	　]*'
+        pattern = re.compile(pattern, re.IGNORECASE | re.ASCII)
         result, start = [], 0
         for match in pattern.finditer(text):
-            result.extend((text[start:match.start()], readings[match[0].lower()]))
+            result.extend((rest(text[start:match.start()]), readings[match[1].lower()]))
             start = match.end()
-        return ''.join(result) + text[start:]
+        return ''.join(result) + rest(text[start:])
 
 
 READING_DICTIONARY = ReadingDictionary(Path(__file__).resolve().parents[2] / "user_dictionary.json")

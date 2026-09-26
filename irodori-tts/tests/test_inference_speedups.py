@@ -168,7 +168,7 @@ class VoicevoxTempFolderTests(unittest.TestCase):
         with patch.object(voicevox_engine.tempfile, "TemporaryDirectory",
                           side_effect=AssertionError("temp folder created")), \
                 patch.object(voicevox_engine, "READING_DICTIONARY") as dictionary:
-            dictionary.convert.side_effect = lambda text: text
+            dictionary.convert.side_effect = lambda text, **_: text
             self.assertEqual(adapter.synthesize({"irodori_text": "こんにちは"}, 1), b"RIFFwav")
         self.assertIsNone(calls[0]["ref_wav"])
 
@@ -177,7 +177,7 @@ class VoicevoxTempFolderTests(unittest.TestCase):
         query = {"irodori_text": "こんにちは", "irodori_reference_audio": {
             "dataUrl": "data:audio/wav;base64,UklGRg==", "name": "ref.wav"}}
         with patch.object(voicevox_engine, "READING_DICTIONARY") as dictionary:
-            dictionary.convert.side_effect = lambda text: text
+            dictionary.convert.side_effect = lambda text, **_: text
             self.assertEqual(adapter.synthesize(query, 1), b"RIFFwav")
         self.assertTrue(calls[0]["ref_wav"].endswith(".wav"))
         self.assertFalse(Path(calls[0]["ref_wav"]).exists())  # cleaned up

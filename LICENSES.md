@@ -29,6 +29,7 @@ Editor の JavaScript 依存パッケージと実行環境の依存パッケー�
 | Semantic-DACVAE-Japanese-32dim | 音声コーデックモデル | 配布ページの MIT 表記 | 再配布時は著作権表示と許諾表示を残します。配布ページ: <https://huggingface.co/Aratako/Semantic-DACVAE-Japanese-32dim> |
 | ModernBERT-ja-310m | 日本語テキストエンコーダー・トークナイザー | MIT License | 再配布時は著作権表示と許諾表示を残します。配布ページ: <https://huggingface.co/sbintuitions/modernbert-ja-310m> |
 | Parakeet TDT-CTC 0.6B Japanese | リップシンク用 ASR モデル | CC BY 4.0 | NVIDIA の CC BY 4.0 モデルを csukuangfj が ONNX / int8 に変換した版です。共有時はクレジット、出典、ライセンスへのリンク、変更内容を示します。元モデル: <https://huggingface.co/nvidia/parakeet-tdt_ctc-0.6b-ja>、変換版: <https://huggingface.co/csukuangfj/sherpa-onnx-nemo-parakeet-tdt_ctc-0.6b-ja-35000-int8> |
+| CMU Pronouncing Dictionary | 英単語の読み変換（`irodori-tts/wrapper/data/cmudict.txt.gz`、英字の見出しと第1発音だけに加工） | BSD 2-Clause License | 再配布時は著作権表示と許諾表示を残します。ライセンステキスト: `licenses/cmudict.txt`、配布元: <https://github.com/cmusphinx/cmudict> |
 | 話者埋め込み・参照音声・肖像画像 | 話者の音声・画像データ | 話者ごとに異なる | 話者ごとの `credit.txt` または配布元が示す利用条件に従います。本人または権利者の許可も必要です。 |
 
 モデル重み、トークナイザー、話者データ、参照音声、画像、生成音声は、上のコードライセンスとは

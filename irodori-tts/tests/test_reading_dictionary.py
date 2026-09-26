@@ -20,18 +20,63 @@ class DictionaryTests(unittest.TestCase):
         self.path = Path(self.tmp.name) / "dictionary.json"
         self.dictionary = ReadingDictionary(self.path)
 
-    def test_width_and_english_are_preserved(self):
-        self.assertEqual(self.dictionary.convert("Ｈｅｌｌｏ！　world（カタカナ）＋１２３"),
+    def test_width_and_english_are_preserved_when_english_reading_is_off(self):
+        convert = lambda text: self.dictionary.convert(text, english="off")
+        self.assertEqual(convert("Ｈｅｌｌｏ！　world（カタカナ）＋１２３"),
                          "Hello! world(カタカナ)+123")
-        self.assertEqual(self.dictionary.convert("A DMM i love you"),
-                         "A DMM i love you")
-        self.assertEqual(self.dictionary.convert("Irodori github gradio"),
-                         "Irodori github gradio")
-        self.assertEqual(self.dictionary.convert("zzzxxyy"), "zzzxxyy")
+        self.assertEqual(convert("A DMM i love you"), "A DMM i love you")
+        self.assertEqual(convert("Irodori github gradio"), "Irodori github gradio")
+        self.assertEqual(convert("zzzxxyy"), "zzzxxyy")
+
+    def test_english_is_read_as_katakana_by_default(self):
+        d = self.dictionary
+        self.assertEqual(d.convert("Ｈｅｌｌｏ！　world（カタカナ）＋１２３"),
+                         "ハロー! ワールド(カタカナ)+123")
+        self.assertEqual(d.convert("A DMM i love you"), "エー ディーエムエム アイ ラブ ユー")
+        self.assertEqual(d.convert("Irodori github gradio"), "イロドリ ギットハブ グラディオ")
+        self.assertEqual(d.convert("zzzxxyy"), "ゼットゼットゼットエックスエックスワイワイ")
 
     def test_apostrophe_and_all_caps_tokens_do_not_raise(self):
         for text in ["ROCK'N ROLL", "O'BRIEN さん", "ROCK’N", "DON'T STOP"]:
-            self.assertEqual(self.dictionary.convert(text), text)
+            self.assertEqual(self.dictionary.convert(text, english="off"), text)
+            self.assertNotRegex(self.dictionary.convert(text), "[A-Za-z]")
+
+    def test_user_entry_wins_over_english_reading(self):
+        d = self.dictionary
+        d.put(make_word("Zelda", "ぜるだ"))
+        d.put(make_word("server", "サーバ"))
+        self.assertEqual(d.convert("The Legend of Zelda の server"),
+                         "ザ レジェンド オブ ゼルダ の サーバ")
+
+    def test_hiragana_style_converts_all_katakana(self):
+        d = self.dictionary
+        d.put(make_word("ゼルダの伝説", "ぜるだのでんせつ"))
+        self.assertEqual(d.convert("レンタルサーバーでゼルダの伝説を server", kana_style="hiragana"),
+                         "れんたるさーばーでぜるだのでんせつを さーばー")
+        self.assertEqual(d.convert("ｶﾀｶﾅ", kana_style="hiragana"), "かたかな")
+        with self.assertRaises(ValueError):
+            d.convert("text", kana_style="romaji")
+
+    def test_english_reading_can_be_hiragana_only_for_english(self):
+        d = self.dictionary
+        d.put(make_word("Zelda", "ゼルダ"))
+        # 英語の読みだけひらがなにし、元のカタカナ語と辞書の読みはそのまま。
+        self.assertEqual(d.convert("I love レンタルサーバー and Zelda", english="hiragana"),
+                         "あい らぶ レンタルサーバー あんど ゼルダ")
+        self.assertEqual(d.convert("I love you", english="off"), "I love you")
+        with self.assertRaises(ValueError):
+            d.convert("text", english=True)
+
+    def test_join_spacing_also_joins_dictionary_readings(self):
+        d = self.dictionary
+        d.put(make_word("Zelda", "ゼルダ"))
+        self.assertEqual(d.convert("The Legend of Zelda の server", spacing="join"),
+                         "ザレジェンドオブゼルダのサーバー")
+        # 英語を変換しないときは空白も触らない。
+        self.assertEqual(d.convert("I love Zelda", english="off", spacing="join"),
+                         "I love ゼルダ")
+        with self.assertRaises(ValueError):
+            d.convert("text", spacing="none")
 
     def test_user_entry_uses_longest_match(self):
         d = self.dictionary
@@ -40,9 +85,10 @@ class DictionaryTests(unittest.TestCase):
         # The longer user entry must win.
         self.assertEqual(d.convert("python3"), "パイソンスリー")
         self.assertEqual(d.convert("githubactions"), "ギットハブアクションズ")
-        # English remains unchanged unless an explicit user entry matches.
-        self.assertEqual(d.convert("python"), "python")
-        self.assertEqual(d.convert("github"), "github")
+        # Without English reading, English remains unless a user entry matches.
+        self.assertEqual(d.convert("python", english="off"), "python")
+        self.assertEqual(d.convert("github", english="off"), "github")
+        self.assertEqual(d.convert("python"), "パイソン")
 
     def test_override_longest_priority_and_no_cascade(self):
         d = self.dictionary
