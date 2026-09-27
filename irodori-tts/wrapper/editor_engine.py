@@ -228,6 +228,15 @@ class EditorAdapter:
         return path
 
     @staticmethod
+    def _config_from_metadata(metadata):
+        config = json.loads(metadata.get("config_json") or "{}")
+        quantization = metadata.get("irodori_quantization_json")
+        if quantization:
+            # 量子化の種類（int8_weight_only など）。TensorRT では使えない。
+            config["_quantization"] = json.loads(quantization).get("quantization_type") or "unknown"
+        return config
+
+    @staticmethod
     def _read_safetensors_config(path):
         """safetensors ヘッダの config_json だけを読む（重みは読まない）。"""
         with open(path, "rb") as handle:
@@ -238,8 +247,7 @@ class EditorAdapter:
             if not 0 < header_len <= 64 * 1024 * 1024:
                 return {}
             header = json.loads(handle.read(header_len).decode("utf-8", "replace"))
-        metadata = header.get("__metadata__") or {}
-        return json.loads(metadata.get("config_json") or "{}")
+        return EditorAdapter._config_from_metadata(header.get("__metadata__") or {})
 
     @staticmethod
     def _read_hf_config(source):
@@ -260,8 +268,7 @@ class EditorAdapter:
         if not 0 < header_len <= 64 * 1024 * 1024:
             return {}
         header = json.loads(fetch(8, 8 + header_len - 1).decode("utf-8", "replace"))
-        metadata = header.get("__metadata__") or {}
-        return json.loads(metadata.get("config_json") or "{}")
+        return EditorAdapter._config_from_metadata(header.get("__metadata__") or {})
 
     def model_info(self, source=None, refresh=False):
         """選択中モデルの種類と既定ステップ数（MeanFlow は4ステップ）。"""
@@ -301,6 +308,7 @@ class EditorAdapter:
             defaultSteps=DEFAULT_STEPS_MEANFLOW if flow == "meanflow" else DEFAULT_STEPS_RF,
             metadataAvailable=bool(config),
             speakerDim=int(config["speaker_dim"]) if config.get("speaker_dim") else None,
+            quantization=config.get("_quantization"),
         )
         known = {
             "Aratako/Irodori-TTS-v4.1-Small": ("MIT", "https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small"),
@@ -308,8 +316,11 @@ class EditorAdapter:
             "phasefield-audio/Irodori-TTS-v4.1-Anime": ("MIT", "https://huggingface.co/phasefield-audio/Irodori-TTS-v4.1-Anime"),
             # テキストエンコーダが T5Gemma 2 由来のため Gemma の規約が掛かる。
             "Aratako/Irodori-TTS-v4-Large": ("Gemma Terms of Use", "https://huggingface.co/Aratako/Irodori-TTS-v4-Large/blob/main/GEMMA_TERMS_OF_USE.md"),
+            "Aratako/Irodori-TTS-v4-Large-Quantized": ("Gemma Terms of Use", "https://huggingface.co/Aratako/Irodori-TTS-v4-Large-Quantized/blob/main/GEMMA_TERMS_OF_USE.md"),
         }
-        license_name, license_url = known.get(model, (None, f"https://huggingface.co/{model}" if self._is_hf_model_source(model) else None))
+        # サブフォルダ付き（repo/int8-weight-only など）はリポジトリ単位で引く。
+        repo_id = self._split_hf_source(model)[0] if self._is_hf_model_source(model) else model
+        license_name, license_url = known.get(repo_id, (None, f"https://huggingface.co/{model}" if self._is_hf_model_source(model) else None))
         info["license"] = license_name
         info["licenseUrl"] = license_url
         with self.state_lock:
@@ -329,6 +340,14 @@ class EditorAdapter:
             raise ValueError(f"{value['backend']} はこのPCでは利用できません")
         model = str(value.get("model", "")).strip()
         self._validate_model_source(model)
+        if value["backend"] == "trt":
+            try:
+                quantization = self.model_info(model).get("quantization")
+            except Exception:  # noqa: BLE001 - 判定できなければ変換時のエラーに任せる
+                quantization = None
+            if quantization:
+                raise ValueError(
+                    "量子化モデルは TensorRT では使えません。NVIDIA / CUDA を選んでください")
         if not isinstance(value["seed"], int) or not 0 <= value["seed"] < 2**31:
             raise ValueError("seedは0〜2147483647です")
         try:

@@ -39,6 +39,7 @@ Editor の JavaScript 依存パッケージと実行環境の依存パッケー�
 | 名前 | 用途 | ライセンス | 主な条件・確認先 |
 | --- | --- | --- | --- |
 | Irodori-TTS-v4-Large | 音声生成モデル（大容量版） | Gemma Terms of Use + モデルカードの Ethical Restrictions | テキストエンコーダーが T5Gemma 2 由来のため、Gemma の利用規約と禁止用途ポリシーに従います。なりすましや、誤情報を目的とする音声生成は禁止されています。配布ページ: <https://huggingface.co/Aratako/Irodori-TTS-v4-Large> |
+| Irodori-TTS-v4-Large-Quantized | 音声生成モデル（大容量版の INT8 などの量子化版） | Gemma Terms of Use + モデルカードの Ethical Restrictions | Irodori-TTS-v4-Large と同じ条件です。配布ページ: <https://huggingface.co/Aratako/Irodori-TTS-v4-Large-Quantized> |
 
 モデル重み、トークナイザー、話者データ、参照音声、画像、生成音声は、上のコードライセンスとは
 別の配布物です。モデルや話者を追加・差し替えた場合は、その配布元が示すライセンスと利用条件を

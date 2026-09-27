@@ -170,6 +170,26 @@ class ModelInfoTests(unittest.TestCase):
         self.assertIn("Irodori-TTS-v4-Large", info["licenseUrl"])
         self.assertEqual(info["defaultSteps"], 8)
 
+    def test_quantized_large_is_detected_and_rejected_for_tensorrt(self):
+        source = "Aratako/Irodori-TTS-v4-Large-Quantized/int8-weight-only"
+        adapter = fake_adapter()
+        adapter._resolve_local_model = lambda source: None
+        adapter._hf_checkpoint_from_cache = lambda source: None
+        adapter._read_hf_config = lambda source: EditorAdapter._config_from_metadata({
+            "config_json": '{"flow_parameterization": "rf_velocity", "speaker_dim": 1280}',
+            "irodori_quantization_json": '{"quantization_type": "int8_weight_only"}',
+        })
+        info = adapter.model_info(source)
+        self.assertEqual(info["quantization"], "int8_weight_only")
+        self.assertEqual(info["speakerDim"], 1280)
+        # サブフォルダ付きでもリポジトリ単位でライセンスを引く。
+        self.assertEqual(info["license"], "Gemma Terms of Use")
+        adapter.available_backends = lambda: {"cpu": True, "cuda": True, "trt": True, "radeon": False}
+        settings = dict(backend="trt", model=source, seed=1, sway_coeff=-1.0)
+        with self.assertRaisesRegex(ValueError, "TensorRT"):
+            adapter.validate(settings)
+        adapter.validate({**settings, "backend": "cuda"})
+
     def test_metadata_failure_falls_back_to_rf_default(self):
         adapter = fake_adapter()
         adapter._resolve_local_model = lambda source: Path("C:/models/model.safetensors")

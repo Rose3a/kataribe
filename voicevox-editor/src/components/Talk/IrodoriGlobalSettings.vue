@@ -221,6 +221,7 @@ type ModelOption = {
   description: string;
   license?: string;
   note?: string;
+  unsupportedBackends?: string[];
 };
 const modelOptions = ref<ModelOption[]>([
   {
@@ -242,13 +243,32 @@ const modelOptions = ref<ModelOption[]>([
     license: "MIT",
   },
   {
-    label: "Irodori-TTS v4 Large（高品質・大容量）",
+    label: "Irodori-TTS v4 Large INT8（Large の推奨）",
+    value: "Aratako/Irodori-TTS-v4-Large-Quantized/int8-weight-only",
+    description: "RFモデル 3.3B・INT8量子化 / CUDA専用 / Gemma Terms of Use",
+    license: "Gemma Terms of Use",
+    note: "約3.6GBをダウンロードします。VRAMは6GB以上を推奨。音質は元の Large とほぼ同じで、生成は bf16 版より1〜2割遅くなります。NVIDIA / CUDA 専用（TensorRT は不可）。既存の話者ファイル（v4.1 Small 用）は使えないため、「話者なし」か参照音声で生成します。Gemma の利用規約と禁止用途ポリシーにも従ってください。",
+    unsupportedBackends: ["trt"],
+  },
+  {
+    label: "Irodori-TTS v4 Large（bf16・TensorRT向け）",
     value: "Aratako/Irodori-TTS-v4-Large",
     description: "RFモデル 3.3B / Gemma Terms of Use",
     license: "Gemma Terms of Use",
-    note: "約13GBをダウンロードします。GPUのVRAMは8GB以上を推奨。既存の話者ファイル（v4.1 Small 用）は使えないため、「話者なし」か参照音声で生成します。Gemma の利用規約と禁止用途ポリシーにも従ってください。",
+    note: "約13GBをダウンロードします。VRAMは8GB以上、初回の TensorRT 変換には RAM 16GB 以上を推奨。既存の話者ファイル（v4.1 Small 用）は使えないため、「話者なし」か参照音声で生成します。Gemma の利用規約と禁止用途ポリシーにも従ってください。",
   },
 ]);
+// 量子化モデルは TensorRT に変換できないので、選んだときは CUDA（無ければ CPU）へ切り替える。
+watch(
+  () => settings.value?.model,
+  (model) => {
+    const option = modelOptions.value.find((item) => item.value === model);
+    const current = settings.value;
+    if (!current || !option?.unsupportedBackends?.includes(current.backend))
+      return;
+    current.backend = availableBackends.value.cuda === true ? "cuda" : "cpu";
+  },
+);
 function ensureModelOption(source: string) {
   const value = source.trim();
   if (!value || modelOptions.value.some((option) => option.value === value)) {
