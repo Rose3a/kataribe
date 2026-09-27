@@ -79,7 +79,11 @@ class GraphedCall:
             except Exception as exc:  # noqa: BLE001 - fall back to eager for good
                 self.disabled = True
                 self.graphs.clear()
-                self.log(f'[cuda-graph] {self.name}: capture failed, running eagerly: {exc}')
+                # Expected for some modules (e.g. the T5Gemma 2 text encoder of
+                # v4-Large); keep only the first line of CUDA's long message.
+                reason = str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__
+                self.log(f'[cuda-graph] {self.name}: not capturable, running eagerly '
+                         f'(harmless): {reason}')
                 self.eager += 1
                 return self.fn(*args, **kwargs)
             self.graphs[key] = entry
