@@ -60,6 +60,9 @@
         </a>
         <span v-else>{{ licenseName }}</span>
       </div>
+      <div v-if="selectedModelOption?.note" class="text-caption q-mb-sm">
+        {{ selectedModelOption.note }}
+      </div>
       <div v-if="modelInfo?.meanflow" class="text-caption q-mb-sm">
         MeanFlow モデル: ステップ数4が既定。ScheduleとCFGは未使用。
       </div>
@@ -216,22 +219,34 @@ type ModelOption = {
   label: string;
   value: string;
   description: string;
+  license?: string;
+  note?: string;
 };
 const modelOptions = ref<ModelOption[]>([
   {
     label: "Irodori-TTS v4.1 Small（既定・8ステップ）",
     value: "Aratako/Irodori-TTS-v4.1-Small",
     description: "RFモデル / MIT",
+    license: "MIT",
   },
   {
     label: "Irodori-TTS v4.1 Small MF（4ステップ）",
     value: "Aratako/Irodori-TTS-v4.1-Small-MF",
     description: "MeanFlowモデル / MIT",
+    license: "MIT",
   },
   {
     label: "Irodori-TTS v4.1 Anime（8ステップ）",
     value: "phasefield-audio/Irodori-TTS-v4.1-Anime",
     description: "Anime fine-tune / MIT",
+    license: "MIT",
+  },
+  {
+    label: "Irodori-TTS v4 Large（高品質・大容量）",
+    value: "Aratako/Irodori-TTS-v4-Large",
+    description: "RFモデル 3.3B / Gemma Terms of Use",
+    license: "Gemma Terms of Use",
+    note: "約13GBをダウンロードします。GPUのVRAMは8GB以上を推奨。既存の話者ファイル（v4.1 Small 用）は使えないため、「話者なし」か参照音声で生成します。Gemma の利用規約と禁止用途ポリシーにも従ってください。",
   },
 ]);
 function ensureModelOption(source: string) {
@@ -245,14 +260,11 @@ function ensureModelOption(source: string) {
     description: "カスタムモデル",
   });
 }
+const selectedModelOption = computed(() =>
+  modelOptions.value.find((option) => option.value === settings.value?.model),
+);
 const licenseName = computed(
-  () =>
-    modelInfo.value?.license ??
-    (modelOptions.value.some(
-      (option) => option.value === settings.value?.model,
-    )
-      ? "MIT"
-      : undefined),
+  () => modelInfo.value?.license ?? selectedModelOption.value?.license,
 );
 const licenseUrl = computed(
   () =>
@@ -261,10 +273,7 @@ const licenseUrl = computed(
       ? `https://huggingface.co/${settings.value.model}`
       : undefined),
 );
-function setCustomModel(
-  value: string,
-  done: () => void,
-) {
+function setCustomModel(value: string, done: () => void) {
   const trimmed = value.trim();
   if (!trimmed || !settings.value) return done();
   // QSelect の emit-value と new-value-mode の組み合わせでは、プリセット外の
@@ -336,7 +345,9 @@ async function pollStatus() {
     // The engine can be restarting while the editor remains open.
   }
 }
-const apply = () => run(true);
+// モデルが変わると使える話者（埋め込み次元）も変わるので、話者一覧も読み直す。
+const apply = () =>
+  run(true, settings.value?.model !== appliedSettings.value?.model);
 const refresh = () => run(false, true);
 let pollTimer: ReturnType<typeof setInterval> | undefined;
 onMounted(() => {
