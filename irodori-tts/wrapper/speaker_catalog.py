@@ -147,6 +147,21 @@ def portrait_for(path: Path) -> tuple[str, str] | None:
     return _fallback_icon()
 
 
+def portrait_kind(portrait: tuple[str, str] | None, thumbnail: tuple[str, str] | None) -> str:
+    """Classify the artwork so the editor can animate speakers without a portrait.
+
+    ``portrait`` means a dedicated portrait image, ``icon`` means only an icon,
+    and ``none`` means both fell back to the bundled default image.
+    """
+    fallback = _fallback_icon()
+    fallback_payload = fallback[1] if fallback else None
+    if portrait and portrait[1] != fallback_payload:
+        return "portrait"
+    if thumbnail and thumbnail[1] != fallback_payload:
+        return "icon"
+    return "none"
+
+
 def credit_for(path: Path) -> str | None:
     """Show a speaker's credit.txt below its portrait when provided."""
     return _read_credit(path, ("credit.txt",))

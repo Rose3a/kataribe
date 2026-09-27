@@ -34,6 +34,8 @@ export interface SpeakerInfo {
     policy: string;
     /** Short portrait attribution (Irodori extension). */
     credit?: string;
+    /** 立ち絵の種類（Irodori 拡張）。portrait=専用の立ち絵 / icon=アイコンのみ / none=画像なし */
+    portraitKind?: 'portrait' | 'icon' | 'none';
     /**
      * 立ち絵画像をbase64エンコードしたもの、あるいはURL
      * @type {string}
@@ -72,6 +74,7 @@ export function SpeakerInfoFromJSONTyped(json: any, ignoreDiscriminator: boolean
         
         'policy': json['policy'],
         'credit': typeof json['credit'] === 'string' ? json['credit'] : undefined,
+        'portraitKind': ['portrait', 'icon', 'none'].includes(json['irodori_portrait_kind']) ? json['irodori_portrait_kind'] : undefined,
         'portrait': json['portrait'],
         'styleInfos': ((json['style_infos'] as Array<any>).map(StyleInfoFromJSON)),
     };
@@ -88,6 +91,7 @@ export function SpeakerInfoToJSON(value?: SpeakerInfo | null): any {
         
         'policy': value.policy,
         'credit': value.credit,
+        'irodori_portrait_kind': value.portraitKind,
         'portrait': value.portrait,
         'style_infos': ((value.styleInfos as Array<any>).map(StyleInfoToJSON)),
     };

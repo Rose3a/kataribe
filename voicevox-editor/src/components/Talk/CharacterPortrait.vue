@@ -8,8 +8,23 @@
     <span v-if="isMultipleEngine" class="character-engine-name">{{
       engineName
     }}</span>
+    <SpeakerAvatar
+      v-if="useAvatar && characterInfo"
+      :name="characterInfo.metas.speakerName"
+      :iconPath="
+        characterInfo.portraitKind === 'icon' ? styleInfo?.iconPath : undefined
+      "
+      :text="activeText"
+      :playing="isPlaying"
+      :getLevel="() => store.getters.AUDIO_PLAYBACK_VOLUME()"
+      :getSeconds="
+        () => store.getters.ACTIVE_AUDIO_ELEM_CURRENT_TIME_GETTER() ?? 0
+      "
+      :getDuration="getAudioDurationSeconds"
+      :anchors="avatarAnchors"
+    />
     <img
-      v-if="portraitPath"
+      v-else-if="portraitPath"
       :src="displayPortraitPath"
       class="character-portrait"
       :alt="characterName"
@@ -26,6 +41,7 @@
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
+import SpeakerAvatar from "./SpeakerAvatar.vue";
 import {
   BlinkScheduler,
   LipSyncDriver,
@@ -40,7 +56,8 @@ import {
   type TimelineSource,
 } from "@/helpers/portraitLipSync";
 import { fetchAsrTimeline } from "@/helpers/irodoriEngine";
-import type { AsrTimelineResponse } from "@/domain/irodori";
+import { parseEmotionMarks } from "@/helpers/speakerAvatar";
+import type { AsrAnchor, AsrTimelineResponse } from "@/domain/irodori";
 import { createEngineUrl } from "@/domain/url";
 import { getAudioDurationSeconds, getPlaybackBlob } from "@/store/audioPlayer";
 import { useStore } from "@/store";
@@ -109,6 +126,16 @@ const engineName = computed(() => {
 const portraitPath = computed(
   () => styleInfo.value?.portraitPath || characterInfo.value?.portraitPath,
 );
+/** 専用の立ち絵が無い話者は、立ち絵の代わりに動くアイコンを出す */
+const useAvatar = computed(
+  () =>
+    characterInfo.value != undefined &&
+    (characterInfo.value.portraitKind ?? "portrait") !== "portrait",
+);
+const activeText = computed(() => {
+  const activeKey = store.getters.ACTIVE_AUDIO_KEY;
+  return activeKey ? (store.state.audioItems[activeKey]?.text ?? "") : "";
+});
 const mouthPaths = computed(() => styleInfo.value?.mouthPaths);
 // 開いた口の絵。無い話者でも母音パーツがあれば『あ』を開閉用に使う。
 const mouthOpenPath = computed(
@@ -164,6 +191,21 @@ const displayPortraitPath = computed(() => {
 const asrTimelineCache = new WeakMap<Blob, Map<string, MoraStep[]>>();
 let asrRequestId = 0;
 
+/** 選択中のセリフのエンジンの URL。 */
+function activeEngineEndpoint(): string | undefined {
+  const activeKey = store.getters.ACTIVE_AUDIO_KEY;
+  const engineId = activeKey
+    ? store.state.audioItems[activeKey]?.voice.engineId
+    : undefined;
+  if (engineId == undefined) return undefined;
+  const info = store.state.engineInfos[engineId];
+  if (info == undefined) return undefined;
+  return createEngineUrl({
+    ...info,
+    port: store.state.altPortInfos[engineId] ?? info.defaultPort,
+  });
+}
+
 /** ASR タイムラインを取りに行く。取れなければ null（=推定タイムラインへ戻す）。 */
 async function loadAsrTimeline(
   text: string,
@@ -171,17 +213,8 @@ async function loadAsrTimeline(
 ): Promise<MoraStep[] | null> {
   const cached = asrTimelineCache.get(audio)?.get(text);
   if (cached != undefined) return cached.length > 0 ? cached : null;
-  const activeKey = store.getters.ACTIVE_AUDIO_KEY;
-  const engineId = activeKey
-    ? store.state.audioItems[activeKey]?.voice.engineId
-    : undefined;
-  if (engineId == undefined) return null;
-  const info = store.state.engineInfos[engineId];
-  if (info == undefined) return null;
-  const endpoint = createEngineUrl({
-    ...info,
-    port: store.state.altPortInfos[engineId] ?? info.defaultPort,
-  });
+  const endpoint = activeEngineEndpoint();
+  if (endpoint == undefined) return null;
   const response: AsrTimelineResponse | null = await fetchAsrTimeline(
     endpoint,
     text,
@@ -198,6 +231,39 @@ async function loadAsrTimeline(
   return steps;
 }
 
+// 動くアイコン用：行の途中にある絵文字の切り替え時刻を ASR の文字時刻で合わせる。
+// 取れなければ SpeakerAvatar が文字数で按分する
+const avatarAnchorCache = new WeakMap<Blob, Map<string, AsrAnchor[]>>();
+const avatarAnchors = ref<AsrAnchor[]>();
+let avatarRequestId = 0;
+watch(
+  [isPlaying, useAvatar, activeText, lipSyncTimeline],
+  ([playing, avatar, text, timeline]) => {
+    const requestId = ++avatarRequestId;
+    avatarAnchors.value = undefined;
+    if (!playing || !avatar || timeline !== "asr") return;
+    const { plain, marks } = parseEmotionMarks(text);
+    if (!marks.some((mark) => mark.index > 0)) return;
+    const audio = getPlaybackBlob();
+    const endpoint = activeEngineEndpoint();
+    if (!audio || endpoint == undefined) return;
+    const cached = avatarAnchorCache.get(audio)?.get(plain);
+    if (cached) {
+      avatarAnchors.value = cached;
+      return;
+    }
+    void fetchAsrTimeline(endpoint, plain, audio).then((response) => {
+      if (requestId !== avatarRequestId || response?.anchors == undefined)
+        return;
+      const byText = avatarAnchorCache.get(audio) ?? new Map();
+      byText.set(plain, response.anchors);
+      avatarAnchorCache.set(audio, byText);
+      avatarAnchors.value = response.anchors;
+    });
+  },
+  { immediate: true },
+);
+
 watch(
   [
     isPlaying,
@@ -206,6 +272,7 @@ watch(
     lipSyncSpeed,
     lipSyncTimeline,
     hasVowelParts,
+    useAvatar,
     () => store.getters.ACTIVE_AUDIO_KEY,
   ],
   ([playing, mouth]) => {
@@ -217,7 +284,8 @@ watch(
     }
     isMouthOpen.value = false;
     mouthShape.value = "n";
-    if (!playing || lipSyncMode.value === "off") return;
+    // 動くアイコンは音量だけで動くので、口パクのタイマーは使わない
+    if (!playing || lipSyncMode.value === "off" || useAvatar.value) return;
     if (lipSyncMode.value === "simple" && !mouth) return;
 
     const options = lipSyncOptions.value;
@@ -296,6 +364,7 @@ watch(
 );
 onBeforeUnmount(() => {
   ++asrRequestId;
+  ++avatarRequestId;
   if (mouthTimer != undefined) window.clearInterval(mouthTimer);
   if (blinkTimer != undefined) window.clearTimeout(blinkTimer);
 });

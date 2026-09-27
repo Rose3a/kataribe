@@ -30,6 +30,7 @@ from speaker_catalog import (
     mouth_open_thumbnail_for,
     mouth_parts_for,
     portrait_for,
+    portrait_kind,
     speaker_catalog,
 )
 from asr_timeline import (AsrTimeline, decode_wav, ensure_asr_model, asr_package_error,
@@ -707,6 +708,7 @@ class EditorAdapter:
                     mouth_open=mouth[1] if mouth else None,
                     blink=blink[1] if blink else None,
                     mouth_parts=mouth_parts, credit=credit, policy=policy,
+                    portrait_kind=portrait_kind(portrait, image),
                     irodori_folder=folder))
             # エディタはここで話者一覧を独自に組み立てる。話者IDは保ったまま
             # 表示順だけを入れ替え、初回の既定話者をつくよみちゃんにする。

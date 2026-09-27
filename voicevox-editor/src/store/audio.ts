@@ -455,6 +455,7 @@ export const audioStore = createPartialStore<AudioStoreTypes>({
             ),
             // Portrait attribution is separate from the full usage policy.
             credit: baseCharacterInfo.credit,
+            portraitKind: baseCharacterInfo.portraitKind,
             metas: {
               speakerUuid: SpeakerId(baseSpeaker.speakerUuid),
               speakerName: baseSpeaker.name,

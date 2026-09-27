@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "wrapper"))
 
-from speaker_catalog import FALLBACK_ICON_PATH, credit_for, display_name_for, policy_for, portrait_for, speaker_catalog, thumbnail_for
+from speaker_catalog import FALLBACK_ICON_PATH, credit_for, display_name_for, policy_for, portrait_for, portrait_kind, speaker_catalog, thumbnail_for
 from tts_cli import SpeakerCassette
 from voicevox_engine import Handler, _speaker_list_payload, _speaker_resource_index, _speaker_table
 
@@ -244,6 +244,23 @@ class SpeakerCatalogTests(unittest.TestCase):
 
             self.assertEqual(catalog["external"], ("image/png", expected))
             self.assertEqual(portrait_for(embedding), ("image/png", expected))
+
+    def test_portrait_kind_distinguishes_portrait_icon_and_fallback(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            embedding = root / "speaker.safetensors"
+            embedding.write_bytes(b"embedding")
+
+            # 画像が何も無い → 既定アイコン
+            self.assertEqual(portrait_kind(portrait_for(embedding), thumbnail_for(embedding)), "none")
+
+            # アイコンだけ → アイコン
+            (root / "icon.png").write_bytes(b"icon-payload")
+            self.assertEqual(portrait_kind(portrait_for(embedding), thumbnail_for(embedding)), "icon")
+
+            # 話者名の画像がある → 専用の立ち絵
+            (root / "speaker.png").write_bytes(b"portrait-payload")
+            self.assertEqual(portrait_kind(portrait_for(embedding), thumbnail_for(embedding)), "portrait")
 
 
 if __name__ == "__main__":

@@ -44,7 +44,7 @@ from tts_cli import IrodoriTTS, resolve_embed_dirs  # noqa: E402
 from reading_dictionary import (ENGLISH_READINGS, ENGLISH_SPACINGS, KANA_STYLES,
                                 READING_DICTIONARY, make_word)
 from third_party_licenses import dependency_licenses
-from speaker_catalog import blink_thumbnail_for, credit_for, display_name_for, policy_for, mouth_open_thumbnail_for, mouth_parts_for, portrait_for, speaker_catalog, _fallback_icon  # noqa: E402
+from speaker_catalog import blink_thumbnail_for, credit_for, display_name_for, policy_for, mouth_open_thumbnail_for, mouth_parts_for, portrait_for, portrait_kind, speaker_catalog, _fallback_icon  # noqa: E402
 
 
 ENGINE_VERSION = "0.1.1"
@@ -618,6 +618,7 @@ def _speaker_table(tts: IrodoriTTS, progress_callback=None) -> tuple[list[dict],
         original = portrait_for(source) if source else None
         if original:
             portrait = original[1]
+        kind = portrait_kind(original, thumb)
         output.append({
             "name": display_name,
             "speaker_uuid": speaker_uuid,
@@ -631,6 +632,7 @@ def _speaker_table(tts: IrodoriTTS, progress_callback=None) -> tuple[list[dict],
             "mouth_parts": mouth_parts,
             "credit": credit,
             "policy": policy,
+            "portrait_kind": kind,
             "irodori_folder": folder,
         })
     # 話者 ID は既存プロジェクトとの互換性のため生成順のまま維持し、
@@ -988,6 +990,8 @@ class Handler(BaseHTTPRequestHandler):
         return {
             "policy": (speaker.get("policy") or "").replace("\n", "  \n"),
             "credit": speaker.get("credit"),
+            # 立ち絵の種類（portrait / icon / none）。立ち絵の無い話者はエディタがアイコンを動かして表示する
+            "irodori_portrait_kind": speaker.get("portrait_kind", "portrait"),
             "portrait": resource(speaker.get("portrait", TINY_PNG)),
             "style_infos": [
                 {

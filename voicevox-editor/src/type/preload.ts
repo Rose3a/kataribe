@@ -168,6 +168,11 @@ export type MetasJson = {
 export type CharacterInfo = {
   portraitPath: string;
   credit?: string;
+  /**
+   * 立ち絵の種類（Irodori 拡張）。portrait 以外の話者は、立ち絵欄でアイコンを動かして表示する。
+   * 未指定（VOICEVOX 等）は専用の立ち絵として扱う。
+   */
+  portraitKind?: "portrait" | "icon" | "none";
   metas: {
     speakerUuid: SpeakerId;
     speakerName: string;

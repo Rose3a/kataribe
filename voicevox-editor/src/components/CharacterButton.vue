@@ -10,8 +10,15 @@
   >
     <!-- q-imgだとdisableのタイミングで点滅する -->
     <div class="icon-container">
+      <SpeakerInitialIcon
+        v-if="
+          selectedStyleInfo != undefined &&
+          selectedCharacter?.portraitKind === 'none'
+        "
+        :name="selectedCharacter.metas.speakerName"
+      />
       <img
-        v-if="selectedStyleInfo != undefined"
+        v-else-if="selectedStyleInfo != undefined"
         class="q-pa-none q-ma-none"
         :src="selectedStyleInfo.iconPath"
         :alt="selectedVoiceInfoText"
@@ -37,15 +44,16 @@
     >
       <QTabs
         v-if="folderTabs.length > 0"
-        :model-value="activeFolder"
+        :modelValue="activeFolder"
         dense
         align="left"
-        outside-arrows
-        mobile-arrows
-        active-color="primary"
-        indicator-color="primary"
+        outsideArrows
+        mobileArrows
+        activeColor="primary"
+        indicatorColor="primary"
         class="speaker-folder-tabs"
-        @update:model-value="selectFolder"
+        @update:modelValue="selectFolder"
+        @wheel="scrollFolderTabs"
       >
         <QTab
           v-if="hasUngroupedCharacters"
@@ -91,10 +99,10 @@
           </QBtn>
         </QItem>
         <QVirtualScroll
-          :items="visibleCharacterInfos"
-          :virtual-scroll-item-size="48"
-          class="speaker-virtual-list"
           v-slot="{ item: characterInfo, index: characterIndex }"
+          :items="visibleCharacterInfos"
+          :virtualScrollItemSize="48"
+          class="speaker-virtual-list"
         >
           <QItem
             :key="characterInfo.metas.speakerUuid"
@@ -114,8 +122,12 @@
                 @mouseleave="reassignSubMenuOpen.cancel()"
               >
                 <QAvatar rounded size="2rem" class="q-mr-md">
+                  <SpeakerInitialIcon
+                    v-if="characterInfo?.portraitKind === 'none'"
+                    :name="characterInfo.metas.speakerName"
+                  />
                   <QImg
-                    v-if="characterInfo"
+                    v-else-if="characterInfo"
                     noSpinner
                     noTransition
                     :ratio="1"
@@ -249,6 +261,7 @@ import { useStore } from "@/store";
 import type { CharacterInfo, SpeakerId, Voice } from "@/type/preload";
 import { formatCharacterStyleName } from "@/store/utility";
 import { useEngineIcons } from "@/composables/useEngineIcons";
+import SpeakerInitialIcon from "@/components/SpeakerInitialIcon.vue";
 
 const props = withDefaults(
   defineProps<{
@@ -423,6 +436,24 @@ const reassignSubMenuOpen = debounce((idx: number) => {
   arr[idx] = true;
   subMenuOpenFlags.value = arr;
 }, 100);
+
+// フォルダのタブは横に並ぶので、縦のホイールでも左右に送れるようにする
+const scrollFolderTabs = (event: WheelEvent) => {
+  const content = (event.currentTarget as HTMLElement | null)?.querySelector(
+    ".q-tabs__content",
+  );
+  if (!(content instanceof HTMLElement)) return;
+  if (content.scrollWidth <= content.clientWidth) return;
+  const delta =
+    Math.abs(event.deltaY) > Math.abs(event.deltaX)
+      ? event.deltaY
+      : event.deltaX;
+  if (delta === 0) return;
+  // 行単位（Firefox など）のときはおおよその px に直す
+  content.scrollLeft +=
+    event.deltaMode === WheelEvent.DOM_DELTA_LINE ? delta * 16 : delta;
+  event.preventDefault();
+};
 
 const selectFolder = (folder: string | number | null) => {
   if (typeof folder !== "string") return;
@@ -613,7 +644,6 @@ const onMenuBeforeShow = () => {
     right: -6px;
   }
 }
-
 </style>
 
 <style lang="scss">
