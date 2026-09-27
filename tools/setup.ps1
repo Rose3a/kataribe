@@ -131,8 +131,10 @@ try {
     # descript-audiotools pins protobuf below 3.20, while modern ONNX needs
     # protobuf 3.20.2+; install the audio stack first, then the ONNX stack
     # without asking the resolver to reconcile those incompatible metadata.
+    # ONNX 1.23 needs protobuf 6.31+ and fails to import on protobuf 5, which
+    # --no-deps would not catch; keep it below 1.23 to match the protobuf cap.
     Run-Uv @('pip','install','--python',$python,'--upgrade','protobuf>=4.25.1,<6','ml_dtypes>=0.5.4','flatbuffers','coloredlogs','packaging','sympy')
-    Run-Uv @('pip','install','--python',$python,'--no-deps','onnx>=1.16,<2','onnxruntime>=1.24,<2','onnxscript>=0.2','onnx_ir>=0.1')
+    Run-Uv @('pip','install','--python',$python,'--no-deps','onnx>=1.16,<1.23','onnxruntime>=1.24,<2','onnxscript>=0.2','onnx_ir>=0.1')
     if (Test-Path -LiteralPath $prebuiltEditor -PathType Leaf) {
         Write-Host '[EDITOR] Using the bundled Electron editor.' -ForegroundColor Cyan
     } else {
