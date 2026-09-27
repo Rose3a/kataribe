@@ -8,7 +8,7 @@ import secrets
 import threading
 import time
 from collections.abc import Callable
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -291,6 +291,12 @@ def _move_inference_module(
     device: torch.device,
     dtype: torch.dtype,
 ) -> torch.nn.Module:
+    with torch.no_grad():
+        # Cast before moving so large fp32 checkpoints never occupy device
+        # memory at full precision (v4-Large is ~13 GB in fp32).
+        for param in module.parameters():
+            if param.is_floating_point() and param.dtype != dtype:
+                param.data = param.data.to(dtype=dtype)
     module.to(device=device)
     with torch.no_grad():
         for param in module.parameters():
@@ -498,17 +504,83 @@ def _default_max_ref_seconds(train_cfg: dict | None) -> float:
     return _LEGACY_MAX_REF_SECONDS
 
 
+@contextmanager
+def _meta_parameters():
+    """Create module parameters on the meta device; buffers stay real.
+
+    Non-persistent buffers (rotary frequencies, embedding scales) are not in
+    the checkpoint, so only parameters may be left for ``assign`` loading.
+    """
+    register = torch.nn.Module.register_parameter
+
+    def register_meta(module, name, param):
+        register(module, name, param)
+        if param is not None:
+            created = module._parameters[name]
+            module._parameters[name] = type(created)(
+                created.to("meta"), requires_grad=created.requires_grad
+            )
+
+    torch.nn.Module.register_parameter = register_meta
+    try:
+        yield
+    finally:
+        torch.nn.Module.register_parameter = register
+
+
+_SAFETENSORS_DTYPES = {
+    "F64": torch.float64, "F32": torch.float32, "F16": torch.float16,
+    "BF16": torch.bfloat16, "I64": torch.int64, "I32": torch.int32,
+    "I16": torch.int16, "I8": torch.int8, "U8": torch.uint8, "BOOL": torch.bool,
+}
+
+
+def _read_safetensors_as(path: Path, dtype: torch.dtype) -> dict[str, torch.Tensor]:
+    """Read tensors one at a time with plain file reads, casting floats to ``dtype``.
+
+    safetensors memory-maps the whole file, so a large fp32 checkpoint
+    (v4-Large is ~13 GB) would otherwise sit in RAM next to the cast copy.
+    """
+    state: dict[str, torch.Tensor] = {}
+    with open(path, "rb") as handle:
+        header_len = int.from_bytes(handle.read(8), "little")
+        header = json.loads(handle.read(header_len))
+        base = 8 + header_len
+        entries = sorted(
+            ((name, info) for name, info in header.items() if name != "__metadata__"),
+            key=lambda item: item[1]["data_offsets"][0],
+        )
+        for name, info in entries:
+            begin, end = info["data_offsets"]
+            source_dtype = _SAFETENSORS_DTYPES.get(info["dtype"])
+            if source_dtype is None:
+                raise ValueError(f"Unsupported safetensors dtype {info['dtype']!r}: {path}")
+            handle.seek(base + begin)
+            raw = bytearray(handle.read(end - begin))
+            tensor = (torch.frombuffer(raw, dtype=source_dtype) if raw
+                      else torch.empty(0, dtype=source_dtype))
+            tensor = tensor.reshape(info["shape"])
+            if tensor.is_floating_point() and source_dtype != dtype:
+                tensor = tensor.to(dtype=dtype)
+            state[name] = tensor
+    return state
+
+
 def _load_checkpoint_from_safetensors(
     path: Path,
+    load_dtype: torch.dtype | None = None,
 ) -> tuple[dict[str, torch.Tensor], dict, dict | None, dict | None]:
-    model_state = load_safetensors_file(str(path), device="cpu")
+    with safe_open(str(path), framework="pt", device="cpu") as handle:
+        metadata = handle.metadata() or {}
+    quantized = parse_quantization_metadata(metadata) is not None
+    if load_dtype is not None and not quantized:
+        model_state = _read_safetensors_as(path, load_dtype)
+    else:
+        model_state = load_safetensors_file(str(path), device="cpu")
     if not isinstance(model_state, dict) or not model_state:
         raise ValueError(f"Safetensors checkpoint has no model weights: {path}")
 
-    with safe_open(str(path), framework="pt", device="cpu") as handle:
-        metadata = handle.metadata() or {}
-
-    if parse_quantization_metadata(metadata) is not None:
+    if quantized:
         model_state, _ = unflatten_quantized_state_dict(
             model_state,
             metadata=metadata,
@@ -531,9 +603,10 @@ def _load_checkpoint_from_safetensors(
 
 def _load_checkpoint_for_inference(
     path: Path,
+    load_dtype: torch.dtype | None = None,
 ) -> tuple[dict[str, torch.Tensor], dict, dict | None, dict | None]:
     if path.suffix.lower() == ".safetensors":
-        return _load_checkpoint_from_safetensors(path)
+        return _load_checkpoint_from_safetensors(path, load_dtype)
     return _load_checkpoint_from_pt(path)
 
 
@@ -645,7 +718,7 @@ class InferenceRuntime:
 
         checkpoint_path = Path(key.checkpoint)
         model_state, model_cfg_dict, train_cfg, text_encoder_config = (
-            _load_checkpoint_for_inference(checkpoint_path)
+            _load_checkpoint_for_inference(checkpoint_path, load_dtype=model_dtype)
         )
         model_cfg = merge_dataclass_overrides(
             ModelConfig(),
@@ -653,17 +726,17 @@ class InferenceRuntime:
             section="checkpoint model_config",
         )
 
-        model = TextToLatentRFDiT(
-            model_cfg,
-            pretrained_backbone_config=text_encoder_config,
-            load_pretrained_backbone_weights=not model_cfg.use_pretrained_text_encoder,
-        )
-        quantized_model = is_torchao_quantized_state_dict(model_state)
-        model.load_state_dict(
-            model_state,
-            assign=model_cfg.use_pretrained_text_encoder or quantized_model,
-        )
-        model = model.to(model_device)
+        # Every parameter comes from the strict load below, so build them on the
+        # meta device and assign the loaded tensors (an fp32 v4-Large would
+        # otherwise allocate ~13 GB just to be overwritten).
+        with _meta_parameters():
+            model = TextToLatentRFDiT(
+                model_cfg,
+                pretrained_backbone_config=text_encoder_config,
+                load_pretrained_backbone_weights=not model_cfg.use_pretrained_text_encoder,
+            )
+        model.load_state_dict(model_state, assign=True)
+        del model_state
         model = _move_inference_module(model, device=model_device, dtype=model_dtype)
         model.eval()
         model = _maybe_compile_inference_model(

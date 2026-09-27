@@ -160,6 +160,16 @@ class ModelInfoTests(unittest.TestCase):
         self.assertFalse(info["meanflow"])
         self.assertEqual(info["defaultSteps"], 8)
 
+    def test_large_model_reports_gemma_license(self):
+        adapter = fake_adapter()
+        adapter._resolve_local_model = lambda source: None
+        adapter._hf_checkpoint_from_cache = lambda source: Path("C:/cache/model.safetensors")
+        adapter._read_safetensors_config = lambda path: {"flow_parameterization": "rf_velocity"}
+        info = adapter.model_info("Aratako/Irodori-TTS-v4-Large")
+        self.assertEqual(info["license"], "Gemma Terms of Use")
+        self.assertIn("Irodori-TTS-v4-Large", info["licenseUrl"])
+        self.assertEqual(info["defaultSteps"], 8)
+
     def test_metadata_failure_falls_back_to_rf_default(self):
         adapter = fake_adapter()
         adapter._resolve_local_model = lambda source: Path("C:/models/model.safetensors")

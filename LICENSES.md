@@ -32,6 +32,14 @@ Editor の JavaScript 依存パッケージと実行環境の依存パッケー�
 | CMU Pronouncing Dictionary | 英単語の読み変換（`irodori-tts/wrapper/data/cmudict.txt.gz`、英字の見出しと第1発音だけに加工） | BSD 2-Clause License | 再配布時は著作権表示と許諾表示を残します。ライセンステキスト: `licenses/cmudict.txt`、配布元: <https://github.com/cmusphinx/cmudict> |
 | 話者埋め込み・参照音声・肖像画像 | 話者の音声・画像データ | 話者ごとに異なる | 話者ごとの `credit.txt` または配布元が示す利用条件に従います。本人または権利者の許可も必要です。 |
 
+## 選んだときだけ取得するモデル
+
+エディタのモデル欄で選ぶと、初回の適用時に Hugging Face から取得します。配布物には含みません。
+
+| 名前 | 用途 | ライセンス | 主な条件・確認先 |
+| --- | --- | --- | --- |
+| Irodori-TTS-v4-Large | 音声生成モデル（大容量版） | Gemma Terms of Use + モデルカードの Ethical Restrictions | テキストエンコーダーが T5Gemma 2 由来のため、Gemma の利用規約と禁止用途ポリシーに従います。なりすましや、誤情報を目的とする音声生成は禁止されています。配布ページ: <https://huggingface.co/Aratako/Irodori-TTS-v4-Large> |
+
 モデル重み、トークナイザー、話者データ、参照音声、画像、生成音声は、上のコードライセンスとは
 別の配布物です。モデルや話者を追加・差し替えた場合は、その配布元が示すライセンスと利用条件を
 確認してください。

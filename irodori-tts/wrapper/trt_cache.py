@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -99,6 +100,8 @@ def ensure_plan(checkpoint, progress, log):
     marker = work / 'ready.json'
     marker.write_text(json.dumps(record, ensure_ascii=False), encoding='utf-8')
     marker.replace(cache / marker.name)
+    # The ONNX export stays behind otherwise (about 3 GB for v4-Large).
+    shutil.rmtree(work, ignore_errors=True)
     return cache / plan.name
 
 

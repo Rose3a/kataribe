@@ -11,6 +11,7 @@
 ```text
 model.safetensors
 phasefield-audio/Irodori-TTS-v4.1-Anime
+Aratako/Irodori-TTS-v4-Large
 ```
 
 Hugging Faceのモデルは初回生成時に取得されます。互換性のないアーキテクチャや設定のモデルは使用できません。TensorRTは `model.safetensors` と対応するplanの組み合わせのみ対応します。

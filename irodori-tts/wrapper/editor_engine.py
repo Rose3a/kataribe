@@ -300,11 +300,14 @@ class EditorAdapter:
             meanflow=flow == "meanflow",
             defaultSteps=DEFAULT_STEPS_MEANFLOW if flow == "meanflow" else DEFAULT_STEPS_RF,
             metadataAvailable=bool(config),
+            speakerDim=int(config["speaker_dim"]) if config.get("speaker_dim") else None,
         )
         known = {
             "Aratako/Irodori-TTS-v4.1-Small": ("MIT", "https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small"),
             "Aratako/Irodori-TTS-v4.1-Small-MF": ("MIT", "https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small-MF"),
             "phasefield-audio/Irodori-TTS-v4.1-Anime": ("MIT", "https://huggingface.co/phasefield-audio/Irodori-TTS-v4.1-Anime"),
+            # テキストエンコーダが T5Gemma 2 由来のため Gemma の規約が掛かる。
+            "Aratako/Irodori-TTS-v4-Large": ("Gemma Terms of Use", "https://huggingface.co/Aratako/Irodori-TTS-v4-Large/blob/main/GEMMA_TERMS_OF_USE.md"),
         }
         license_name, license_url = known.get(model, (None, f"https://huggingface.co/{model}" if self._is_hf_model_source(model) else None))
         info["license"] = license_name
@@ -578,10 +581,15 @@ class EditorAdapter:
             tmp.replace(self.config_path)
             with self.state_lock:
                 changed_backend = any(value[k] != self.settings[k] for k in ("backend", "model"))
+            with self.state_lock:
+                changed_model = value["model"] != self.settings["model"]
             if changed_backend:
                 self._close_locked()
             with self.state_lock:
                 self.settings = value
+            if changed_model:
+                # モデルごとに使える話者（埋め込み次元）が違うので一覧を作り直す。
+                self.refresh()
             retry_trt = value['backend'] == 'trt' and getattr(self, '_trt_failure', None) is not None
             self._trt_failure = None
         if changed_backend or retry_trt:
@@ -671,11 +679,27 @@ class EditorAdapter:
             with self._prewarm_lock:
                 self._prewarm_scheduled = False
 
+    def _model_speaker_dim(self):
+        """選択中モデルの話者埋め込み次元。判定できなければ None（絞り込まない）。"""
+        try:
+            return self.model_info().get("speakerDim")
+        except Exception:  # noqa: BLE001
+            return None
+
+    @staticmethod
+    def _usable_speakers(cassette, speaker_dim):
+        """話者ファイルは作成したモデル専用なので、次元が合う話者だけを出す。"""
+        names = cassette.speakers
+        names = [n for n in names if not (n.endswith(".speaker") and n[:-8] in names)]
+        if speaker_dim is None:
+            return names
+        return [n for n in names if cassette.dim_for(n) in (None, speaker_dim)]
+
     def refresh(self):
+        speaker_dim = self._model_speaker_dim()
         with self.operation_lock:
             cassette = SpeakerCassette(resolve_embed_dirs())
-            names = cassette.speakers
-            names = [n for n in names if not (n.endswith(".speaker") and n[:-8] in names)]
+            names = self._usable_speakers(cassette, speaker_dim)
             id_to_name = {0: ""}
             speakers_json = []
             catalog = dict(speaker_catalog(
@@ -729,8 +753,8 @@ class EditorAdapter:
 
     def mix_speakers(self):
         cassette = SpeakerCassette(resolve_embed_dirs())
-        return [dict(id=name, name=display_name_for(name)) for name in cassette.speakers
-                if not (name.endswith(".speaker") and name[:-8] in cassette.speakers)]
+        return [dict(id=name, name=display_name_for(name))
+                for name in self._usable_speakers(cassette, self._model_speaker_dim())]
 
     def mix_recipes(self):
         recipes = []

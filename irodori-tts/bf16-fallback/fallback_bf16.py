@@ -130,20 +130,28 @@ def dynamic_axes():
 
 
 def inspect_export(path: Path) -> dict:
+    import re
     import onnx
-    graph = onnx.load(str(path), load_external_data=True)
-    onnx.checker.check_model(graph)
+    # Checking by path also handles models over 2 GiB (external data), such as
+    # the 24-layer v4-Large DiT.
+    onnx.checker.check_model(str(path))
+    graph = onnx.load(str(path), load_external_data=False)
     nodes = list(graph.graph.node)
     counts = {}
     for node in nodes:
         counts[node.op_type] = counts.get(node.op_type, 0) + 1
+    # One primitive attention per DiT block (12 for Small, 24 for Large).
+    block_ids = {int(m.group(1)) for init in graph.graph.initializer
+                 if (m := re.match(r"blocks\.(\d+)\.", init.name))}
+    layers = max(block_ids) + 1 if block_ids else 12
     attention = counts.get("Attention", 0)
     softmax = counts.get("Softmax", 0)
     casts = counts.get("Cast", 0)
     matmul = counts.get("MatMul", 0)
-    if attention != 0 or softmax != 12:
-        raise RuntimeError({"Attention": attention, "Softmax": softmax, "counts": counts})
-    if casts < 36 or matmul < 24:
+    if attention != 0 or softmax != layers:
+        raise RuntimeError({"Attention": attention, "Softmax": softmax, "layers": layers,
+                            "counts": counts})
+    if casts < 3 * layers or matmul < 2 * layers:
         raise RuntimeError({"Cast": casts, "MatMul": matmul, "counts": counts})
     return {"bytes": path.stat().st_size, "nodes": len(nodes), "counts": counts,
             "attention_nodes": attention, "softmax_nodes": softmax,

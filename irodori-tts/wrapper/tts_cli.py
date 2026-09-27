@@ -156,6 +156,10 @@ def resolve_embed_dirs(extra: Iterable[Path] = ()) -> list[Path]:
 
 
 # ---------------------------------------------------------------- cassette
+# (path, mtime, size) -> speaker embedding width; the model switch re-reads the list.
+_SPEAKER_DIM_CACHE: dict[tuple[str, int, int], int] = {}
+
+
 class SpeakerCassette:
     """Lazy GPU cache of *.speaker.safetensors. Validates shape and dtype."""
 
@@ -231,7 +235,9 @@ class SpeakerCassette:
         path = self.path_for(name)
         with safe_open(str(path), framework="pt", device="cpu") as f:
             shape = f.get_slice("speaker_embedding").get_shape()
-            if len(shape) not in (2, 3) or shape[-1] != 768 or not 1 <= shape[-2] <= 64:
+            # 768 wide for the v4/v4.1 Small family; other models use their
+            # own speaker width (checked against the model at synthesis).
+            if len(shape) not in (2, 3) or not 1 <= shape[-2] <= 64:
                 raise ValueError(f"unsupported speaker shape {shape} from {path}")
             tensor = f.get_tensor("speaker_embedding").to(torch.bfloat16).contiguous()
         self._cache[name] = tensor
@@ -239,6 +245,20 @@ class SpeakerCassette:
 
     def has(self, name: str) -> bool:
         return name in self._name_to_path
+
+    def dim_for(self, name: str) -> Optional[int]:
+        """Embedding width from the file header (768 for v4.1 Small speakers)."""
+        from safetensors import safe_open
+        try:
+            path = self.path_for(name)
+            stat = path.stat()
+            key = (str(path), stat.st_mtime_ns, stat.st_size)
+            if key not in _SPEAKER_DIM_CACHE:
+                with safe_open(str(path), framework="pt", device="cpu") as f:
+                    _SPEAKER_DIM_CACHE[key] = int(f.get_slice("speaker_embedding").get_shape()[-1])
+            return _SPEAKER_DIM_CACHE[key]
+        except Exception:  # noqa: BLE001 - unreadable files are rejected at synthesis
+            return None
 
     def refresh(self) -> None:
         """Re-scan the search paths and drop the GPU cache."""
@@ -448,6 +468,13 @@ class RadeonBackend:
 
 
 # ---------------------------------------------------------------- wrapper
+def _speaker_dim_message(name: Optional[str], dim: int, model_dim: int) -> str:
+    label = f"話者「{name}」" if name else "話者ミックス"
+    return (f"{label}の埋め込みは {dim} 次元で、選択中のモデル（{model_dim} 次元）では使えません。"
+            "話者ファイルは作成に使ったモデル専用です（既存の話者は v4.1 Small 系用の 768 次元）。"
+            "このモデルでは「話者なし」か参照音声を使うか、このモデル用の話者ファイルを用意してください")
+
+
 class IrodoriTTS:
     """Top-level wrapper. Resolves backend at construction time."""
 
@@ -505,6 +532,12 @@ class IrodoriTTS:
     def speakers(self) -> list[str]:
         return self.cassette.speakers
 
+    def speaker_dim(self) -> Optional[int]:
+        """Speaker embedding width of the loaded model (768 for v4.1 Small)."""
+        runtime = getattr(self.backend, "runtime", None)
+        dim = getattr(getattr(runtime, "model_cfg", None), "speaker_dim", None)
+        return int(dim) if dim else None
+
     def search_dirs(self) -> list[str]:
         return [str(d) for d in self.cassette.dirs]
 
@@ -554,12 +587,20 @@ class IrodoriTTS:
                           else (self.cassette.get(speaker_name) if speaker_name else None))
         if speaker_tensor is not None:
             speaker_tensor = None if speaker_strength == 0 else speaker_tensor * speaker_strength
-        def token_rows(tensor: torch.Tensor) -> torch.Tensor:
+        model_dim = self.speaker_dim()
+
+        def token_rows(tensor: torch.Tensor, name: Optional[str] = None) -> torch.Tensor:
             if tensor.ndim == 3 and tensor.shape[0] == 1:
                 tensor = tensor[0]
-            if tensor.ndim != 2 or tensor.shape[1] != 768:
+            if tensor.ndim != 2:
                 raise ValueError("speaker cassette has an unsupported shape")
+            if model_dim is not None and tensor.shape[1] != model_dim:
+                raise ValueError(_speaker_dim_message(name, tensor.shape[1], model_dim))
             return tensor
+
+        if speaker_tensor is not None:
+            token_rows(speaker_tensor,
+                       None if speaker_tensor_override is not None else speaker_name)
 
         for additional_name, raw_strength in additional_speakers:
             strength = float(raw_strength)
@@ -567,13 +608,13 @@ class IrodoriTTS:
                 raise ValueError("additional speaker strength must be between 0 and 1")
             if strength == 0:
                 continue
-            second = token_rows(self.cassette.get(additional_name))
+            second = token_rows(self.cassette.get(additional_name), additional_name)
             if speaker_tensor is None:
                 speaker_tensor = second * strength
                 continue
             primary = token_rows(speaker_tensor)
             rows = max(primary.shape[0], second.shape[0])
-            combined = torch.zeros((rows, 768), dtype=torch.float32,
+            combined = torch.zeros((rows, primary.shape[1]), dtype=torch.float32,
                                    device=primary.device)
             combined[:primary.shape[0]] += primary.float()
             combined[:second.shape[0]] += second.to(
