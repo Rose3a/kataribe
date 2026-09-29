@@ -16,5 +16,8 @@ torchcodec>=0.10,<0.11
 # 口パクのタイムライン（/irodori/timeline）で使うASR。モデル本体（約626MB）は
 # 初回利用時にエンジンが models\asr へ自動取得する。
 sherpa-onnx>=1.12,<2
+# SilentCipher（参照音声で生成した音声への透かし）が読み込む。SilentCipher 本体は
+# 依存に Flask などを含むため、setup.ps1 が --no-deps で固定コミットを入れる。
+pydub==0.25.1
 # ONNX packages are installed separately by setup.ps1.  descript-audiotools
 # requires protobuf<3.20, while modern ONNX requires protobuf>=3.20.2.

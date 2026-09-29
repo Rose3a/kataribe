@@ -252,6 +252,10 @@ class SamplingRequest:
     tail_std_threshold: float = 0.05
     tail_mean_threshold: float = 0.1
     lora_adapter: str | None = None
+    # Embed the SilentCipher watermark. Callers set this for voice-cloning
+    # requests (reference audio); if it cannot be applied, synthesis fails
+    # instead of returning unmarked audio.
+    watermark: bool = False
 
 
 @dataclass
@@ -696,12 +700,20 @@ class InferenceRuntime:
         self.default_text_max_len = default_text_max_len
         self.default_caption_max_len = default_caption_max_len
         self.default_max_ref_seconds = float(default_max_ref_seconds)
-        # SilentCipher is disabled because watermarking adds latency and resamples
-        # audio to 44.1 kHz. Keep it unloaded when switching models.
-        self.watermarker = None
+        # SilentCipher adds latency and resamples audio to 44.1 kHz, so it is
+        # loaded on the first request that asks for a watermark (see
+        # SamplingRequest.watermark) and only applied to those requests.
+        self.watermarker: SilentCipherWatermarker | None = None
+        self._watermarker_lock = threading.Lock()
         self._infer_lock = threading.Lock()
         self._model_dtype = next(self.model.parameters()).dtype
         self._lora_adapter_names: dict[str, str] = {}
+
+    def _ensure_watermarker(self) -> SilentCipherWatermarker:
+        with self._watermarker_lock:
+            if self.watermarker is None or not self.watermarker.ready:
+                self.watermarker = SilentCipherWatermarker(device=str(self.codec_device))
+            return self.watermarker
 
     @classmethod
     def from_key(cls, key: RuntimeKey) -> InferenceRuntime:
@@ -1137,7 +1149,7 @@ class InferenceRuntime:
                 self.key.model_precision,
                 self.key.codec_device,
                 self.key.codec_precision,
-                (self.watermarker.ready if self.watermarker is not None else False),
+                bool(req.watermark),
                 req.cfg_guidance_mode,
                 req.seconds,
                 num_steps,
@@ -1596,22 +1608,21 @@ class InferenceRuntime:
             stage_timings.append(("decode_latent", stage_sec))
             _log(f"[runtime] decode_latent ({decode_mode}): {stage_sec * 1000.0:.1f} ms")
 
-            if self.watermarker is not None and self.watermarker.ready:
+            if req.watermark:
+                watermarker = self._ensure_watermarker()
+                if not watermarker.ready:
+                    raise RuntimeError(
+                        "SilentCipher watermark is unavailable, so audio generated from "
+                        "reference audio cannot be returned. Run setup again to install it."
+                    )
                 t0 = _measure_start(self.codec_device)
-                trimmed_audios = self.watermarker.encode_batch(
+                trimmed_audios = watermarker.encode_batch(
                     trimmed_audios,
                     sample_rate=int(self.codec.sample_rate),
                 )
                 stage_sec = _measure_end(self.codec_device, t0)
                 stage_timings.append(("silentcipher_watermark", stage_sec))
                 _log(f"[runtime] silentcipher_watermark: {stage_sec * 1000.0:.1f} ms")
-            else:
-                msg = (
-                    "warning: SilentCipher watermark is unavailable; generated audio was not "
-                    "watermarked."
-                )
-                messages.append(msg)
-                _log(msg)
 
             total_to_decode = _measure_end(self.model_device, post_load_t0, self.codec_device)
             _log(f"[runtime] total_to_decode: {total_to_decode:.3f} s")

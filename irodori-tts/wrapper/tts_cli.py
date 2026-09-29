@@ -670,7 +670,9 @@ class IrodoriTTS:
             seed=seed,
         )
         if ref_wav is not None:
-            pass
+            # Reference audio can clone anyone's voice, so mark that output even
+            # when its strength is 0.  Registered speakers stay unmarked.
+            request.watermark = True
         elif speaker_tensor is not None:
             # Hand the tensor over directly instead of a .speaker.safetensors
             # round trip; the runtime receives identical values.

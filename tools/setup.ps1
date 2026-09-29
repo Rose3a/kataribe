@@ -35,6 +35,12 @@ if ($Backend -eq 'auto') {
     else { $Backend='cpu' }
 }
 $identity = "$env:COMPUTERNAME|$box|$($gpu -join ',')|$Backend|setup-v2"
+# SilentCipher watermark for audio generated from reference audio. Pinned to the
+# commit upstream Irodori-TTS uses; installed without dependencies because its
+# requirements (Flask, unpinned torch, ...) would disturb the pinned stack.
+$silentcipherSpec = 'silentcipher @ https://github.com/SesameAILabs/silentcipher/archive/d46d7d0893a583d8968ab3a6626e2289faec9152.zip'
+$uvInstallDir = Join-Path $stateDir 'bin'
+$uv = Join-Path $uvInstallDir 'uv.exe'
 $editorDir = Join-Path $box 'voicevox-editor'
 $editorEnv = Join-Path $editorDir '.env'
 $editorEnvExample = Join-Path $editorDir '.env.example'
@@ -53,7 +59,24 @@ try {
     }
     if (!$Force -and (Test-Path $stateFile) -and (Test-Path $python) -and (Test-FrontendInstall)) {
         $saved = Get-Content $stateFile -Raw | ConvertFrom-Json
-        if ($saved.identity -eq $identity) { exit 0 }
+        if ($saved.identity -eq $identity) {
+            # Setups from before the watermark only need SilentCipher added,
+            # not the whole environment rebuilt.
+            & $python (Join-Path $PSScriptRoot 'prepare.py') --backend $Backend --watermark-only --check | Out-Null
+            if ($LASTEXITCODE -eq 0) { exit 0 }
+            if (Test-Path -LiteralPath $uv -PathType Leaf) {
+                Start-Transcript -Path (Join-Path $box 'logs\first-setup.log') -Append | Out-Null
+                Write-Host '[WATERMARK] Installing SilentCipher for reference-audio watermarking...' -ForegroundColor Cyan
+                $env:UV_CACHE_DIR = Join-Path $stateDir 'uv-cache'
+                & $uv pip install --python $python 'pydub==0.25.1'
+                if ($LASTEXITCODE -ne 0) { throw 'pydub install failed.' }
+                & $uv pip install --python $python --no-deps $silentcipherSpec
+                if ($LASTEXITCODE -ne 0) { throw 'SilentCipher install failed.' }
+                & $python (Join-Path $PSScriptRoot 'prepare.py') --backend $Backend --watermark-only
+                if ($LASTEXITCODE -ne 0) { throw 'SilentCipher model download failed. See logs/first-setup.log.' }
+                exit 0
+            }
+        }
     }
     Start-Transcript -Path (Join-Path $box 'logs\first-setup.log') -Append | Out-Null
     Write-Host "Irodori-TTS first setup / repair`nGPU: $($gpu -join ', ')`nBackend: $Backend`nThis downloads Python, dependencies and models. Please keep this window open."
@@ -62,8 +85,6 @@ try {
     $env:HF_HOME = Join-Path $box '.cache\huggingface'
     $env:PYTHONUTF8 = '1'
     $uvVersion = '0.9.7'
-    $uvInstallDir = Join-Path $stateDir 'bin'
-    $uv = Join-Path $uvInstallDir 'uv.exe'
     if (!(Test-Path -LiteralPath $uv -PathType Leaf)) {
         Write-Host "[UV] Installing uv $uvVersion into $uvInstallDir..." -ForegroundColor Cyan
         $env:UV_INSTALL_DIR = $uvInstallDir
@@ -165,6 +186,7 @@ try {
     # rather than a release, so a moving branch would silently change the
     # exported codec. Bump the commit hash deliberately.
     Run-Uv @('pip','install','--python',$python,'--no-deps','dacvae @ https://github.com/facebookresearch/dacvae/archive/414c20785fc3a28373073ea8ef7a1316eeeaca6e.zip')
+    Run-Uv @('pip','install','--python',$python,'--no-deps',$silentcipherSpec)
     Write-Host '[MODEL] Downloading Irodori checkpoint from Hugging Face into models\ ...' -ForegroundColor Cyan
     & $python (Join-Path $PSScriptRoot 'prepare.py') --backend $Backend
     if ($LASTEXITCODE -ne 0) { throw 'Model preparation / runtime check failed. See logs/first-setup.log.' }

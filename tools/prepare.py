@@ -34,10 +34,39 @@ def verify_audio_io():
                 raise RuntimeError('WAV round-trip changed audio samples.')
     print('WAV export and read verified (mono/stereo).', flush=True)
 
+def prepare_watermark(check_only=False):
+    """Fetch the pinned SilentCipher weights and make sure they load.
+
+    Reference-audio synthesis refuses to return audio without the watermark,
+    so setup verifies it here instead of on the user's first cloned line.
+    """
+    import silentcipher  # noqa: F401 - installed by setup.ps1 with --no-deps
+    import pydub  # noqa: F401 - imported by silentcipher
+    from irodori_tts.watermark import SilentCipherWatermarker, silentcipher_checkpoint_dir
+    silentcipher_checkpoint_dir(local_files_only=check_only)
+    if check_only:
+        return
+    if not SilentCipherWatermarker(device='cpu').ready:
+        raise RuntimeError('SilentCipher model could not be loaded.')
+    print('SilentCipher watermark model verified.', flush=True)
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--backend', choices=['cuda', 'cpu', 'radeon'], required=True)
+    parser.add_argument('--watermark-only', action='store_true',
+                        help='only install-check / download the SilentCipher weights')
+    parser.add_argument('--check', action='store_true',
+                        help='with --watermark-only: exit 1 if anything is missing, download nothing')
     args = parser.parse_args()
+    if args.watermark_only:
+        if args.check:
+            try:
+                prepare_watermark(check_only=True)
+            except Exception:
+                raise SystemExit(1)
+            return
+        prepare_watermark()
+        return
     import torch
     verify_audio_io()
     if args.backend == 'cuda':
@@ -58,6 +87,7 @@ def main():
         metadata = f.metadata() or {}
         print('Checkpoint metadata:', list(metadata), flush=True)
     hf_hub_download(CODEC_REPO, 'weights.pth', revision=CODEC_REVISION)
+    prepare_watermark()
     config = json.loads(metadata['config_json'])
     for repo in {config['text_tokenizer_repo'], config.get('caption_tokenizer_repo') or config['text_tokenizer_repo']}:
         PretrainedTextTokenizer.from_pretrained(repo, revision=config.get('text_encoder_revision'))
