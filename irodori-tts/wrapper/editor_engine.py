@@ -36,6 +36,7 @@ from asr_timeline import (AsrTimeline, decode_wav, ensure_asr_model, asr_package
                           MODEL_DIR as ASR_MODEL_DIR)
 from tts_cli import SpeakerCassette, resolve_embed_dirs
 from speaker_mix import compose_speaker_mix
+from model_storage import ModelStorage
 
 # 初回のASRモデル取得でリクエストを待たせる上限（秒）。待ち切れなくても
 # ダウンロードは続くので、次の要求で揃っていれば使える。
@@ -103,6 +104,10 @@ class EditorAdapter:
         self._wav_cache = deque(maxlen=6)
         self.timeline_reader = AsrTimeline()
         self.delegate = None
+        # 読み込み中のモデルと TensorRT plan。ストレージ一覧で「使用中」を示す。
+        self._active_checkpoint = None
+        self._active_plan = None
+        self.storage = ModelStorage(MODEL_DIR, Path(os.environ["IRODORI_HF_HOME"]), ASR_MODEL_DIR)
         # モデルごとの flow_parameterization / 既定ステップ数の判定結果。
         self._model_info_cache = {}
         self.config_path = ROOT / "editor-settings.json"
@@ -643,6 +648,7 @@ class EditorAdapter:
             raise ValueError(
             "モデルは .safetensors のパスか Hugging Face の repo_id を指定してください")
         os.environ["IRODORI_CHECKPOINT"] = str(local_model)
+        self._active_checkpoint = Path(local_model)
         # 判定結果をローカルパス付きで更新しておく（次回のポーリング用）。
         # メタデータの更新は付随処理なので、失敗しても読み込みは続ける。
         try:
@@ -653,6 +659,7 @@ class EditorAdapter:
         if self.settings['backend'] == 'trt':
             from trt_cache import ensure_plan
             plan = ensure_plan(local_model, self._set_progress, self._runtime_log)
+            self._active_plan = Path(plan)
             self._prepare_trt_codec()
         return VoicevoxAdapter(self.settings["backend"], 50125, resolve_embed_dirs(),
                                plan, self._progress_event)
@@ -942,6 +949,46 @@ class EditorAdapter:
         self._set_progress("complete", 100, active=False)
         return result
 
+    def storage_status(self):
+        """ダウンロード済みモデルと TensorRT キャッシュの一覧。"""
+        # 生成・読み込み・変換中は operation_lock が取られている。
+        busy = not self.operation_lock.acquire(blocking=False)
+        if not busy:
+            self.operation_lock.release()
+        with self.state_lock:
+            selected = str(self.settings.get("model", ""))
+            loaded = self.delegate is not None
+            checkpoint = self._active_checkpoint if loaded else None
+            plan = self._active_plan if loaded else None
+        if checkpoint is None:
+            # 未読み込みでも、選択中のローカルモデルは消させない。
+            checkpoint = self._resolve_local_model(selected)
+        codec_plan = os.environ.get("IRODORI_TRT_CODEC_PLAN") if plan is not None else None
+        return self.storage.scan(
+            selected_model=selected, active_checkpoint=checkpoint, active_plan=plan,
+            active_codec_plan=Path(codec_plan) if codec_plan else None,
+            asr_loaded=bool(self.timeline_reader.status().get("loaded")), busy=busy)
+
+    def storage_delete(self, payload):
+        ids = payload.get("ids") if isinstance(payload, dict) else None
+        if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids) or not ids:
+            raise ValueError("削除する項目を指定してください")
+        if not self.operation_lock.acquire(blocking=False):
+            raise RuntimeError("生成やモデルの読み込み中です。終わってから削除してください")
+        try:
+            # 使用中かどうかを削除直前の状態で判定し直す（RLock なので再取得できる）。
+            self.storage_status()
+            try:
+                freed = self.storage.delete(ids)
+                print(f"[irodori] storage: deleted {len(ids)} item(s), {freed} bytes", flush=True)
+            finally:
+                # 削除したモデルは「未ダウンロード」として判定し直す。
+                with self.state_lock:
+                    self._model_info_cache.clear()
+        finally:
+            self.operation_lock.release()
+        return dict(self.storage_status(), freedBytes=freed)
+
     def close(self):
         with self.operation_lock:
             self._close_locked()
@@ -950,6 +997,8 @@ class EditorAdapter:
         with self.state_lock:
             delegate = self.delegate
             self.delegate = None
+            self._active_checkpoint = None
+            self._active_plan = None
         if delegate:
             delegate.tts.close()
             gc.collect()
@@ -973,6 +1022,13 @@ class EditorHandler(Handler):
             if not self._authorized():
                 return self._json(403, {"detail": "invalid local origin/session"})
             self._json(200, self.adapter.status())
+        elif path == "/irodori/storage":
+            if not self._authorized():
+                return self._json(403, {"detail": "invalid local origin/session"})
+            try:
+                self._json(200, self.adapter.storage_status())
+            except Exception as exc:
+                self._json(500, {"detail": str(exc)})
         elif path == "/irodori/timeline":
             if not self._authorized():
                 return self._json(403, {"detail": "invalid local origin/session"})
@@ -1008,6 +1064,15 @@ class EditorHandler(Handler):
                 return self._json(409, {"detail": str(exc)})
             except ValueError as exc:
                 return self._json(400, {"detail": str(exc)})
+            except Exception as exc:
+                return self._json(500, {"detail": str(exc)})
+        if urlparse(self.path).path == "/irodori/storage/delete":
+            try:
+                return self._json(200, self.adapter.storage_delete(self._body_json()))
+            except ValueError as exc:
+                return self._json(400, {"detail": str(exc)})
+            except RuntimeError as exc:
+                return self._json(409, {"detail": str(exc)})
             except Exception as exc:
                 return self._json(500, {"detail": str(exc)})
         if urlparse(self.path).path == "/irodori/shutdown":

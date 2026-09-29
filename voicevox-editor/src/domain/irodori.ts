@@ -110,3 +110,36 @@ export type IrodoriStatus = {
   progress: IrodoriProgress;
   modelInfo?: IrodoriModelInfo;
 };
+
+/** ストレージ一覧の1項目（モデル・TensorRT キャッシュなど）。 */
+export type IrodoriStorageEntry = {
+  id: string;
+  kind:
+    | "hf"
+    | "local"
+    | "asr"
+    | "trt"
+    | "trt-build"
+    | "codec"
+    | "codec-build"
+    | "legacy";
+  path: string;
+  label: string;
+  detail: string;
+  /** in_use: 使用中 / unused: 未使用だが有効 / stale: もう使われない / required: 必須 */
+  status: "in_use" | "unused" | "stale" | "required";
+  deletable: boolean;
+  note: string;
+  bytes: number;
+  modified: number | null;
+};
+
+/** GET /irodori/storage と POST /irodori/storage/delete の応答。 */
+export type IrodoriStorageStatus = {
+  entries: IrodoriStorageEntry[];
+  totalBytes: number;
+  /** TensorRT plan とモデルの照合（ハッシュ計算）を裏で実行中。 */
+  identifying: boolean;
+  scannedAt: number;
+  freedBytes?: number;
+};

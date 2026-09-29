@@ -19,7 +19,59 @@ def digest(path):
     return h.hexdigest()
 
 
-def cache_identity(checkpoint):
+def _digest_memo_path():
+    return BOX / '.cache/trt/model-digests.json'
+
+
+def _read_digest_memo():
+    try:
+        memo = json.loads(_digest_memo_path().read_text(encoding='utf-8'))
+        return memo if isinstance(memo, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def model_digest(checkpoint):
+    """sha256 of a checkpoint, remembered by path/size/mtime between starts.
+
+    Hashing v4-Large takes tens of seconds, and the memo also lets the storage
+    view tell which model a cached plan was built from.
+    """
+    path = Path(checkpoint).resolve()
+    stat = path.stat()
+    memo = _read_digest_memo()
+    record = memo.get(str(path))
+    if (isinstance(record, dict) and record.get('size') == stat.st_size
+            and record.get('mtime_ns') == stat.st_mtime_ns and record.get('sha256')):
+        return record['sha256']
+    value = digest(path)
+    memo = _read_digest_memo()
+    memo[str(path)] = dict(size=stat.st_size, mtime_ns=stat.st_mtime_ns, sha256=value)
+    target = _digest_memo_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix('.tmp')
+    tmp.write_text(json.dumps(memo, ensure_ascii=False, indent=1), encoding='utf-8')
+    tmp.replace(target)
+    return value
+
+
+def known_model_digests():
+    """{sha256: checkpoint path} for every checkpoint hashed so far.
+
+    The same weights can sit in both models/ and the HF cache; prefer the HF
+    path because it names the repo.
+    """
+    result = {}
+    for path, record in _read_digest_memo().items():
+        if not isinstance(record, dict) or not record.get('sha256'):
+            continue
+        if record['sha256'] not in result or 'models--' in path:
+            result[record['sha256']] = path
+    return result
+
+
+def env_identity():
+    """Everything in the cache identity except the checkpoint itself."""
     import torch
     import tensorrt as trt
     if not torch.cuda.is_available() or not torch.cuda.is_bf16_supported():
@@ -30,10 +82,14 @@ def cache_identity(checkpoint):
                BOX / 'runtime/trt-lab/numerical_checks.py',
                BOX / 'runtime/trt-lab/run_engine.py', Path(__file__)]
     sources += sorted((BOX / 'runtime/trt-lab/repo/irodori_tts').rglob('*.py'))
-    return dict(model=digest(checkpoint), gpu=gpu.name,
+    return dict(gpu=gpu.name,
                 capability=[gpu.major, gpu.minor], device=str(getattr(gpu, 'uuid', '')),
                 trt=trt.__version__, torch=torch.__version__, cuda=torch.version.cuda,
                 sources={str(p.relative_to(BOX)): digest(p) for p in sources})
+
+
+def cache_identity(checkpoint):
+    return dict(model=model_digest(checkpoint), **env_identity())
 
 
 def cache_key(identity):
@@ -89,7 +145,7 @@ def ensure_plan(checkpoint, progress, log):
                 lines = [line.strip() for line in tail.splitlines() if line.strip()]
                 reason = lines[-1][:1000] if lines else f'exit code {result.returncode}'
                 raise RuntimeError(f'TensorRT {stage}に失敗しました: {reason}\nログ: {logfile}。CUDA に切り替えて利用できます')
-    if digest(checkpoint) != identity['model']:
+    if model_digest(checkpoint) != identity['model']:
         raise RuntimeError('変換中にモデルが変更されました。設定を再適用してください')
     # Failed builds never gain a ready marker. Atomic plan/marker replacement
     # also lets a later attempt repair an incomplete or damaged cache entry.

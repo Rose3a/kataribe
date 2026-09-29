@@ -11,6 +11,7 @@ import type {
   IrodoriSession,
   IrodoriSettings,
   IrodoriStatus,
+  IrodoriStorageStatus,
 } from "@/domain/irodori";
 
 const SESSION_TIMEOUT_MS = 5000;
@@ -126,6 +127,42 @@ export async function openIrodoriFolder(
     method: "POST",
   });
   if (!response.ok) throw new Error("フォルダを開けませんでした");
+}
+
+async function readStorage(response: Response): Promise<IrodoriStorageStatus> {
+  if (!response.ok) {
+    let detail = await response.text();
+    try {
+      detail = (JSON.parse(detail) as { detail?: string }).detail ?? detail;
+    } catch {
+      // 本文が JSON でなければそのまま表示する。
+    }
+    throw new Error(detail);
+  }
+  return (await response.json()) as IrodoriStorageStatus;
+}
+
+/** ダウンロード済みモデルと TensorRT キャッシュの一覧を取る。 */
+export async function fetchIrodoriStorage(
+  endpoint: string,
+): Promise<IrodoriStorageStatus> {
+  return await readStorage(
+    await irodoriRequest(endpoint, "/irodori/storage", { timeoutMs: 60000 }),
+  );
+}
+
+/** 一覧の項目を削除する。削除後の一覧と空いた容量を返す。 */
+export async function deleteIrodoriStorage(
+  endpoint: string,
+  ids: string[],
+): Promise<IrodoriStorageStatus> {
+  return await readStorage(
+    await irodoriRequest(endpoint, "/irodori/storage/delete", {
+      method: "POST",
+      body: { ids },
+      timeoutMs: 120000,
+    }),
+  );
 }
 
 /** 話者一覧の再スキャンは話者数が多いと数十秒かかる。 */

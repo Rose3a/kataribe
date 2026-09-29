@@ -101,6 +101,20 @@
         />
       </div>
       <QExpansionItem
+        v-model="storageOpen"
+        label="モデル・キャッシュの容量（確認 / 削除）"
+        dense
+        class="q-mt-sm"
+      >
+        <IrodoriStorageManager
+          v-if="storageOpen"
+          class="q-pa-sm"
+          :endpoint
+          :disable="locked"
+          @deleted="run(false)"
+        />
+      </QExpansionItem>
+      <QExpansionItem
         label="モデル・話者の追加 / セットアップ"
         dense
         class="q-mt-sm"
@@ -147,6 +161,7 @@
 </template>
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import IrodoriStorageManager from "./IrodoriStorageManager.vue";
 import { useStore } from "@/store";
 import { createEngineUrl } from "@/domain/url";
 import { clearAudioCache } from "@/store/audioGenerate";
@@ -194,6 +209,8 @@ watch(modelInfo, (value) => {
   if (value) irodoriMeanflow.value = value.meanflow;
 });
 const modelFolder = ref("");
+// 開いたときだけ一覧を取る（フォルダサイズの集計に数秒かかる）。
+const storageOpen = ref(false);
 const speakerFolder = ref("");
 const status = ref("");
 const error = ref("");
