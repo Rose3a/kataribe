@@ -492,6 +492,29 @@ class RadeonBackend:
 
 
 # ---------------------------------------------------------------- wrapper
+_TOKEN_MARKS = {"▁": "␣", "​": "[ZW]"}
+
+
+def token_view(runtime, text: str) -> Optional[str]:
+    """ランタイムと同じ正規化・トークナイザで分けた結果を「今日は|ねぇ|…」の形で返す。
+
+    半角スペースは ␣、ゼロ幅スペースは [ZW] で見えるようにする。
+    トークナイザが無いバックエンドでは None。
+    """
+    tokenizer = getattr(getattr(runtime, "tokenizer", None), "tokenizer", None)
+    if tokenizer is None:
+        return None
+    from irodori_tts.text_normalization import normalize_text
+
+    ids = tokenizer.encode(normalize_text(text).strip(), add_special_tokens=False)
+    pieces = []
+    for piece in tokenizer.convert_ids_to_tokens(ids):
+        for raw, mark in _TOKEN_MARKS.items():
+            piece = piece.replace(raw, mark)
+        pieces.append(piece)
+    return f"tokens ({len(pieces)}): " + "|".join(pieces)
+
+
 def _speaker_dim_message(name: Optional[str], dim: int, model_dim: int) -> str:
     label = f"話者「{name}」" if name else "話者ミックス"
     return (f"{label}の埋め込みは {dim} 次元で、選択中のモデル（{model_dim} 次元）では使えません。"
@@ -679,6 +702,14 @@ class IrodoriTTS:
             request.ref_embed = speaker_tensor.detach().contiguous()
         else:
             request.no_ref = True
+        if os.environ.get("IRODORI_SHOW_TOKENS", "1") != "0":
+            # 読めない語の確認用に、モデルに渡るトークンの分け方をコンソールに出す
+            try:
+                view = token_view(getattr(self.backend, "runtime", None), text)
+            except Exception as exc:  # noqa: BLE001 - 表示の失敗で合成を止めない
+                view = f"tokens: 表示できませんでした（{exc}）"
+            if view:
+                print(f"[irodori] {view}", file=sys.stderr, flush=True)
         start = time.perf_counter()
         result = self.backend.synthesize(request, speaker_tensor, out_wav, log_fn=log_fn)
         wall = time.perf_counter() - start
