@@ -5,6 +5,7 @@ import base64
 import io
 import json
 import mimetypes
+import re
 from functools import lru_cache
 from pathlib import Path
 
@@ -26,8 +27,27 @@ def display_name_for(speaker_name: str) -> str:
 
 
 def speaker_stem(path: Path) -> str:
+    """Speaker name of an embedding file, shared by all of its model variants.
+
+    ``tsukuyomi.1280.speaker.safetensors`` is the v4-Large (1280-dim) variant of
+    ``tsukuyomi``: the width tag is dropped so both variants share the speaker
+    ID, images (``tsukuyomi.png`` ...) and credits.
+    """
     name = path.name
-    return name[: -len(".speaker.safetensors")] if name.endswith(".speaker.safetensors") else path.stem
+    if not name.endswith(".speaker.safetensors"):
+        return path.stem
+    return _DIM_TAG.sub("", name[: -len(".speaker.safetensors")])
+
+
+def has_width_tag(path: Path) -> bool:
+    """True for a width-specific variant such as ``tsukuyomi.1280.speaker.safetensors``."""
+    name = path.name
+    return (name.endswith(".speaker.safetensors")
+            and bool(_DIM_TAG.search(name[: -len(".speaker.safetensors")])))
+
+
+# Optional embedding-width tag before ``.speaker.safetensors``.
+_DIM_TAG = re.compile(r"\.\d{2,5}$")
 
 
 def thumbnail_for(path: Path) -> tuple[str, str] | None:

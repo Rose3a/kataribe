@@ -87,6 +87,9 @@ class EditorAdapter:
     def __init__(self):
         self.backend_name = "editor"
         self.operation_lock = threading.RLock()
+        # 話者一覧の作り直し用。モデルの読み込み（operation_lock を数十秒握る）を
+        # 待たずに一覧を返せるよう、別のロックにしている。
+        self.speaker_lock = threading.Lock()
         self.state_lock = threading.RLock()
         self.progress_lock = threading.Lock()
         self.synthesis_slots = threading.BoundedSemaphore(2)
@@ -716,8 +719,8 @@ class EditorAdapter:
 
     def refresh(self):
         speaker_dim = self._model_speaker_dim()
-        with self.operation_lock:
-            cassette = SpeakerCassette(resolve_embed_dirs())
+        with self.speaker_lock:
+            cassette = SpeakerCassette(resolve_embed_dirs(), preferred_dim=speaker_dim)
             names = self._usable_speakers(cassette, speaker_dim)
             id_to_name = {0: ""}
             speakers_json = []
@@ -771,9 +774,10 @@ class EditorAdapter:
                 delegate.refresh()
 
     def mix_speakers(self):
-        cassette = SpeakerCassette(resolve_embed_dirs())
+        speaker_dim = self._model_speaker_dim()
+        cassette = SpeakerCassette(resolve_embed_dirs(), preferred_dim=speaker_dim)
         return [dict(id=name, name=display_name_for(name))
-                for name in self._usable_speakers(cassette, self._model_speaker_dim())]
+                for name in self._usable_speakers(cassette, speaker_dim)]
 
     def mix_recipes(self):
         recipes = []
@@ -796,7 +800,9 @@ class EditorAdapter:
     def _mix_tensor(self, payload):
         if not isinstance(payload, dict):
             raise ValueError("mix request must be an object")
-        return compose_speaker_mix(payload.get("tokens"), SpeakerCassette(resolve_embed_dirs()))
+        return compose_speaker_mix(
+            payload.get("tokens"),
+            SpeakerCassette(resolve_embed_dirs(), preferred_dim=self._model_speaker_dim()))
 
     def mix_preview(self, payload):
         text = payload.get("text") if isinstance(payload, dict) else None

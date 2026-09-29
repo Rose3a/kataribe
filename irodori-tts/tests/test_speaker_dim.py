@@ -51,6 +51,53 @@ class SpeakerDimTest(unittest.TestCase):
         self.assertEqual(EditorAdapter._usable_speakers(cassette, None),
                          ["small", "large", "broken"])
 
+    def test_speaker_refresh_does_not_wait_for_model_loading(self):
+        """モデル読み込み中でも話者一覧を返す（待たせるとエディタがタイムアウトし、
+        前のモデル用の話者が一覧に残ったままになる）。"""
+        import threading
+        from unittest.mock import patch
+        import editor_engine
+        from editor_engine import EditorAdapter
+
+        adapter = EditorAdapter.__new__(EditorAdapter)
+        adapter.operation_lock = threading.RLock()
+        adapter.speaker_lock = threading.Lock()
+        adapter.state_lock = threading.RLock()
+        adapter.delegate = None
+        adapter._model_speaker_dim = lambda: 1280
+        loading = threading.Event()
+        release = threading.Event()
+
+        def hold_lock():
+            with adapter.operation_lock:
+                loading.set()
+                release.wait(10)
+
+        holder = threading.Thread(target=hold_lock)
+        holder.start()
+        loading.wait(5)
+        try:
+            class ListedCassette(FakeDimCassette):
+                dirs = []
+
+                def path_for(self, name):
+                    return None
+
+                def folder_for(self, name):
+                    return None
+
+            with patch.object(editor_engine, "SpeakerCassette", lambda dirs, **_: ListedCassette()), \
+                 patch.object(editor_engine, "speaker_catalog", lambda *a: []), \
+                 patch.object(editor_engine, "_fallback_icon", lambda: None):
+                done = threading.Thread(target=adapter.refresh)
+                done.start()
+                done.join(5)
+            self.assertFalse(done.is_alive(), "refresh waited for operation_lock")
+            self.assertEqual(sorted(adapter.id_to_name.values()), ["", "broken", "large"])
+        finally:
+            release.set()
+            holder.join()
+
     def test_small_speaker_on_large_model_is_rejected_with_guidance(self):
         tts = fake_tts(1280)
         with self.assertRaisesRegex(ValueError, "話者「small」.*768 次元.*1280 次元"):

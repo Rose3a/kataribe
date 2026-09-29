@@ -115,6 +115,12 @@
             を置いて一覧を更新します。
           </p>
           <p>
+            v4-Large 用の話者は、同じ話者のフォルダに
+            名前.1280.speaker.safetensors（例:
+            tsukuyomi.1280.speaker.safetensors）として置くと、同じ話者・同じ画像のまま
+            Large 選択時に自動で切り替わります。
+          </p>
+          <p>
             切り替え後の初回生成時にモデルを読み込みます。前のエンジンは解放します。
           </p>
           <p>
@@ -341,8 +347,13 @@ async function run(save: boolean, refreshSpeakers = false) {
     modelFolder.value = result.modelFolder;
     speakerFolder.value = result.speakerFolder;
     if (refreshSpeakers) {
-      await refreshIrodoriSpeakers(endpoint.value);
-      await store.actions.LOAD_CHARACTER({ engineId: props.engineId });
+      // モデル変更の保存時点でエンジンは話者一覧を作り直している。再スキャンが
+      // 失敗しても、話者一覧の読み直しは必ず行い、古いモデル用の話者を残さない。
+      try {
+        await refreshIrodoriSpeakers(endpoint.value);
+      } finally {
+        await store.actions.LOAD_CHARACTER({ engineId: props.engineId });
+      }
     }
     if (save || refreshSpeakers) clearAudioCache();
     status.value = result.loaded

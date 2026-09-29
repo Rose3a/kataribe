@@ -161,51 +161,70 @@ _SPEAKER_DIM_CACHE: dict[tuple[str, int, int], int] = {}
 
 
 class SpeakerCassette:
-    """Lazy GPU cache of *.speaker.safetensors. Validates shape and dtype."""
+    """Lazy GPU cache of *.speaker.safetensors. Validates shape and dtype.
 
-    def __init__(self, embed_dirs: Iterable[Path]):
+    One speaker may have an embedding per model width, e.g.
+    ``tsukuyomi.speaker.safetensors`` (768, v4.1 Small) and
+    ``tsukuyomi.1280.speaker.safetensors`` (1280, v4-Large).  Both are the
+    speaker ``tsukuyomi``; lookups return the variant matching
+    ``preferred_dim`` (the loaded model's width), so the speaker ID, images and
+    credits stay the same when the model changes.
+    """
+
+    def __init__(self, embed_dirs: Iterable[Path], preferred_dim: Optional[int] = None):
         self.embed_dirs = [Path(d).expanduser().resolve() for d in embed_dirs]
-        self._cache: dict[str, torch.Tensor] = {}
-        self._name_to_path: dict[str, Path] = {}
-        self._name_to_root: dict[str, Path] = {}
+        self.preferred_dim = preferred_dim
+        self._cache: dict[Path, torch.Tensor] = {}
+        # name -> [(path, root), ...] in scan order; the first is the default.
+        self._variants: dict[str, list[tuple[Path, Path]]] = {}
         self._scan()
 
     def _scan(self) -> None:
+        from speaker_catalog import has_width_tag, speaker_stem
         for d in self.embed_dirs:
             if not d.exists():
                 continue
             for p in sorted(d.rglob("*.safetensors")):
-                if p.stem not in self._name_to_path:
-                    name = p.name[:-len(".speaker.safetensors")] if p.name.endswith(".speaker.safetensors") else p.stem
-                    self._name_to_path[name] = p
-                    self._name_to_root[name] = d
+                self._variants.setdefault(speaker_stem(p), []).append((p, d))
+        # Without a known model width, the untagged file (the original
+        # v4.1 Small embedding) stays the default, not ``name.1280``.
+        for variants in self._variants.values():
+            variants.sort(key=lambda item: has_width_tag(item[0]))
         # Convenience aliases: also expose each embedding under its
         # bare "fairy" name so callers can pass either "fairy" or
         # "fairy.speaker". The first one wins.
         aliases = {}
-        for name in self._name_to_path:
+        for name, variants in self._variants.items():
             if name.endswith(".speaker"):
-                alias = name[: -len(".speaker")]
-                aliases[alias] = (self._name_to_path[name], self._name_to_root[name])
-        self._name_to_path.update({name: path for name, (path, _root) in aliases.items()})
-        self._name_to_root.update({name: root for name, (_path, root) in aliases.items()})
+                aliases.setdefault(name[: -len(".speaker")], variants)
+        for alias, variants in aliases.items():
+            self._variants.setdefault(alias, variants)
 
-    @property
-    def speakers(self) -> list[str]:
-        return list(self._name_to_path.keys())
-
-    @property
-    def dirs(self) -> list[Path]:
-        return list(self.embed_dirs)
-
-    def path_for(self, name: str) -> Path:
-        if name not in self._name_to_path:
+    def _select(self, name: str, dim: Optional[int] = None) -> tuple[Path, Path]:
+        if name not in self._variants:
             raise FileNotFoundError(
                 f"speaker embedding not found: {name}\n"
                 f"searched in: {[str(d) for d in self.embed_dirs]}\n"
                 f"available: {self.speakers}"
             )
-        return self._name_to_path[name]
+        variants = self._variants[name]
+        want = dim if dim is not None else self.preferred_dim
+        if want is not None and len(variants) > 1:
+            for variant in variants:
+                if _embedding_width(variant[0]) == want:
+                    return variant
+        return variants[0]
+
+    @property
+    def speakers(self) -> list[str]:
+        return list(self._variants.keys())
+
+    @property
+    def dirs(self) -> list[Path]:
+        return list(self.embed_dirs)
+
+    def path_for(self, name: str, dim: Optional[int] = None) -> Path:
+        return self._select(name, dim)[0]
 
     def folder_for(self, name: str) -> str | None:
         """Return the speaker's path below its configured root, if any.
@@ -215,8 +234,7 @@ class SpeakerCassette:
         reported as ``idolmaster``.  The embedding lookup name remains flat so
         existing projects and API clients stay compatible.
         """
-        path = self.path_for(name)
-        root = self._name_to_root[name]
+        path, root = self._select(name)
         try:
             parent = path.relative_to(root).parent
         except ValueError:
@@ -227,12 +245,12 @@ class SpeakerCassette:
         # per-speaker asset directory must not split that series into tabs.
         return parent.parts[0] if parent.parts else None
 
-    def get(self, name: str) -> torch.Tensor:
-        cached = self._cache.get(name)
+    def get(self, name: str, dim: Optional[int] = None) -> torch.Tensor:
+        path = self.path_for(name, dim)
+        cached = self._cache.get(path)
         if cached is not None:
             return cached
         from safetensors import safe_open
-        path = self.path_for(name)
         with safe_open(str(path), framework="pt", device="cpu") as f:
             shape = f.get_slice("speaker_embedding").get_shape()
             # 768 wide for the v4/v4.1 Small family; other models use their
@@ -240,32 +258,38 @@ class SpeakerCassette:
             if len(shape) not in (2, 3) or not 1 <= shape[-2] <= 64:
                 raise ValueError(f"unsupported speaker shape {shape} from {path}")
             tensor = f.get_tensor("speaker_embedding").to(torch.bfloat16).contiguous()
-        self._cache[name] = tensor
+        self._cache[path] = tensor
         return tensor
 
     def has(self, name: str) -> bool:
-        return name in self._name_to_path
+        return name in self._variants
 
     def dim_for(self, name: str) -> Optional[int]:
-        """Embedding width from the file header (768 for v4.1 Small speakers)."""
-        from safetensors import safe_open
+        """Embedding width of the variant in use (768 for v4.1 Small speakers)."""
         try:
-            path = self.path_for(name)
-            stat = path.stat()
-            key = (str(path), stat.st_mtime_ns, stat.st_size)
-            if key not in _SPEAKER_DIM_CACHE:
-                with safe_open(str(path), framework="pt", device="cpu") as f:
-                    _SPEAKER_DIM_CACHE[key] = int(f.get_slice("speaker_embedding").get_shape()[-1])
-            return _SPEAKER_DIM_CACHE[key]
-        except Exception:  # noqa: BLE001 - unreadable files are rejected at synthesis
+            return _embedding_width(self.path_for(name))
+        except FileNotFoundError:
             return None
 
     def refresh(self) -> None:
         """Re-scan the search paths and drop the GPU cache."""
         self._cache.clear()
-        self._name_to_path.clear()
-        self._name_to_root.clear()
+        self._variants.clear()
         self._scan()
+
+
+def _embedding_width(path: Path) -> Optional[int]:
+    """Embedding width from the file header; None if it cannot be read."""
+    from safetensors import safe_open
+    try:
+        stat = path.stat()
+        key = (str(path), stat.st_mtime_ns, stat.st_size)
+        if key not in _SPEAKER_DIM_CACHE:
+            with safe_open(str(path), framework="pt", device="cpu") as f:
+                _SPEAKER_DIM_CACHE[key] = int(f.get_slice("speaker_embedding").get_shape()[-1])
+        return _SPEAKER_DIM_CACHE[key]
+    except Exception:  # noqa: BLE001 - unreadable files are rejected at synthesis
+        return None
 
 
 # ---------------------------------------------------------------- engines
@@ -501,6 +525,8 @@ class IrodoriTTS:
             self.backend = RadeonBackend(project_root=Path(__file__).resolve().parents[2])
         else:
             self.backend = TorchBackend()
+        # Pick each speaker's embedding made for this model's width.
+        self.cassette.preferred_dim = self.speaker_dim()
         self.default_speaker = self._pick_default_speaker()
 
     @staticmethod
@@ -582,12 +608,15 @@ class IrodoriTTS:
         speaker_strength = float(speaker_strength)
         if not math.isfinite(speaker_strength) or not 0 <= speaker_strength <= 1:
             raise ValueError("speaker strength must be between 0 and 1")
+        model_dim = self.speaker_dim()
+        if model_dim is not None:
+            # Use each speaker's embedding for this model's width.
+            self.cassette.preferred_dim = model_dim
         speaker_tensor = (speaker_tensor_override if speaker_tensor_override is not None
                           else None if ref_wav or speaker_strength == 0
                           else (self.cassette.get(speaker_name) if speaker_name else None))
         if speaker_tensor is not None:
             speaker_tensor = None if speaker_strength == 0 else speaker_tensor * speaker_strength
-        model_dim = self.speaker_dim()
 
         def token_rows(tensor: torch.Tensor, name: Optional[str] = None) -> torch.Tensor:
             if tensor.ndim == 3 and tensor.shape[0] == 1:

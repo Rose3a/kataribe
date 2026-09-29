@@ -128,10 +128,13 @@ export async function openIrodoriFolder(
   if (!response.ok) throw new Error("フォルダを開けませんでした");
 }
 
+/** 話者一覧の再スキャンは話者数が多いと数十秒かかる。 */
+const REFRESH_TIMEOUT_MS = 120000;
+
 /** 話者一覧を作り直す。 */
 export async function refreshIrodoriSpeakers(
   endpoint: string,
-  timeoutMs = DEFAULT_TIMEOUT_MS,
+  timeoutMs = REFRESH_TIMEOUT_MS,
 ): Promise<void> {
   const response = await irodoriRequest(endpoint, "/refresh", { timeoutMs });
   if (!response.ok) throw new Error("話者一覧の更新に失敗しました");
