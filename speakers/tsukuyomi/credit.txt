@@ -26,7 +26,7 @@ https://tyc.rei-yumesaki.net
 kataribe本体と、kataribeに付属するつくよみちゃんの話者モデルについては、クレジット表記を行っていただくかどうかは任意です。
 
 ▼記載していただける場合の例▼
-kataribe：つくよみちゃん
+kataribe:つくよみちゃん
 
 音声だけでなく、つくよみちゃんのキャラクターデザインや商標をご利用になりたい場合は、つくよみちゃんキャラクターライセンスに従ってクレジット表記をお願いいたします。
 https://tyc.rei-yumesaki.net/about/terms/
