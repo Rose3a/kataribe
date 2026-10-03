@@ -2144,13 +2144,18 @@ export const audioCommandStore = transformCommandStore(
             accentPhrases: payload.accentPhrases,
           });
         } else if (payload.update == "AudioQuery") {
+          const isInitializingQuery =
+            draft.audioItems[payload.audioKey].query == undefined;
           audioStore.mutations.SET_AUDIO_QUERY(draft, {
             audioKey: payload.audioKey,
             audioQuery: payload.query,
           });
-          audioStore.mutations.APPLY_AUDIO_PRESET(draft, {
-            audioKey: payload.audioKey,
-          });
+          // 既存のクエリを更新するときは、変更済みの話速をプリセットで上書きしない。
+          if (isInitializingQuery) {
+            audioStore.mutations.APPLY_AUDIO_PRESET(draft, {
+              audioKey: payload.audioKey,
+            });
+          }
         }
       },
       async action(
