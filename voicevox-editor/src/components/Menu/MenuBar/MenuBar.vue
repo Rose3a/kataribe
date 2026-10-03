@@ -8,6 +8,7 @@
       v-for="(root, index) of menudata"
       :key="index"
       v-model:selected="subMenuOpenFlags[index]"
+      class="menu-root-button"
       :menudata="root"
       :disable="
         menubarLocked || (root.disableWhenUiLocked && uiLocked) || root.disabled
@@ -181,14 +182,51 @@ watch(uiLocked, () => {
   :deep(.q-btn) {
     margin-left: 0;
     -webkit-app-region: no-drag; // Electronのドラッグ領域対象から外す
+    // タブ（トーク・話者マージ）とウィンドウボタンは縮めず、2 行にもしない。
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+}
+
+// 幅が足りないときは、まずウィンドウタイトルを縮める（flex-shrink を大きく
+// して先に 0 まで縮ませる）。それでも足りないときだけメニュー名を「…」で省略する。
+.q-bar .menu-root-button {
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+// 最小幅（320px）付近ではメニューを縮め切っても閉じるボタンがはみ出すので、
+// 最後に「話者マージ」も省略する。flex-shrink を小さくしてメニューより後にする。
+.q-bar :deep(.mix-button) {
+  flex-shrink: 0.01;
+  min-width: 0;
+  overflow: hidden;
+
+  .q-btn__content {
+    flex-wrap: nowrap;
+    justify-content: flex-start;
+    min-width: 0;
+  }
+
+  .block {
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 }
 
 .window-title {
   height: vars.$menubar-height;
   margin-right: 10%;
+  flex-shrink: 1000;
+  min-width: 0;
+  white-space: nowrap;
   text-overflow: ellipsis;
   overflow: hidden;
+
+  // 狭いときは右の余白（10%）もメニューに譲る。
+  @media (max-width: 720px) {
+    margin-right: 0;
+  }
 }
 
 .mac-traffic-light-space {

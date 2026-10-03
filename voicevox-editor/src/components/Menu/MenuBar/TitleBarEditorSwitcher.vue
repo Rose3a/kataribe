@@ -3,7 +3,6 @@
 -->
 
 <template>
-  <!-- FIXME: 画面サイズが小さくなると表示が崩れるのを直す -->
   <!-- NOTE: デザインしづらいからQBtnかdivの方が良い -->
   <QBtnToggle
     :modelValue="openedEditor"
@@ -26,6 +25,7 @@
     dense
     flat
     label="話者マージ"
+    class="mix-button"
     :disable="uiLocked || !mixEndpoint"
     @click="mixOpen = true"
   />
@@ -82,6 +82,9 @@ const switchEditor = async (editor: EditorType) => {
 @use "@/styles/variables" as vars;
 @use "@/styles/colors" as colors;
 .q-btn-group {
+  // タイトルバーが狭いときに「トーク」が潰れないようにする（縮むのはタイトルだけ）。
+  flex-shrink: 0;
+
   :deep(.q-btn) {
     padding-left: 0.75rem;
     padding-right: 0.75rem;

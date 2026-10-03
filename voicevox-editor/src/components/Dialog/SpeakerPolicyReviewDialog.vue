@@ -7,25 +7,29 @@
   >
     <QLayout container view="hHh Lpr lff" class="bg-background">
       <QHeader class="q-py-sm">
-        <QToolbar>
-          <QToolbarTitle class="text-display">話者の利用条件</QToolbarTitle>
+        <QToolbar class="toolbar">
+          <div class="column">
+            <QToolbarTitle class="text-display">話者の利用条件</QToolbarTitle>
+          </div>
           <QSpace />
-          <QBtn
-            unelevated
-            label="あとで確認"
-            color="toolbar-button"
-            textColor="toolbar-button-display"
-            class="text-no-wrap q-mr-md text-bold"
-            @click="$emit('defer')"
-          />
-          <QBtn
-            unelevated
-            label="確認しました"
-            color="toolbar-button"
-            textColor="toolbar-button-display"
-            class="text-no-wrap text-bold"
-            @click="$emit('accept')"
-          />
+          <div class="row items-center no-wrap toolbar-actions">
+            <QBtn
+              unelevated
+              label="あとで確認"
+              color="toolbar-button"
+              textColor="toolbar-button-display"
+              class="text-no-wrap q-mr-md text-bold"
+              @click="$emit('defer')"
+            />
+            <QBtn
+              unelevated
+              label="確認しました"
+              color="toolbar-button"
+              textColor="toolbar-button-display"
+              class="text-no-wrap text-bold"
+              @click="$emit('accept')"
+            />
+          </div>
         </QToolbar>
       </QHeader>
 
@@ -125,6 +129,16 @@ defineEmits<{
 
 <style scoped lang="scss">
 @use "@/styles/v2/colors" as colors;
+
+// 幅が狭いときはボタンを 2 行目へ折り返す（AcceptDialog と同じ）。
+.toolbar {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+
+.toolbar-actions {
+  margin-left: auto;
+}
 
 .page {
   background-color: colors.$background;

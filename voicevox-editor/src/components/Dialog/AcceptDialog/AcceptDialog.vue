@@ -9,14 +9,14 @@
   >
     <QLayout container view="hHh Lpr lff" class="bg-background">
       <QHeader class="q-py-sm">
-        <QToolbar>
+        <QToolbar class="toolbar">
           <div class="column">
             <QToolbarTitle class="text-display">{{ title }}</QToolbarTitle>
           </div>
 
           <QSpace />
 
-          <div class="row items-center no-wrap">
+          <div class="row items-center no-wrap toolbar-actions">
             <QBtn
               unelevated
               :label="rejectLabel"
@@ -91,6 +91,17 @@ const termsHtml = computed(() => md.render(props.terms));
 @use "@/styles/v2/variables" as vars;
 @use "@/styles/v2/mixin" as mixin;
 @use "@/styles/v2/colors" as colors;
+
+// 幅が狭いとタイトルとボタンが 1 行に収まらず、ボタンが画面外へはみ出す。
+// そのときはボタンを 2 行目へ折り返して右に寄せる。
+.toolbar {
+  flex-wrap: wrap;
+  row-gap: vars.$gap-1;
+}
+
+.toolbar-actions {
+  margin-left: auto;
+}
 
 .container {
   position: absolute;

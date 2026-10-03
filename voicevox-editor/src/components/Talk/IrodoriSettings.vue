@@ -1212,6 +1212,9 @@ const speedTargetCount = computed(() => selectedAudioKeys.value.length);
   border-left: 3px solid var(--color-primary);
   background: var(--color-background);
   color: var(--color-display);
+  /* 幅はウィンドウではなくスプリッターで決まるので、狭いレイアウトへの
+     切り替えはこのパネル自身の幅（@container）で判定する。 */
+  container-type: inline-size;
 }
 .settings-stack {
   display: flex;
@@ -1332,7 +1335,7 @@ const speedTargetCount = computed(() => selectedAudioKeys.value.length);
 .settings-action :deep(.q-btn) {
   min-height: 44px;
 }
-@media (max-width: 520px) {
+@container (max-width: 360px) {
   .strength-row,
   .additional-speaker-row {
     grid-template-columns: minmax(90px, 1fr) minmax(70px, 1fr) 64px 24px;
@@ -1345,6 +1348,24 @@ const speedTargetCount = computed(() => selectedAudioKeys.value.length);
   .strength-row > :deep(.q-field),
   .additional-speaker-row > :deep(.q-field) {
     width: 64px;
+  }
+}
+/* さらに狭いと 3 列が収まらず数値欄がはみ出すので、ラベル（追加話者は
+   話者ボタン）を 1 行目に出し、2 行目にスライダーと数値を並べる。 */
+@container (max-width: 295px) {
+  .strength-row,
+  .additional-speaker-row {
+    grid-template-columns: minmax(0, 1fr) 64px 24px;
+    row-gap: 2px;
+  }
+  .primary-strength-row,
+  .speed-row {
+    grid-template-columns: minmax(0, 1fr) 64px;
+  }
+  /* QInput の根要素も <label class="q-field"> なので除く。 */
+  .strength-row > label:not(.q-field),
+  .additional-speaker-row > :deep(.character-button) {
+    grid-column: 1 / -1;
   }
 }
 .irodori-settings :deep(.irodori-number-input .q-field__control) {
