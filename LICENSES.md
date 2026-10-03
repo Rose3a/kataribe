@@ -19,7 +19,8 @@ LGPL-3.0 の対象です。
 Editor の JavaScript 依存パッケージと実行環境の依存パッケージは、それぞれのパッケージの
 ライセンスが適用されます。詳細はアプリの「ヘルプ → ライセンス情報」と
 `voicevox-editor/public/licenses.json`、`dependency-licenses.json`、
-`runtime-licenses.json` を確認してください。
+`runtime-licenses.local.json`（セットアップがこの PC の実行環境から作成します。
+未セットアップの場合は `runtime-licenses.json`）を確認してください。
 
 ## 標準モデル・データ
 

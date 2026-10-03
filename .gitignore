@@ -45,6 +45,8 @@ tools/build_installer_payload.ps1
 portable/
 
 # Local output, logs and temporary work
+# セットアップがこの PC の Python 環境から作るライセンス一覧（PC ごとに違う）
+voicevox-editor/public/runtime-licenses.local.json
 logs/
 outputs/
 work/

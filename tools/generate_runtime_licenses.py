@@ -3,6 +3,10 @@
 Run with .local/venv/Scripts/python.exe. Pass --site-packages for an optional
 backend environment. Missing wheel notices are covered by reviewed snapshots
 in licenses/, never by substituting a guessed license.
+
+The result depends on this PC (CUDA / CPU / Radeon and the resolved versions),
+so it goes to the untracked runtime-licenses.local.json. The tracked
+runtime-licenses.json is only the fallback for a checkout without setup.
 """
 import argparse
 import importlib.metadata as metadata
@@ -80,7 +84,7 @@ def collect(distributions, sources=SOURCES):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--site-packages", action="append", default=[])
-    parser.add_argument("--output", type=Path, default=PUBLIC / "runtime-licenses.json")
+    parser.add_argument("--output", type=Path, default=PUBLIC / "runtime-licenses.local.json")
     args = parser.parse_args()
     distributions = list(metadata.distributions())
     for folder in args.site_packages:
@@ -94,7 +98,9 @@ def main():
         entries.append({"name": "Node.js", "version": "24.11.1", "license": "MIT and bundled third-party licenses", "url": "https://github.com/nodejs/node/blob/v24.11.1/LICENSE", "text": node_license.read_text(encoding="utf-8")})
     if (ROOT / ".local/bin/uv.exe").is_file():
         entries.append({"name": "uv（セットアップ用）", "version": "0.9.7", "license": "MIT OR Apache-2.0", "url": "https://github.com/astral-sh/uv/tree/0.9.7", "text": "\n\n".join((SOURCES / filename).read_text(encoding="utf-8") for filename in ("uv-license-mit.txt", "uv-license-apache.txt"))})
-    args.output.write_text(json.dumps(entries, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    # Windows でも LF で書き、本文の CRLF もそろえる（PC による差を出さない）。
+    text = json.dumps(entries, ensure_ascii=False, indent=2).replace("\\r\\n", "\\n")
+    args.output.write_text(text + "\n", encoding="utf-8", newline="\n")
     print(f"Collected {len(entries)} runtime notices: {args.output}")
 
 

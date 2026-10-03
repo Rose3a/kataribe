@@ -36,11 +36,29 @@ export const loadPolicyText = async (): Promise<string> => {
   return await loadDefault(() => import("../../public/policy.md?raw"));
 };
 
+// 実行環境（Python パッケージ）のライセンスは PC ごとに違うため、セットアップは
+// 追跡しない runtime-licenses.local.json に書く。無いチェックアウトでは追跡中の
+// runtime-licenses.json を使う。glob なのでファイルが無くてもビルドは通る。
+const runtimeLicenseFiles = import.meta.glob<unknown[]>(
+  [
+    "../../public/runtime-licenses.json",
+    "../../public/runtime-licenses.local.json",
+  ],
+  { import: "default" },
+);
+
+const loadRuntimeLicenses = async (): Promise<unknown[]> => {
+  const load =
+    runtimeLicenseFiles["../../public/runtime-licenses.local.json"] ??
+    runtimeLicenseFiles["../../public/runtime-licenses.json"];
+  return await load();
+};
+
 export const loadOssLicenses = async (): Promise<OssLicenseInfo[]> => {
   const groups = await Promise.all([
     loadDefault(() => import("../../public/licenses.json")),
     loadDefault(() => import("../../public/dependency-licenses.json")),
-    loadDefault(() => import("../../public/runtime-licenses.json")),
+    loadRuntimeLicenses(),
   ]);
   return ossLicenseInfoSchema.array().parse(groups.flat());
 };

@@ -110,6 +110,11 @@ licenses.push({
     (await fs.readFile(path.join(electronRoot, "dist/LICENSE"), "utf8")) +
     "\n\nChromium 等の第三者ライセンス全文は Electron 配布物に付属する LICENSES.chromium.html を参照してください。",
 });
+// 同じバージョンでもパッケージの LICENSE が CRLF のことがあり、PC によって
+// 出力が変わると追跡中のファイルが書き換わる。本文の改行は LF にそろえる。
+for (const license of licenses) {
+  license.text = license.text.replace(/\r\n?/g, "\n");
+}
 await fs.writeFile(
   "public/dependency-licenses.json",
   JSON.stringify(licenses, null, 2) + "\n",
