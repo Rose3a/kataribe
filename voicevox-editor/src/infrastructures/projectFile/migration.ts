@@ -27,6 +27,13 @@ import { getAppInfos } from "@/domain/appInfo";
 
 const DEFAULT_SAMPLING_RATE = 24000;
 
+/**
+ * kataribe が書き出すプロジェクト形式に相当する VOICEVOX のバージョン。
+ * 下のマイグレーションは最大でも 0.26.0 未満向けなので、これ以上なら何もしない。
+ * VOICEVOX 側の新しいマイグレーションを取り込んだら、合わせて上げる。
+ */
+const KATARIBE_PROJECT_FORMAT_VERSION = "0.26.0";
+
 type LatestProjectType = z.infer<typeof projectFileSchema>;
 
 /**
@@ -64,7 +71,24 @@ export const migrateProjectFileObject = async (
 
   const appVersion = getAppInfos().version;
 
-  if (semver.gt(projectAppVersion, appVersion)) {
+  // kataribe の appVersion（0.1.x）は VOICEVOX の版数とは別系統。そのまま下の
+  // VOICEVOX 向けマイグレーションに通すと「0.17 未満」と判定され、talk が
+  // 消えて自分で保存したプロジェクトを読み込めなくなる。
+  // VOICEVOX 0.17 未満のファイルには talk が無いので、talk があるのに 0.17 未満なら
+  // kataribe が保存したファイルとみなし、最新形式として扱う。
+  const savedByKataribe =
+    semver.lt(projectAppVersion, "0.17.0") &&
+    typeof projectData.talk === "object" &&
+    projectData.talk != null;
+  const migrationVersion = savedByKataribe
+    ? KATARIBE_PROJECT_FORMAT_VERSION
+    : projectAppVersion;
+  // 新しすぎるかどうかも同じ系統の版数どうしで比べる。
+  const newestReadableVersion = savedByKataribe
+    ? appVersion
+    : KATARIBE_PROJECT_FORMAT_VERSION;
+
+  if (semver.gt(projectAppVersion, newestReadableVersion)) {
     const result = await showNewerVersionWarningDialog();
     if (!result) {
       return "projectCreatedByNewerVersion";
@@ -78,7 +102,7 @@ export const migrateProjectFileObject = async (
   // Migration
   const engineId = EngineId("074fc39e-678b-4c13-8916-ffca8d505d1d");
 
-  if (semver.satisfies(projectAppVersion, "<0.4", semverSatisfiesOptions)) {
+  if (semver.satisfies(migrationVersion, "<0.4", semverSatisfiesOptions)) {
     for (const audioItemsKey in projectData.audioItems) {
       // typos:ignore-next-line
       if ("charactorIndex" in projectData.audioItems[audioItemsKey]) {
@@ -101,7 +125,7 @@ export const migrateProjectFileObject = async (
     }
   }
 
-  if (semver.satisfies(projectAppVersion, "<0.5", semverSatisfiesOptions)) {
+  if (semver.satisfies(migrationVersion, "<0.5", semverSatisfiesOptions)) {
     for (const audioItemsKey in projectData.audioItems) {
       const audioItem = projectData.audioItems[audioItemsKey];
       if (audioItem.query != null) {
@@ -145,7 +169,7 @@ export const migrateProjectFileObject = async (
     }
   }
 
-  if (semver.satisfies(projectAppVersion, "<0.7", semverSatisfiesOptions)) {
+  if (semver.satisfies(migrationVersion, "<0.7", semverSatisfiesOptions)) {
     for (const audioItemsKey in projectData.audioItems) {
       const audioItem = projectData.audioItems[audioItemsKey];
       if (audioItem.characterIndex != null) {
@@ -162,7 +186,7 @@ export const migrateProjectFileObject = async (
     }
   }
 
-  if (semver.satisfies(projectAppVersion, "<0.8", semverSatisfiesOptions)) {
+  if (semver.satisfies(migrationVersion, "<0.8", semverSatisfiesOptions)) {
     for (const audioItemsKey in projectData.audioItems) {
       const audioItem = projectData.audioItems[audioItemsKey];
       if (audioItem.speaker != null) {
@@ -172,7 +196,7 @@ export const migrateProjectFileObject = async (
     }
   }
 
-  if (semver.satisfies(projectAppVersion, "<0.14", semverSatisfiesOptions)) {
+  if (semver.satisfies(migrationVersion, "<0.14", semverSatisfiesOptions)) {
     for (const audioItemsKey in projectData.audioItems) {
       const audioItem = projectData.audioItems[audioItemsKey];
       if (audioItem.engineId == undefined) {
@@ -181,7 +205,7 @@ export const migrateProjectFileObject = async (
     }
   }
 
-  if (semver.satisfies(projectAppVersion, "<0.15", semverSatisfiesOptions)) {
+  if (semver.satisfies(migrationVersion, "<0.15", semverSatisfiesOptions)) {
     for (const audioItemsKey in projectData.audioItems) {
       const audioItem = projectData.audioItems[audioItemsKey];
       if (audioItem.voice == undefined) {
@@ -210,7 +234,7 @@ export const migrateProjectFileObject = async (
     }
   }
 
-  if (semver.satisfies(projectAppVersion, "<0.17", semverSatisfiesOptions)) {
+  if (semver.satisfies(migrationVersion, "<0.17", semverSatisfiesOptions)) {
     // 0.17 未満のプロジェクトファイルはトークの情報のみ
     // なので全情報(audioKeys/audioItems)をtalkに移動する
     projectData.talk = {
@@ -249,21 +273,21 @@ export const migrateProjectFileObject = async (
     delete projectData.audioItems;
   }
 
-  if (semver.satisfies(projectAppVersion, "<0.17.1", semverSatisfiesOptions)) {
+  if (semver.satisfies(migrationVersion, "<0.17.1", semverSatisfiesOptions)) {
     // 声量調整値の追加
     for (const track of projectData.song.tracks) {
       track.volumeRangeAdjustment = 0;
     }
   }
 
-  if (semver.satisfies(projectAppVersion, "<0.19.0", semverSatisfiesOptions)) {
+  if (semver.satisfies(migrationVersion, "<0.19.0", semverSatisfiesOptions)) {
     // ピッチ編集値の追加
     for (const track of projectData.song.tracks) {
       track.pitchEditData = [];
     }
   }
 
-  if (semver.satisfies(projectAppVersion, "<0.20.0", semverSatisfiesOptions)) {
+  if (semver.satisfies(migrationVersion, "<0.20.0", semverSatisfiesOptions)) {
     // tracks: Track[] -> tracks: Record<TrackId, Track> + trackOrder: TrackId[]
     const newTracks: Record<TrackId, unknown> = {};
     for (const track of projectData.song.tracks) {
@@ -278,14 +302,14 @@ export const migrateProjectFileObject = async (
     projectData.song.trackOrder = Object.keys(newTracks);
   }
 
-  if (semver.satisfies(projectAppVersion, "<0.22.0", semverSatisfiesOptions)) {
+  if (semver.satisfies(migrationVersion, "<0.22.0", semverSatisfiesOptions)) {
     // 文内無音倍率の追加
     for (const audioItemsKey in projectData.talk.audioItems) {
       projectData.talk.audioItems[audioItemsKey].query.pauseLengthScale = 1;
     }
   }
 
-  if (semver.satisfies(projectAppVersion, "<0.24.0", semverSatisfiesOptions)) {
+  if (semver.satisfies(migrationVersion, "<0.24.0", semverSatisfiesOptions)) {
     // 音素タイミング編集値の追加
     for (const trackId in projectData.song.tracks) {
       projectData.song.tracks[trackId].phonemeTimingEditData = {};
@@ -293,7 +317,7 @@ export const migrateProjectFileObject = async (
   }
 
   // TODO: 仮で0.26.0としているが、ボリューム編集を導入するバージョンが確定したら条件を更新する。
-  if (semver.satisfies(projectAppVersion, "<0.26.0", semverSatisfiesOptions)) {
+  if (semver.satisfies(migrationVersion, "<0.26.0", semverSatisfiesOptions)) {
     // ボリューム編集値の追加
     for (const trackId in projectData.song.tracks) {
       if (projectData.song.tracks[trackId].volumeEditData == undefined) {
@@ -303,7 +327,7 @@ export const migrateProjectFileObject = async (
   }
 
   // TODO: 歌い方変更のバージョンは未定で、仮で0.26.0以下に指定しているため、バージョンが決まったら修正
-  if (semver.satisfies(projectAppVersion, "<0.26.0", semverSatisfiesOptions)) {
+  if (semver.satisfies(migrationVersion, "<0.26.0", semverSatisfiesOptions)) {
     // 歌い方設定がない場合、歌い方変更実装前のデフォルトである波音リツ(id:6000)に設定する
     for (const trackId in projectData.song.tracks) {
       const track = projectData.song.tracks[trackId];

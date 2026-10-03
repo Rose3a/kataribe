@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, onTestFinished, test, vi } from "vitest";
 import { migrateProjectFileObject } from "@/infrastructures/projectFile/migration";
 import { EngineId, SpeakerId, StyleId } from "@/type/preload";
 import { resetMockMode } from "@/helpers/random";
@@ -15,6 +15,11 @@ beforeEach(() => {
 
 describe("migrateProjectFileObject", () => {
   test("v0.14.11", async () => {
+    // スナップショットの appVersion をアプリの版数に依存させない。
+    vi.stubEnv("VITE_APP_VERSION", "999.999.999");
+    onTestFinished(() => {
+      vi.unstubAllEnvs();
+    });
     // ８期生のプロジェクトファイル
     const vvprojFile = path.join(vvprojDir, "0.14.11.vvproj");
     const projectData: unknown = JSON.parse(
@@ -74,4 +79,32 @@ test("未来のバージョンのプロジェクトを読み込むと警告を�
   });
   expect(showNewerVersionWarningDialog).toHaveBeenCalled();
   expect(project).toEqual("projectCreatedByNewerVersion");
+});
+
+test("kataribe で保存したプロジェクトを読み直せる", async () => {
+  // kataribe の appVersion（0.1.x）は VOICEVOX の版数より小さいが、形式は最新。
+  // VOICEVOX 0.17 未満向けのマイグレーションが走ると talk が消えて読めなくなる。
+  const vvprojFile = path.join(vvprojDir, "0.14.11.vvproj");
+  const DI = {
+    fetchMoraData: async () => {
+      throw new Error("fetchMoraData is not implemented");
+    },
+    voices: [],
+    showNewerVersionWarningDialog: vi.fn(async () => true),
+  };
+  const migrated = await migrateProjectFileObject(
+    JSON.parse(fs.readFileSync(vvprojFile, "utf-8")),
+    DI,
+  );
+  if (migrated === "projectCreatedByNewerVersion")
+    throw new Error("unreachable");
+  const saved = { ...structuredClone(migrated), appVersion: "0.1.1" };
+
+  const reloaded = await migrateProjectFileObject(structuredClone(saved), DI);
+
+  expect(DI.showNewerVersionWarningDialog).not.toHaveBeenCalled();
+  if (reloaded === "projectCreatedByNewerVersion")
+    throw new Error("unreachable");
+  expect(reloaded.talk).toEqual(saved.talk);
+  expect(reloaded.song).toEqual(saved.song);
 });

@@ -853,6 +853,13 @@ export const singingStore = createPartialStore<SingingStoreTypes>({
 
       const engineId = singer?.engineId ?? state.engineIds[0];
 
+      // Irodori には歌えるスタイルが無い。ここで投げると CREATE_NEW_PROJECT が
+      // 途中で止まり、前のプロジェクトのファイルパスが残って上書き保存されてしまう。
+      if (singer == undefined && userOrderedCharacterInfos.length === 0) {
+        mutations.SET_SINGER({ singer: undefined, withRelated, trackId });
+        return;
+      }
+
       const defaultStyleId =
         userOrderedCharacterInfos[0].metas.styles[0].styleId;
       const styleId = singer?.styleId ?? defaultStyleId;

@@ -212,6 +212,7 @@ exports[`0.13.0からマイグレーションできる 1`] = `
     },
   ],
   "inheritAudioInfo": true,
+  "irodoriEthicsNoticeVersion": "",
   "lipSyncBlink": "normal",
   "lipSyncMode": "simple",
   "lipSyncSpeed": "normal",
@@ -224,6 +225,7 @@ exports[`0.13.0からマイグレーションできる 1`] = `
   },
   "recentlyUsedProjects": [],
   "registeredEngineDirs": [],
+  "reviewedIrodoriSpeakerPolicies": {},
   "savingSetting": {
     "audioOutputDevice": "default",
     "avoidOverwrite": false,
