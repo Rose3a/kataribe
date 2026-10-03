@@ -774,7 +774,9 @@ const availableAudioOutputDevices = ref<{ key: string; label: string }[]>();
 const updateAudioOutputDevices = async () => {
   const devices = await navigator.mediaDevices.enumerateDevices();
   availableAudioOutputDevices.value = devices
-    .filter((device) => device.kind === "audiooutput")
+    // ブラウザ版では権限が無いと deviceId が空文字になる。空の value は
+    // SelectItem が受け付けず ErrorBoundary に落ちるので除く。
+    .filter((device) => device.kind === "audiooutput" && device.deviceId !== "")
     .map((device) => {
       return { label: device.label, key: device.deviceId };
     });
