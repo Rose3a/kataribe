@@ -125,7 +125,11 @@ class EditorAdapter:
                 # 読み方は開発版では共通設定だったが、今はセリフごとの設定。
                 saved.pop("english_reading", None)
                 saved.pop("kana_style", None)
-                if saved.get("model") == "model.safetensors":
+                # セットアップ（tools/prepare.py）は固定リビジョンの既定モデルを
+                # models/model.safetensors に置く。それがあるなら使い続ける。
+                # HF の repo_id に置き換えると、同じ約3GBを最新リビジョンで取り直す。
+                if (saved.get("model") == "model.safetensors"
+                        and not (MODEL_DIR / "model.safetensors").is_file()):
                     saved["model"] = self.DEFAULT_SETTINGS["model"]
             saved = {**self.DEFAULT_SETTINGS, **saved}
             self.validate(saved)
@@ -160,7 +164,10 @@ class EditorAdapter:
     @staticmethod
     def _is_hf_model_source(source):
         """Hugging Face の repo_id（任意でサブフォルダ）だけを受け付ける。"""
-        return bool(HF_MODEL_PATTERN.fullmatch(str(source).strip()))
+        source = str(source).strip()
+        # "../.." のような相対パスの要素は repo_id にもサブフォルダにもならない。
+        return (bool(HF_MODEL_PATTERN.fullmatch(source))
+                and all(part not in (".", "..") for part in source.split("/")))
 
     def _resolve_local_model(self, source):
         """models フォルダ内のローカル .safetensors を返す。無ければ None。"""
@@ -592,7 +599,13 @@ class EditorAdapter:
                     modelFolder=str(MODEL_DIR), speakerFolder=str(SPEAKER_DIR))
 
     def configure(self, value):
-        value = {**self.DEFAULT_SETTINGS, **value}
+        if not isinstance(value, dict):
+            raise ValueError("設定はオブジェクトで指定してください")
+        # 送られなかった項目は今の設定を引き継ぐ。既定値で埋めると、
+        # {"seed": 1} だけ送った外部クライアントの backend が cpu に戻ってしまう。
+        with self.state_lock:
+            current = dict(self.settings)
+        value = {**self.DEFAULT_SETTINGS, **current, **value}
         value.pop("caption", None)
         value.pop("cfg", None)
         # 旧クライアントから送られる共通値も保存しない。
@@ -989,9 +1002,15 @@ class EditorAdapter:
             self.operation_lock.release()
         return dict(self.storage_status(), freedBytes=freed)
 
-    def close(self):
-        with self.operation_lock:
+    def close(self, timeout=None):
+        """モデルを解放する。timeout 秒以内に生成・読み込みが終わらなければ False。"""
+        if not self.operation_lock.acquire(timeout=-1 if timeout is None else timeout):
+            return False
+        try:
             self._close_locked()
+        finally:
+            self.operation_lock.release()
+        return True
 
     def _close_locked(self):
         with self.state_lock:
@@ -1122,4 +1141,9 @@ if __name__ == "__main__":
         server.serve_forever()
     finally:
         server.server_close()
-        EditorHandler.adapter.close()
+        # 先読み（モデルのダウンロードや TensorRT 変換）が operation_lock を握った
+        # ままだと、/irodori/shutdown 後もプロセスが終わらない。待ち切れなければ
+        # 解放を諦めて終了する（先読みスレッドは daemon なので一緒に止まる）。
+        if not EditorHandler.adapter.close(timeout=5):
+            print("[irodori] shutdown: model work still running; exiting without unloading",
+                  flush=True)

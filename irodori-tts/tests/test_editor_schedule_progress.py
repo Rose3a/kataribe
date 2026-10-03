@@ -85,9 +85,11 @@ class EditorScheduleProgressTests(unittest.TestCase):
 
     def test_runtime_log_callback_is_forwarded_to_runtime_synthesize(self):
         voicevox_synthesize = VOICEVOX_ENGINE[VOICEVOX_ENGINE.index("def synthesize(self, query: dict, speaker_id: int)") :]
+        # 文字数で切るとメソッドが伸びただけで外れるので、次のクラス定義までを見る。
+        voicevox_synthesize = voicevox_synthesize[: voicevox_synthesize.index("\nclass ")]
         self.assertIn(
-            "self.progress_callback",
-            voicevox_synthesize[:5000],
+            "log_fn=self.progress_callback",
+            voicevox_synthesize,
             "VoicevoxAdapter must pass its progress callback into IrodoriTTS",
         )
         self.assertRegex(
@@ -397,7 +399,7 @@ class EditorScheduleProgressTests(unittest.TestCase):
         self.assertRegex(synthesize, r"ref_wav\s*=\s*ref_wav|ref_wav=ref_wav")
         self.assertRegex(
             synthesize,
-            r"ref_wav[^\n]*self\.cassette\.get|self\.cassette\.get[\s\S]{0,80}ref_wav",
+            r"ref_wav[\s\S]{0,120}self\.cassette\.get|self\.cassette\.get[\s\S]{0,80}ref_wav",
         )
 
     def test_tts_cli_allows_blank_seed_and_reference_audio_bypasses_cassette(self):

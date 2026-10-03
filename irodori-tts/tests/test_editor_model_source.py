@@ -67,6 +67,21 @@ class ModelSourceTests(unittest.TestCase):
         self.assertEqual(adapter._build_delegate(), 'ready')
         self.assertEqual(adapter._build_delegate_impl.call_count, 2)
 
+    def test_partial_settings_update_keeps_other_values(self):
+        adapter = fake_adapter()
+        adapter.settings.update(backend="cuda", seed=1001)
+        adapter.validate = Mock()
+        adapter.status = Mock(return_value={})
+        adapter.schedule_prewarm = Mock()
+        adapter._close_locked = Mock()
+        with tempfile.TemporaryDirectory() as folder:
+            adapter.config_path = Path(folder) / "settings.json"
+            adapter.configure({"seed": 7})
+        self.assertEqual(adapter.settings["backend"], "cuda")
+        self.assertEqual(adapter.settings["model"], "model.safetensors")
+        self.assertEqual(adapter.settings["seed"], 7)
+        adapter.schedule_prewarm.assert_not_called()
+
     def test_trt_accepts_meanflow_repo(self):
         adapter = fake_adapter()
         adapter.available_backends = lambda: {'trt': True}
@@ -99,7 +114,8 @@ class ModelSourceTests(unittest.TestCase):
 
     def test_rejects_paths_outside_models_and_garbage(self):
         adapter = fake_adapter()
-        for value in ("C:/tmp/model.safetensors", "/etc/passwd", "model.ckpt", ""):
+        for value in ("C:/tmp/model.safetensors", "/etc/passwd", "model.ckpt", "",
+                      "../../etc/passwd", "Aratako/..", "Aratako/repo/../x"):
             with self.assertRaises(ValueError):
                 adapter._validate_model_source(value)
 
