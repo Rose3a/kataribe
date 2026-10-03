@@ -164,11 +164,22 @@ class VoicevoxCompatTests(unittest.TestCase):
         for key, value in cases.items():
             with self.subTest(key=key):
                 self.assert_422(self.synth({"irodori_text": "a", key: value}), ["body", key])
+        for seed in (-1, 2**63):
+            with self.subTest(seed=seed):
+                self.assert_422(self.synth({"irodori_text": "a", "irodori_seed": seed}),
+                                ["body", "irodori_seed"])
         self.assert_422(self.synth({"irodori_text": "a", "irodori_additional_speakers": [
             {"style_id": "x"}]}), ["body", "irodori_additional_speakers", 0, "style_id"])
         self.assert_422(self.synth({"irodori_text": "a", "irodori_reference_audio": {}}),
                         ["body", "irodori_reference_audio", "dataUrl"])
         self.assertEqual(self.adapter.queries, [])
+
+    def test_seed_range_boundaries_are_accepted(self):
+        # ランタイムがログに出すランダムシード（最大 2^63-1）も再指定できる。
+        for seed in (0, 2**63 - 1):
+            with self.subTest(seed=seed):
+                status, wav, _ = self.synth({"irodori_text": "a", "irodori_seed": seed})
+                self.assertEqual((status, wav), (200, b"RIFFtest"))
 
     def test_editor_style_query_is_accepted(self):
         # エディタが実際に送る形。ここが 422 になるとエディタの合成が止まる。

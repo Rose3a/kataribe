@@ -395,6 +395,7 @@
             dense
             label="シード（空欄＝ランダム）"
             type="number"
+            min="0"
             :disable="locked"
             class="irodori-number-input"
             @change="saveSeed"
@@ -856,8 +857,9 @@ function saveLineCfg(key: LineCfgKey, input: string | number | null) {
 function saveSeed() {
   const raw = seedText.value.trim();
   const seed = raw === "" ? null : Number(raw);
-  if (seed != null && !Number.isSafeInteger(seed)) {
-    error.value = "シードは整数で入力するか、空欄にしてください";
+  // エンジンは負のシードを 422 で拒否する。
+  if (seed != null && !(Number.isSafeInteger(seed) && seed >= 0)) {
+    error.value = "シードは0以上の整数で入力するか、空欄にしてください";
     seedText.value =
       irodori.value.seed == null ? "" : String(irodori.value.seed);
     return;
@@ -1049,7 +1051,10 @@ function stopReferenceAudio() {
 onBeforeUnmount(stopReferenceAudio);
 function adjustSeed(delta: number) {
   const current = Number(seedText.value);
-  seedText.value = String((Number.isFinite(current) ? current : 0) + delta);
+  // 0 から「1減らす」を押しても負にしない。
+  seedText.value = String(
+    Math.max(0, (Number.isFinite(current) ? current : 0) + delta),
+  );
   saveSeed();
 }
 // エンジンが返した理由を、その場で読める日本語にまとめる。

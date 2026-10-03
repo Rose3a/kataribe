@@ -161,8 +161,12 @@ IRODORI_QUERY_FIELDS: dict[str, dict] = {
         "description": "元の文章。合成時に読み辞書を再適用する。省略時は kana を使う",
     },
     "irodori_seed": {
+        # ランタイムがランダム時に選ぶシード（secrets.randbits(63)）と同じ範囲。
+        # ログに出たシードをそのまま渡して再現できるようにしつつ、負の値や
+        # torch が受け取れない大きさ（Overflow の 400）は入口で 422 にする。
         "type": "integer", "nullable": True, "default": 4763674,
-        "description": "シード。null でランダム",
+        "minimum": 0, "maximum": 2**63 - 1,
+        "description": "シード（0〜2^63-1）。null でランダム",
     },
     "irodori_steps": {
         "type": "integer", "minimum": 1, "maximum": 80,

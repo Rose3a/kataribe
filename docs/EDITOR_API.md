@@ -95,7 +95,7 @@ JSON のキーは snake_case で指定します。`irodoriSteps` のような ca
 | キー | 型 | 範囲・既定 | 説明 |
 |---|---|---|---|
 | `irodori_text` | string | | 元の文章。合成時に辞書を再適用する。省略時は `kana` |
-| `irodori_seed` | integer / null | 既定 4763674 | null でランダム |
+| `irodori_seed` | integer / null | 0〜2^63-1（9223372036854775807）、既定 4763674 | null でランダム。範囲外は 422 |
 | `irodori_steps` | integer | 1〜80、既定はモデル依存（RF 8 / MeanFlow 4） | |
 | `irodori_schedule` | string | `sway`（既定） / `linear` | MeanFlow では無視 |
 | `irodori_seconds` | number / null | 0.1〜60、null で自動 | 音声長 |
