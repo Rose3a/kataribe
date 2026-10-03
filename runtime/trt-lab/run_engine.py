@@ -27,6 +27,7 @@ class Engine:
         if 'delta_t' in self.names and 'delta_t' not in self.input_names:
             self.input_names.append('delta_t')
         self.output_name = output_name
+        self.max_batch = self.engine.get_tensor_profile_shape(self.input_names[0], 0)[2][0]
         self.dtype_map = {trt.float32: torch.float32, trt.float16: torch.float16,
                           trt.bfloat16: torch.bfloat16, trt.bool: torch.bool,
                           trt.int32: torch.int32, trt.int64: torch.int64}
@@ -116,7 +117,30 @@ class Adapter:
         delta = (kw['delta_t'].contiguous(),) if 'delta_t' in self.engine.input_names else ()
         if self.model.delta_cond_module is not None and not delta:
             raise ValueError('MeanFlow requires a plan with delta_t input')
-        return self.engine((kw['x_t'].contiguous(), kw['t'].contiguous(), *self.prepared[key][1], *delta))
+        return self.run((kw['x_t'].contiguous(), kw['t'].contiguous(), *self.prepared[key][1], *delta))
+
+    def run(self, xs):
+        # Independent CFG with text, speaker and caption needs batch 4, one
+        # more than the plan profile.  Rows never interact, so run the batch
+        # in profile-sized slices.  kv_* stack layers first (batch on axis 1)
+        # and the RoPE tables carry no batch axis.
+        limit = getattr(self.engine, 'max_batch', None)
+        batch = xs[0].shape[0]
+        if limit is None or batch <= limit:
+            return self.engine(xs)
+        parts = []
+        for start in range(0, batch, limit):
+            piece = []
+            for name, x in zip(self.engine.input_names, xs):
+                if name.startswith('rope_'):
+                    piece.append(x)
+                elif name.startswith('kv_'):
+                    piece.append(x[:, start:start + limit].contiguous())
+                else:
+                    piece.append(x[start:start + limit].contiguous())
+            # The engine reuses its output buffer per shape; copy each slice out.
+            parts.append(self.engine(tuple(piece)).clone())
+        return torch.cat(parts)
 
 
 def compare(a, b):
