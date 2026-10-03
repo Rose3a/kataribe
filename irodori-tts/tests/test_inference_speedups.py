@@ -269,6 +269,76 @@ class CudaGraphTests(unittest.TestCase):
         self.assertTrue(torch.equal(kv[0][0], x * 2))
         self.assertEqual(wrappers["text_encoder"].captures, 1)
 
+    def test_duration_predictor_replay_is_bit_identical(self):
+        from irodori_tts import model as runtime_model
+        original = runtime_model._safe_attention_mask
+        self.addCleanup(setattr, runtime_model, "_safe_attention_mask", original)
+        configs = {
+            # The architecture of the v4.1 checkpoints, and the default one.
+            "token_sum_dual_adarn_zero_no_aux": dict(
+                speaker_dim=8, speaker_fusion="adarn_zero", caption_dim=8,
+                caption_fusion="adarn_zero"),
+            "pooled": {},
+        }
+        for architecture, extra in configs.items():
+            with self.subTest(architecture=architecture):
+                torch.manual_seed(3)
+                predictor = runtime_model.DurationPredictor(
+                    text_dim=16, aux_dim=4, hidden_dim=16, layers=2, dropout=0.0,
+                    attention_heads=2, architecture=architecture, **extra)
+                for parameter in predictor.parameters():
+                    torch.nn.init.normal_(parameter, std=0.2)
+                predictor = predictor.cuda().to(torch.bfloat16).eval()
+                model = types.SimpleNamespace(
+                    duration_predictor=predictor,
+                    build_context_kv_cache=lambda text_state, speaker_state, caption_state: [])
+                inputs = []
+                for empty_row in (False, True):
+                    text_mask = torch.rand(2, 12, device="cuda") > 0.3
+                    text_mask[:, 0] = True
+                    if empty_row:  # takes the helper's empty-row fix
+                        text_mask[1] = False
+                    kwargs = dict(text_mask=text_mask, aux_features=torch.randn(2, 4, device="cuda"))
+                    if extra:
+                        kwargs.update(
+                            speaker_state=torch.randn(2, 5, 8, device="cuda", dtype=torch.bfloat16),
+                            speaker_mask=torch.ones(2, 5, dtype=torch.bool, device="cuda"),
+                            has_speaker=torch.tensor([True, False], device="cuda"),
+                            caption_state=torch.randn(2, 7, 8, device="cuda", dtype=torch.bfloat16),
+                            caption_mask=torch.tensor([[True] * 7, [False] * 7], device="cuda"),
+                            has_caption=torch.tensor([True, False], device="cuda"))
+                    text_state = torch.randn(2, 12, 16, device="cuda", dtype=torch.bfloat16)
+                    with torch.inference_mode():
+                        expected = predictor(text_state, **kwargs)
+                    inputs.append((text_state, kwargs, expected))
+                wrappers = cuda_graphs.install(model, log=self.fail)
+                self.assertIsNot(runtime_model._safe_attention_mask, original)
+                with torch.inference_mode():
+                    for text_state, kwargs, expected in inputs * 2:
+                        got = predictor(text_state, **kwargs)
+                        self.assertTrue(torch.equal(got, expected))
+                graphed = wrappers["duration_predictor"]
+                # Both mask cases share one shape: one capture, no eager fallback.
+                self.assertEqual((graphed.captures, graphed.replays, graphed.eager), (1, 4, 0))
+                runtime_model._safe_attention_mask = original
+
+    def test_capturable_mask_helper_keeps_shape_errors_and_eager_path(self):
+        calls = []
+
+        def original(x, mask):
+            calls.append(1)
+            if mask.shape[1] != x.shape[1]:
+                raise ValueError("mask must have shape (B, S) matching x")
+            return x, mask
+
+        helper = cuda_graphs.capturable_safe_attention_mask(original)
+        x = torch.ones(1, 3, 2, device="cuda")
+        mask = torch.ones(1, 3, dtype=torch.bool, device="cuda")
+        self.assertIs(helper(x, mask)[0], x)  # not capturing: the original runs
+        with self.assertRaises(ValueError):
+            helper(x, mask[:, :2])
+        self.assertEqual(len(calls), 2)
+
 
 @unittest.skipUnless(CUDA, "CUDA is not available")
 class VramTrimTests(unittest.TestCase):

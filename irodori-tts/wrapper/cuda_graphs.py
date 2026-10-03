@@ -1,10 +1,11 @@
 """CUDA Graph replay for the fixed-shape condition encoders.
 
-Per request, the text encoder (a Hugging Face backbone) and the 12-layer
-context KV projection launch hundreds of small kernels; on Windows the launch
-overhead, not the GPU, dominates them.  The tokenizer pads to a fixed length,
-so the shapes repeat and one captured graph per shape replays the same
-kernels with the same inputs: the outputs are bit-identical to eager mode.
+Per request, the text encoder (a Hugging Face backbone), the duration
+predictor and the 12-layer context KV projection launch hundreds of small
+kernels; on Windows the launch overhead, not the GPU, dominates them.  The
+tokenizer pads to a fixed length, so the shapes repeat and one captured graph
+per shape replays the same kernels with the same inputs: the outputs are
+bit-identical to eager mode.
 
 A call that synchronises with the host (``.item()``, ``nonzero``, a pageable
 copy) cannot be captured; the failed capture is cleaned up and that call then
@@ -14,6 +15,10 @@ Capture-aware library code takes its capture branch while recording: the
 Hugging Face mask helper skips its ``padding_mask.all()`` shortcut and always
 passes the explicit mask, which eager mode drops only when a text fills all
 256 tokens.  Both are exact attention masks; every shorter text is identical.
+The runtime's own ``_safe_attention_mask`` (used by the duration predictor)
+gets the same treatment from ``install``: while capturing it applies its
+empty-row fix unconditionally instead of asking the host whether any row is
+empty, which gives the same values.
 """
 from __future__ import annotations
 
@@ -150,13 +155,47 @@ def _recover_from_failed_capture(stream):
     torch.cuda.synchronize()
 
 
+def capturable_safe_attention_mask(original):
+    """``_safe_attention_mask`` without its host sync while a graph is captured.
+
+    The original returns early after ``bool(has_any.all())`` when no row is
+    empty; otherwise it zeroes the empty rows and unmasks their first token.
+    Doing that unconditionally changes nothing for non-empty rows, so the
+    values match both branches.  Outside a capture the original runs as is.
+    """
+    def safe_attention_mask(x, mask):
+        if (not torch.cuda.is_current_stream_capturing() or mask.ndim != 2
+                or mask.shape[0] != x.shape[0] or mask.shape[1] != x.shape[1]
+                or x.shape[1] <= 0):
+            return original(x, mask)  # also raises its own shape errors
+        mask = mask.to(device=x.device, dtype=torch.bool)
+        empty = ~mask.any(dim=1)
+        x = x.masked_fill(empty.view(-1, *([1] * (x.ndim - 1))), 0)
+        mask = mask.clone()
+        mask[:, 0] |= empty
+        return x, mask
+    safe_attention_mask.original = original
+    return safe_attention_mask
+
+
+def _make_mask_helper_capturable(module):
+    runtime_model = sys.modules.get(type(module).__module__)
+    original = getattr(runtime_model, '_safe_attention_mask', None)
+    if original is not None and not hasattr(original, 'original'):
+        runtime_model._safe_attention_mask = capturable_safe_attention_mask(original)
+
+
 def install(model, log=None):
-    """Graph the text/caption encoders and the context KV projection of ``model``.
+    """Graph the text/caption encoders, the duration predictor and the context
+    KV projection of ``model``.
 
     Returns the installed wrappers (for statistics and tests).
     """
     wrappers = {}
-    for attr in ('text_encoder', 'caption_encoder'):
+    predictor = getattr(model, 'duration_predictor', None)
+    if predictor is not None:
+        _make_mask_helper_capturable(predictor)
+    for attr in ('text_encoder', 'caption_encoder', 'duration_predictor'):
         module = getattr(model, attr, None)
         if module is None:
             continue

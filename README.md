@@ -72,7 +72,7 @@ bat\trt_setup.bat
 TensorRT バックエンドでは、音声を波形に戻す codec も FP16 の TensorRT で動かします。初回だけ codec の変換（1〜2分）が入り、
 変換結果は FP32 基準で今までの BF16 codec 以上の精度が出ることを確かめたうえで `.cache\trt-codec` に保存されます。
 変換に失敗した場合は従来の PyTorch codec のまま動きます。`IRODORI_TRT_CODEC=0` で codec の TensorRT 化を、
-`IRODORI_CUDA_GRAPHS=0` で条件エンコーダの CUDA Graph 化を止められます（比較用）。
+`IRODORI_CUDA_GRAPHS=0` で条件エンコーダと長さの予測の CUDA Graph 化を止められます（比較用）。
 
 TensorRT バックエンドは、TensorRT 側が持っている重みの PyTorch 側の複製を CPU メモリへ移し、生成が
 5 秒止まるとキャッシュした VRAM をドライバへ返します（RTX 3060・MF モデルで待機時の使用量が
@@ -108,6 +108,7 @@ irodori-tts/        Irodori API ラッパーおよびテスト
 runtime/trt-lab/    Irodori-TTS ランタイム本体
 tools/              セットアップ・検証用スクリプト
 voicevox-editor/    Irodori 対応 VOICEVOX Editor ソース
+emoji-annotator/    音声データに Irodori の絵文字を付けるアノテーションツール（試作）
 models/             モデル配置ディレクトリ（git管理外）
 speakers/           話者データ配置ディレクトリ（標準話者同梱、追加話者は手動配置）
 ```
