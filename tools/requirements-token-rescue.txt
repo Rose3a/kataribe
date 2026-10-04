@@ -1,0 +1,7 @@
+# 語彙分割辞書を作るツール（tools\token_rescue.py）の追加依存。エンジンの実行には不要。
+#
+#   uv pip install --python .local\venv\Scripts\python.exe -r tools\requirements-token-rescue.txt
+#
+# pykakasi は漢字の読みに使う（書き起こしを読みで採点する・漢字を読みがなにする案）。
+# 無くても動くが、その2つを省く。ASR（sherpa-onnx）は requirements-asr.txt。
+pykakasi==2.3.0

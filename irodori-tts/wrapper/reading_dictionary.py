@@ -9,6 +9,7 @@ import unicodedata
 import uuid
 
 from english_reading import convert_english, to_hiragana
+from token_split import TOKEN_SPLIT_DICTIONARY, TOKEN_SPLITS
 
 KANA_STYLES = ("katakana", "hiragana")
 # 英単語・英文の読み: 変換しない / カタカナにする / ひらがなにする
@@ -99,13 +100,17 @@ class ReadingDictionary:
         with self.lock:
             self._save({**self.words, **incoming} if override else {**incoming, **self.words})
 
-    def convert(self, text, english="katakana", kana_style="katakana", spacing="keep"):
+    def convert(self, text, english="katakana", kana_style="katakana", spacing="keep",
+                token_split="on"):
         """ユーザー辞書を当て、残った英語をカナ読みにする。
 
         english は英語の読み方（off なら英字はそのまま残す、hiragana なら英語の
         読みだけひらがなにする）。kana_style="hiragana" なら、辞書と英語の読みを
         含む文中のカタカナをすべてひらがなにする。spacing="join" なら、変換した
         英語とユーザー辞書の読みの前後の空白を詰める（英語を変換するときだけ）。
+        token_split="on" なら、最後に語彙分割辞書（token_split.py）で学習の少ない
+        まとまりトークンを分ける。モデルに渡る直前の文字列に当てるので、ユーザー辞書の
+        読みやひらがな化した文にも効く。
         """
         if english not in ENGLISH_READINGS:
             raise ValueError(f"english must be one of {ENGLISH_READINGS}")
@@ -113,6 +118,8 @@ class ReadingDictionary:
             raise ValueError(f"kana_style must be one of {KANA_STYLES}")
         if spacing not in ENGLISH_SPACINGS:
             raise ValueError(f"spacing must be one of {ENGLISH_SPACINGS}")
+        if token_split not in TOKEN_SPLITS:
+            raise ValueError(f"token_split must be one of {TOKEN_SPLITS}")
         join = english != "off" and spacing == "join"
 
         def rest(part):
@@ -120,11 +127,21 @@ class ReadingDictionary:
                 return part
             return convert_english(part, hiragana=english == "hiragana", join=join)
 
-        text = self._apply_words(normalize_width(text), rest, join=join)
-        return to_hiragana(text) if kana_style == "hiragana" else text
+        out = []
+        for part, from_user in self._apply_words(normalize_width(text), rest, join=join):
+            if kana_style == "hiragana":
+                part = to_hiragana(part)
+            # 読み方辞書が当たった部分には語彙分割辞書を重ねない（2つの辞書は別々に効く）
+            if token_split == "on" and not from_user:
+                part = TOKEN_SPLIT_DICTIONARY.apply(part)
+            out.append(part)
+        return "".join(out)
 
     def _apply_words(self, text, rest, join=False):
-        # ユーザー辞書に当たらなかった部分だけを rest で変換する（辞書の読みは再変換しない）。
+        """(文字列, ユーザー辞書の読みか) の列を返す。
+
+        ユーザー辞書に当たらなかった部分だけを rest で変換する（辞書の読みは再変換しない）。
+        """
         words = sorted(self.snapshot().values(),
                        key=lambda w: (-len(w["surface"]), -w["priority"]))
         readings = {}
@@ -137,7 +154,7 @@ class ReadingDictionary:
                 readings[surface] = word["pronunciation"]
                 user_surfaces.add(surface)
         if not readings:
-            return rest(text)
+            return [(rest(text), False)]
         # Longest key first: Python's alternation keeps the first match, so a
         # shorter user entry would otherwise swallow a longer one.
         ordered = sorted(readings, key=len, reverse=True)
@@ -147,9 +164,10 @@ class ReadingDictionary:
         pattern = re.compile(pattern, re.IGNORECASE | re.ASCII)
         result, start = [], 0
         for match in pattern.finditer(text):
-            result.extend((rest(text[start:match.start()]), readings[match[1].lower()]))
+            result.extend(((rest(text[start:match.start()]), False),
+                           (readings[match[1].lower()], True)))
             start = match.end()
-        return ''.join(result) + rest(text[start:])
+        return result + [(rest(text[start:]), False)]
 
 
 READING_DICTIONARY = ReadingDictionary(Path(__file__).resolve().parents[2] / "user_dictionary.json")

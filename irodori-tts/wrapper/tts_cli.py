@@ -505,8 +505,10 @@ def token_view(runtime, text: str) -> Optional[str]:
     if tokenizer is None:
         return None
     from irodori_tts.text_normalization import normalize_text
+    from token_split import split_token_ids
 
-    ids = tokenizer.encode(normalize_text(text).strip(), add_special_tokens=False)
+    # 語彙分割辞書の見えない区切りは、合成時と同じくその位置で分けてエンコードする
+    ids = split_token_ids(tokenizer, normalize_text(text).strip())
     pieces = []
     for piece in tokenizer.convert_ids_to_tokens(ids):
         for raw, mark in _TOKEN_MARKS.items():
@@ -548,6 +550,13 @@ class IrodoriTTS:
             self.backend = RadeonBackend(project_root=Path(__file__).resolve().parents[2])
         else:
             self.backend = TorchBackend()
+        # 語彙分割辞書の見えない区切り（U+2063）の位置でトークンを分ける
+        from token_split import install_split_encoding
+        self.split_encoding = False
+        tokenizer = getattr(getattr(self.backend, "runtime", None), "tokenizer", None)
+        if tokenizer is not None:
+            install_split_encoding(tokenizer)
+            self.split_encoding = True
         # Pick each speaker's embedding made for this model's width.
         self.cassette.preferred_dim = self.speaker_dim()
         self.default_speaker = self._pick_default_speaker()
@@ -618,6 +627,9 @@ class IrodoriTTS:
                    speaker_tensor_override: Optional[torch.Tensor] = None) -> dict:
         if not text.strip():
             raise ValueError("text must not be empty")
+        if not getattr(self, "split_encoding", False):
+            from token_split import strip_marks
+            text = strip_marks(text)
         speaker_name = self.default_speaker if speaker is None else speaker
         if ref_wav is not None and speaker_tensor_override is not None:
             raise ValueError("reference audio and speaker mix cannot be combined")

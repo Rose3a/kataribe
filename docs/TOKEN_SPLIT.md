@@ -1,0 +1,149 @@
+# 語彙分割辞書
+
+## なぜ読めないのか
+
+Irodori のテキストトークナイザ（`sbintuitions/modernbert-ja-310m`、Unigram 102,400語）は、
+「浦和レッズ」「ゼルダの伝説」「テキストエディタ」のような語句を**丸ごと1トークン**にする。
+語彙の後ろのほう（ID が大きく出現度 logp が低い）のトークンは TTS の学習データにほとんど出て
+こないので、モデルはそのトークンの読みを知らず、別の語に化けたり詰まったりする。
+
+```
+浦和レッズ    → 浦和レッズ(96391)            ASR:「ロウワダブタ」「ローアダム」…
+ゼルダの伝説  → ゼルダの伝説(92850)          ASR:「スデルト検ン算」…
+```
+
+## どう直すか
+
+同じ文字列を、学習でよく見ている小さいトークンに分けて渡す。分け方は語ごとに
+`tools/token_rescue.py` が ASR で採点して選び、`irodori-tts/wrapper/data/token_split_dictionary.json`
+に書く。エンジンは UI・API のどちらの合成でも、ユーザー辞書・英語の読み・ひらがな化の**後**、
+モデルに渡る直前の文字列にこの辞書を当てる（`irodori_token_split=off` で外せる）。
+当てるのは、トークナイザが実際にその語句を1トークンとして出した位置だけ。文字列一致では
+ないので、「ワール」の登録が「ワールド」の中に当たって壊すことはない。
+
+| 書き換え | 辞書の表記 | モデルに渡るもの | 間 |
+|---|---|---|---|
+| 見えない区切り（split） | `浦和\|レッ\|ズ` | `浦和` `レッ` `ズ`（区切り用のトークンは無い） | 入らない |
+| ゼロ幅スペース（zw） | `テキスト[ZW]エディタ` | `テキスト` `​` `エディタ` | 入ることがある |
+| 助詞の後だけ空白（space_particle） | `ゼルダ\|の 伝説` | `ゼルダ` `の` `▁` `伝説` | 助詞の後に入る |
+| ひらがな（hiragana） | `浦和れっず` | 表記を変える | 抑揚が変わることがある |
+| 漢字を読みがなに（reading） | `じちスレ` | 表記を変える | — |
+
+見えない区切りは、テキストに U+2063（INVISIBLE SEPARATOR）を入れ、トークナイザの直前で
+その位置で分けてエンコードする（`token_split.install_split_encoding`）。空白を入れると
+「浦和 レッズ」のように間が空くが、こちらは文字列としての区切りがモデルに届かないので、
+助詞の無い語でも間が入らない。
+
+試験運転（つくよみちゃん、各4回）での結果:
+
+| 語 | 原文 | 見えない区切り | ゼロ幅スペース |
+|---|---|---|---|
+| 浦和レッズ | 0/4 | 4/4（語中の間 140ms＝促音） | — |
+| ゼルダの伝説 | 0/4 | 4/4（60ms） | — |
+| テキストエディタ | 0/4 | 3/4（120ms） | 4/4 だが語中に 640ms の間 → 不採用 |
+| 自治スレ | 0/4 | 0/4（「父スレ」） | 0/4 → 辞書に載せない |
+
+## 辞書の作り方
+
+```bat
+rem 漢字の読み（採点と reading 案）に使う。無くても動く
+.local\bin\uv.exe pip install --python .local\venv\Scripts\python.exe -r tools\requirements-token-rescue.txt
+
+rem 1) 語彙の日本語トークン（約5.5万）を出現度の低い順に列挙し、書き換え案を出す（2分ほど）
+.local\venv\Scripts\python.exe tools\token_rescue.py candidates
+
+rem 2) 原文を読ませて ASR で採点（1回目で読めたら打ち切り、だめなら4回）。止めても続きから
+.local\venv\Scripts\python.exe tools\token_rescue.py scan --limit 5000
+rem    既存の評価 CSV（トークン・OK率 の列）を取り込んでもよい
+.local\venv\Scripts\python.exe tools\token_rescue.py import "OK率50以下.csv"
+
+rem 3) OK率 0.5 以下の語を、書き換え案ごとに4回ずつ読ませて採点（止めても続きから）
+.local\venv\Scripts\python.exe tools\token_rescue.py rescue --max-ok 0.5
+
+rem 4) 辞書を書き出す（エンジンは再起動しなくてもファイルの更新を拾う）
+.local\venv\Scripts\python.exe tools\token_rescue.py build
+```
+
+途中の結果は `work\token_rescue\` に残る。
+
+- `candidates.csv` — トークンごとの書き換え案
+- `scan.csv` — 原文の採点（読めない語の一覧）。`メモ` に「表記ゆれの疑い」とあるものは、
+  毎回同じ1〜2文字違いに聞き取られている（ハイブリット → ハイブリッド など）。TTS ではなく
+  ASR が綴りを直していることが多い
+- `rescue.csv` — 書き換え案ごとの採点。`--save-wav フォルダ` を付けると音声も残せる
+
+### 採点
+
+- 台本は `これは{X}です。` と `{X}の話をしよう。` を交互に使い、シードを変えて4回読ませる
+  （`--carrier` `--seeds` `--trials` で変更可）。合成はエディタと同じ `VoicevoxAdapter.synthesize`、
+  モデル・話者は `--checkpoint` `--speaker`（既定は models\model.safetensors とつくよみちゃん）。
+- ASR（Parakeet、sherpa-onnx）の書き起こしの中で対象語に最も近い部分との文字誤り率を
+  「表記（カタカナはひらがなにそろえる）」と「読み（pykakasi）」の両方で出し、良い方が 0 なら OK。
+  `reading` 案だけは、読み変換の誤りと自己一致しないよう表記だけで採点する。
+- **語中の間**: ASR の時刻で対象語の文字と対応づけ、語の内側に入った無音の最長を測る。
+  台本との境目の間は数えない。
+
+### 辞書に載せる条件（`build` の引数）
+
+- 書き換え後の OK率 0.75 以上（`--min-ok`）、原文より 0.25 以上改善（`--min-gain`）
+- 語中の間が 180ms 以下（`--max-word-pause`。促音の溜めは 100ms 前後）
+- 条件を満たす案のうち、OK率 が高く、同点なら 見えない区切り → 細かい区切り → ゼロ幅スペース →
+  ひらがな → 読みがな → 空白 の順に選ぶ
+
+### 辞書は完璧ではありません
+
+同梱の辞書は機械判定が中心で、ASR で採点していない語も多く、まだ読めない語や、分け方で
+かえって不自然になる語が残っています。エディタの「設定 → 読めない語句の辞書」で直した
+登録（`token_split_user.json`）を、[Issue](https://github.com/Rose3a/kataribe/issues) や
+Pull Request で共有していただけるとありがたいです。いただいた修正は同梱の辞書に取り込みます。
+
+### ASR で採点していない登録（rule / manual）
+
+同梱の辞書には、ASR の評価で条件を満たさなかった語や、まだ採点していない語の分割も入っている。
+`build` はこれらの行を作り直さずに残す（同じ語を ASR で採点して載せられたら、そちらを使う）。
+
+- `rule` — 機械判定の分割（968語）。学習の少ないトークン（ID 60000 以降）と、読めないと分かって
+  いる語を使わない分け方を選び、カタカナとそれ以外の境目で区切る。「をクリック」「データを」のような
+  助詞＋カタカナ語のまとまりトークンは助詞の境目で分ける（485語は未採点）
+- `manual` — 手で決めた分割（18語）
+
+## 載らなかった語を自分で詰める
+
+語彙分割辞書は2つのファイルに分かれている。読み方＆アクセント辞書（`user_dictionary.json`、
+VOICEVOX 互換でカタカナの読みだけ）とは別物で、互いに重ならない（読み方辞書が当たった部分には
+語彙分割辞書を当てない）。
+
+| ファイル | 中身 | 編集 |
+|---|---|---|
+| `irodori-tts/wrapper/data/token_split_dictionary.json` | ASR の評価から自動で作った登録（同梱） | `build` が作り直す |
+| `token_split_user.json`（kataribe 直下、git 管理外） | 自分の登録。同じ語句なら自動の登録より優先 | エディタの「設定 → 読めない語句の辞書」、`add` / `try --add` / `remove` |
+
+エディタの「読めない語句の辞書」では、語句をそのまま渡したときと書き換えたときのトークンの
+分け方（学習の少ないトークンは色付き）を見ながら、台本に入れて聞き比べられる。トークンは
+読み込み中のモデルのトークナイザで分ける（未読み込みなら既定のもので代わりに分ける）。
+自動の登録を止めたいときは、自分の登録で書き換えを語句と同じにする。
+
+```bat
+rem 一覧（work\token_rescue\todo.csv）。理由は 読めない / 語中に間 / 原文で読める
+.local\venv\Scripts\python.exe tools\token_rescue.py todo
+
+rem 自分で考えた書き換えを原文と並べて4回ずつ採点。--add で原文より良い案を辞書に足す
+.local\venv\Scripts\python.exe tools\token_rescue.py try 自治スレ "じち|スレ" "ジチスレ" --add
+rem 台本を変えて試す（助詞で始まる語は「これは{X}です。」だと文として不自然）
+.local\venv\Scripts\python.exe tools\token_rescue.py try をアップ "を|アップ" --carrier "写真{X}しました。"
+
+rem 採点せずに足す・消す
+.local\venv\Scripts\python.exe tools\token_rescue.py add 自治スレ "じち|スレ"
+.local\venv\Scripts\python.exe tools\token_rescue.py remove 自治スレ
+```
+
+- `add` / `try --add` / `remove` は `token_split_user.json` を書き換える（`build` では消えない）。
+  JSON を直接編集してもよい（エンジンはファイルの更新を拾う）。
+- 1トークンにならない語句（「浦和レッズ戦」など）を足した場合は、文字列一致で当てる。
+- `try` の結果は `work\token_rescue\try.csv` に残る。`--save-wav フォルダ` で音声も残せる。
+
+### 所要時間の目安
+
+RTX 3060・PyTorch CUDA・RF 8 ステップで、1回の合成＋ASR が約2.5秒。`rescue` は1語あたり
+約13秒（見えない区切りで全部読めたら残りの案は試さない）で、2,000語なら約7時間。
+`scan` で語彙全体（約5.5万語）を回すと数十時間かかるので、`--limit` で区切って回す。

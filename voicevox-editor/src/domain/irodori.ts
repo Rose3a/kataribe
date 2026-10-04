@@ -11,10 +11,13 @@ export type IrodoriEnglishReading = "off" | "katakana" | "hiragana";
 export type IrodoriKanaStyle = "katakana" | "hiragana";
 /** 変換した英語の前後の空白。keep は語ごとに区切り、join は詰めてつなげて読む。 */
 export type IrodoriEnglishSpacing = "keep" | "join";
+/** 語彙分割辞書。on なら学習の少ないまとまりトークン（浦和レッズ など）を分けて読ませる。 */
+export type IrodoriTokenSplit = "on" | "off";
 export const IRODORI_DEFAULT_ENGLISH_READING: IrodoriEnglishReading =
   "katakana";
 export const IRODORI_DEFAULT_KANA_STYLE: IrodoriKanaStyle = "katakana";
 export const IRODORI_DEFAULT_ENGLISH_SPACING: IrodoriEnglishSpacing = "keep";
+export const IRODORI_DEFAULT_TOKEN_SPLIT: IrodoriTokenSplit = "on";
 export const IRODORI_DEFAULT_CFG_TEXT = 3;
 export const IRODORI_DEFAULT_CFG_CAPTION = 3;
 export const IRODORI_DEFAULT_CFG_SPEAKER = 5;
@@ -132,6 +135,42 @@ export type IrodoriStorageEntry = {
   note: string;
   bytes: number;
   modified: number | null;
+};
+
+/** POST /irodori/tokenize の1トークン。split はトークンではなく見えない区切りの位置。 */
+export type IrodoriToken =
+  | {
+      text: string;
+      id: number;
+      /** 出現度（Unigram の logp）。低いほど学習で見ていない。 */
+      score: number;
+      /** 出現度の低い側の複数文字トークン（読めないことが多い）。 */
+      rare: boolean;
+      /** 語彙分割辞書に登録がある（合成時に自動で分ける）。 */
+      dictionary: boolean;
+    }
+  | { split: true };
+
+/** POST /irodori/tokenize の応答。 */
+export type IrodoriTokenView = {
+  available: boolean;
+  /** model: 読み込み中のモデル / fallback: 未読み込みのため既定のトークナイザ */
+  source: "model" | "fallback";
+  results: { text: string; tokens: IrodoriToken[] }[];
+};
+
+/**
+ * 語彙分割辞書（読めない語句の対策）の1件。読み方＆アクセント辞書とは別に持つ。
+ * text の | は見えない区切り、[ZW] はゼロ幅スペース。
+ */
+export type TokenSplitEntry = {
+  surface: string;
+  text: string;
+  note?: string;
+  /** 自動の登録だけ: 選ばれた書き換え方と、書き換え前後の OK率 */
+  method?: string;
+  ok_before?: number;
+  ok_after?: number;
 };
 
 /** GET /irodori/storage と POST /irodori/storage/delete の応答。 */

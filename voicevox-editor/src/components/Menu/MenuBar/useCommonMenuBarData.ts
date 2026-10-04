@@ -357,6 +357,16 @@ export const useCommonMenuBarData = (store: Store) => {
           },
           disableWhenUiLocked: true,
         },
+        {
+          type: "button",
+          label: "読めない語句の辞書",
+          onClick() {
+            void store.actions.SET_DIALOG_OPEN({
+              isTokenSplitDialogOpen: true,
+            });
+          },
+          disableWhenUiLocked: true,
+        },
       ],
       options: [
         {

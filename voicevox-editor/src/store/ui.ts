@@ -75,6 +75,7 @@ export const uiStoreState: UiStoreState = {
   isAcceptRetrieveTelemetryDialogOpen: false,
   isAcceptTermsDialogOpen: false,
   isDictionaryManageDialogOpen: false,
+  isTokenSplitDialogOpen: false,
   isEngineManageDialogOpen: false,
   isUpdateNotificationDialogOpen: false,
   isExportSongAudioDialogOpen: false,

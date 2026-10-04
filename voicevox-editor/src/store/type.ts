@@ -106,6 +106,7 @@ export type AudioItem = {
     englishReading?: "off" | "katakana" | "hiragana";
     kanaStyle?: "katakana" | "hiragana";
     englishSpacing?: "keep" | "join";
+    tokenSplit?: "on" | "off";
     seconds?: number | null;
     caption?: string;
     captionStrength?: number;
@@ -2300,6 +2301,7 @@ export type DialogStates = {
   isAcceptRetrieveTelemetryDialogOpen: boolean;
   isAcceptTermsDialogOpen: boolean;
   isDictionaryManageDialogOpen: boolean;
+  isTokenSplitDialogOpen: boolean;
   isEngineManageDialogOpen: boolean;
   isUpdateNotificationDialogOpen: boolean;
   isExportSongAudioDialogOpen: boolean;

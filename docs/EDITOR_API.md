@@ -19,6 +19,8 @@ Editor 経由では、`http://127.0.0.1:50125` の API を使います。
 | 音声クエリ作成 | POST | `/audio_query?text=...&speaker=...` | `text` と `speaker` は必須（VOICEVOX と同じ） |
 | 音声合成 | POST | `/synthesis?speaker=...` | `speaker` は必須 |
 | ユーザー辞書 | GET/POST/PUT/DELETE | `/user_dict`, `/user_dict_word...` | VOICEVOX 互換 |
+| 語彙分割辞書 | POST | `/irodori/token_split/list`, `/irodori/token_split/put`, `/irodori/token_split/delete` | 読めない語句の対策。ユーザー辞書とは別（`docs/TOKEN_SPLIT.md`） |
+| トークンの分け方 | POST | `/irodori/tokenize` | `{"texts": [...]}`。読み込み中のモデルのトークナイザで分ける |
 | 辞書一括取込 | POST | `/import_user_dict?override=...` | |
 | 共通設定・状態 | GET/POST | `/irodori/settings` | Irodori 独自 |
 
@@ -109,12 +111,13 @@ JSON のキーは snake_case で指定します。`irodoriSteps` のような ca
 | `irodori_english_reading` | string | `off` / `katakana`（既定） / `hiragana` | 英単語・英文の読み。`off` は英字のまま、ほかはその表記に変換してから合成する |
 | `irodori_english_spacing` | string | `keep`（既定） / `join` | 変換した英語の前後の空白。`join` なら詰めてつなげて読む（`アイ ラブ ユー.` → `アイラブユー.`）。`off` のときは使わない |
 | `irodori_kana_style` | string | `katakana`（既定） / `hiragana` | `hiragana` なら文中のカタカナをひらがなにして読ませる |
+| `irodori_token_split` | string | `on`（既定） / `off` | 語彙分割辞書。学習の少ないまとまりトークン（`浦和レッズ` など）を間を入れずに分けて読ませる（`docs/TOKEN_SPLIT.md`） |
 | `speedScale` | number | 0.25〜4.0、既定 1 | 話速（VOICEVOX と同じ名前） |
 
 - `irodori_text` は元の文章として保持してください。`kana` だけを置き換えると、合成時
   に辞書が再適用されず、Editor と同じ結果にならない場合があります。
-- `irodori_english_reading`・`irodori_english_spacing`・`irodori_kana_style` はセリフごとの
-  設定です。Editor の「セリフの設定」→「読み方」で選んだ値がそのまま送られます。
+- `irodori_english_reading`・`irodori_english_spacing`・`irodori_kana_style`・`irodori_token_split`
+  はセリフごとの設定です。Editor の「セリフの設定」→「読み方」で選んだ値がそのまま送られます。
 - `irodori_english_spacing=join` は、変換した語とユーザー辞書の読みの前後の空白を詰めます。
   空白があると Irodori は語ごとに区切って読むためです。改行は詰めません。
 - `pitchScale` や `accent_phrases` などの VOICEVOX の韻律フィールドは、互換のため受け付けますが
@@ -172,5 +175,6 @@ Invoke-RestMethod "$Base/user_dict"
 - `irodori-tts/wrapper/voicevox_engine.py` — VOICEVOX互換エンドポイント、認証、入力チェック（`IRODORI_QUERY_FIELDS`）
 - `irodori-tts/wrapper/reading_dictionary.py` — `user_dictionary.json` の読み変換
 - `irodori-tts/wrapper/english_reading.py` — 英単語・英文のカタカナ読み（発音データは `tools/build_english_dictionary.py` で再生成）
+- `irodori-tts/wrapper/token_split.py` — 語彙分割辞書（`data/token_split_dictionary.json` は `tools/token_rescue.py` で生成）
 - `irodori-tts/tests/test_voicevox_compat.py` — VOICEVOX 互換 API の契約テスト
 - `voicevox-editor/IRODORI_EDITOR.md` — Editor画面とエンジンの設定説明

@@ -11,6 +11,15 @@ from urllib.parse import urlencode
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "wrapper"))
 from reading_dictionary import ReadingDictionary, make_word
+from token_split import TokenSplitDictionary
+
+
+def setUpModule():
+    # 同梱の語彙分割辞書の中身で読み変換のテスト結果が変わらないよう、空の辞書にする
+    patcher = patch("reading_dictionary.TOKEN_SPLIT_DICTIONARY",
+                    TokenSplitDictionary(Path(tempfile.gettempdir()) / "no-token-split.json"))
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
 
 
 class DictionaryTests(unittest.TestCase):
@@ -113,7 +122,8 @@ class DictionaryTests(unittest.TestCase):
         self.assertEqual(ReadingDictionary(self.path).snapshot(), {})
 
     def test_invalid_words(self):
-        for args in [("", "ヨミ"), ("a", "abc"), ("a", "ア", 2), ("a", "ア", 0, 11)]:
+        for args in [("", "ヨミ"), ("a", "abc"), ("a", "ア", 2), ("a", "ア", 0, 11),
+                     ("a", "浦和|レッズ")]:
             with self.assertRaises(ValueError):
                 make_word(*args)
 

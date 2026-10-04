@@ -43,6 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tts_cli import IrodoriTTS, resolve_embed_dirs  # noqa: E402
 from reading_dictionary import (ENGLISH_READINGS, ENGLISH_SPACINGS, KANA_STYLES,
                                 READING_DICTIONARY, make_word)
+from token_split import TOKEN_SPLIT_DICTIONARY, TOKEN_SPLITS, describe_tokens
 from third_party_licenses import dependency_licenses
 from speaker_catalog import blink_thumbnail_for, credit_for, display_name_for, policy_for, mouth_open_thumbnail_for, mouth_parts_for, portrait_for, speaker_catalog, _fallback_icon  # noqa: E402
 
@@ -234,6 +235,10 @@ IRODORI_QUERY_FIELDS: dict[str, dict] = {
     "irodori_kana_style": {
         "type": "string", "enum": list(KANA_STYLES), "default": "katakana",
         "description": "hiragana なら文中のカタカナをひらがなにして読ませる（セリフごと）",
+    },
+    "irodori_token_split": {
+        "type": "string", "enum": list(TOKEN_SPLITS), "default": "on",
+        "description": "語彙分割辞書（セリフごと）。on なら学習の少ないまとまりトークン（浦和レッズ など）を分けて読ませる",
     },
     "irodori_secondary_speaker_style_id": {
         "type": "integer", "nullable": True, "deprecated": True,
@@ -653,6 +658,7 @@ def _reading_options(query: dict) -> dict:
     english = query.get("irodori_english_reading", "katakana")
     kana_style = query.get("irodori_kana_style", "katakana")
     spacing = query.get("irodori_english_spacing", "keep")
+    token_split = query.get("irodori_token_split", "on")
     if english not in ENGLISH_READINGS:
         raise ValueError(
             f"irodori_english_reading must be one of {', '.join(ENGLISH_READINGS)}")
@@ -661,7 +667,10 @@ def _reading_options(query: dict) -> dict:
     if spacing not in ENGLISH_SPACINGS:
         raise ValueError(
             f"irodori_english_spacing must be one of {', '.join(ENGLISH_SPACINGS)}")
-    return dict(english=english, kana_style=kana_style, spacing=spacing)
+    if token_split not in TOKEN_SPLITS:
+        raise ValueError(f"irodori_token_split must be one of {', '.join(TOKEN_SPLITS)}")
+    return dict(english=english, kana_style=kana_style, spacing=spacing,
+                token_split=token_split)
 
 
 def _query(text: str) -> dict:
@@ -678,7 +687,10 @@ def _query(text: str) -> dict:
         "postPhonemeLength": 0.1,
         "outputSamplingRate": 48000,
         "outputStereo": False,
-        "kana": READING_DICTIONARY.convert(text),
+        # 語彙分割辞書はセリフごとの設定（irodori_token_split）で合成時に当てる。
+        # kana にはまだ当てない（irodori_text の無いクライアントが kana を送り返しても、
+        # 合成時の設定どおりになるように）。
+        "kana": READING_DICTIONARY.convert(text, token_split="off"),
         "irodori_text": text,
     }
 
@@ -709,6 +721,10 @@ class VoicevoxAdapter:
         self.is_meanflow = self.flow_parameterization == "meanflow"
         self.default_steps = (
             DEFAULT_STEPS_MEANFLOW if self.is_meanflow else DEFAULT_STEPS_RF)
+
+    def text_tokenizer(self):
+        """モデルに文を渡すトークナイザ（辞書画面のトークン表示用）。"""
+        return getattr(getattr(self.tts.backend, "runtime", None), "tokenizer", None)
 
     def refresh(self) -> None:
         with self.lock:
@@ -1163,6 +1179,35 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/initialize_speaker":
                 self._send(204, b"")
+                return
+            if parsed.path == "/irodori/tokenize":
+                body = self._body_json()
+                texts = body.get("texts") if isinstance(body, dict) else None
+                if (not isinstance(texts, list) or len(texts) > 20
+                        or not all(isinstance(t, str) and len(t) <= MAX_TEXT_CHARS for t in texts)):
+                    raise ValueError(f"texts は {MAX_TEXT_CHARS} 文字以内の文字列の配列（20件まで）で指定してください")
+                # アダプタが無い（テストなど）・モデル未読み込みなら既定のトークナイザで分ける
+                adapter = getattr(self, "adapter", None)
+                tokenizer = getattr(adapter, "text_tokenizer", lambda: None)()
+                self._json(200, describe_tokens(texts, tokenizer))
+                return
+            # 語彙分割辞書（読めない語の対策）。読み方＆アクセント辞書（/user_dict）とは別に持つ
+            if parsed.path == "/irodori/token_split/list":
+                self._json(200, {"user": TOKEN_SPLIT_DICTIONARY.user_entries(),
+                                 "auto": TOKEN_SPLIT_DICTIONARY.auto_entries()})
+                return
+            if parsed.path == "/irodori/token_split/put":
+                body = self._body_json()
+                if not isinstance(body, dict):
+                    raise ValueError("body must be an object")
+                self._json(200, TOKEN_SPLIT_DICTIONARY.put_user(
+                    body.get("surface"), body.get("text"), body.get("note")))
+                return
+            if parsed.path == "/irodori/token_split/delete":
+                body = self._body_json()
+                if not isinstance(body, dict) or not isinstance(body.get("surface"), str):
+                    raise ValueError("surface is required")
+                self._json(200, {"deleted": TOKEN_SPLIT_DICTIONARY.delete_user(body["surface"])})
                 return
             self._json(404, {"detail": "Not Found"})
         except RequestBodyError as exc:

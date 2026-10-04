@@ -293,6 +293,18 @@
             :disable="locked"
             @update:model-value="saveKanaStyle"
           />
+          <QSelect
+            v-model="tokenSplitValue"
+            outlined
+            dense
+            label="語彙分割辞書"
+            :options="tokenSplits"
+            emit-value
+            map-options
+            hint="学習の少ない語句（浦和レッズ など）を、間を入れずに分けて読ませます"
+            :disable="locked"
+            @update:model-value="saveTokenSplit"
+          />
         </div>
       </QCard>
 
@@ -533,9 +545,11 @@ import {
   IRODORI_DEFAULT_ENGLISH_READING,
   IRODORI_DEFAULT_KANA_STYLE,
   IRODORI_DEFAULT_ENGLISH_SPACING,
+  IRODORI_DEFAULT_TOKEN_SPLIT,
   type IrodoriEnglishReading,
   type IrodoriEnglishSpacing,
   type IrodoriKanaStyle,
+  type IrodoriTokenSplit,
   irodoriDefaultSteps,
   irodoriMeanflow,
   IRODORI_DEFAULT_STEPS,
@@ -619,6 +633,7 @@ const irodori = computed(() => {
     englishReading: value?.englishReading ?? IRODORI_DEFAULT_ENGLISH_READING,
     kanaStyle: value?.kanaStyle ?? IRODORI_DEFAULT_KANA_STYLE,
     englishSpacing: value?.englishSpacing ?? IRODORI_DEFAULT_ENGLISH_SPACING,
+    tokenSplit: value?.tokenSplit ?? IRODORI_DEFAULT_TOKEN_SPLIT,
     seconds: value?.seconds ?? null,
     cfgText: value?.cfgText ?? IRODORI_DEFAULT_CFG_TEXT,
     cfgCaption: value?.cfgCaption ?? IRODORI_DEFAULT_CFG_CAPTION,
@@ -703,6 +718,7 @@ const kanaStyleValue = ref<IrodoriKanaStyle>(IRODORI_DEFAULT_KANA_STYLE);
 const englishSpacingValue = ref<IrodoriEnglishSpacing>(
   IRODORI_DEFAULT_ENGLISH_SPACING,
 );
+const tokenSplitValue = ref<IrodoriTokenSplit>(IRODORI_DEFAULT_TOKEN_SPLIT);
 const secondsValue = ref<number | null>(null);
 const captionText = ref("");
 const cfgTextText = ref("");
@@ -721,6 +737,7 @@ watch(
     englishReadingValue.value = value.englishReading;
     kanaStyleValue.value = value.kanaStyle;
     englishSpacingValue.value = value.englishSpacing;
+    tokenSplitValue.value = value.tokenSplit;
     secondsValue.value = value.seconds;
     captionText.value = value.caption ?? "";
     cfgTextText.value = String(value.cfgText);
@@ -810,6 +827,14 @@ function saveKanaStyle(value: IrodoriKanaStyle | null) {
   void store.actions.COMMAND_SET_IRODORI_SETTINGS({
     audioKey: props.activeAudioKey,
     irodori: { ...irodori.value, kanaStyle: value },
+  });
+}
+function saveTokenSplit(value: IrodoriTokenSplit | null) {
+  if (value == null || !tokenSplits.some((o) => o.value === value)) return;
+  tokenSplitValue.value = value;
+  void store.actions.COMMAND_SET_IRODORI_SETTINGS({
+    audioKey: props.activeAudioKey,
+    irodori: { ...irodori.value, tokenSplit: value },
   });
 }
 function saveSeconds(value: number | null) {
@@ -1196,6 +1221,10 @@ const englishSpacings: { label: string; value: IrodoriEnglishSpacing }[] = [
 const kanaStyles: { label: string; value: IrodoriKanaStyle }[] = [
   { label: "カタカナのまま", value: "katakana" },
   { label: "ひらがなにする", value: "hiragana" },
+];
+const tokenSplits: { label: string; value: IrodoriTokenSplit }[] = [
+  { label: "使う", value: "on" },
+  { label: "使わない", value: "off" },
 ];
 const locked = computed(() => store.getters.UI_LOCKED);
 const showStepsQualityWarning = computed(

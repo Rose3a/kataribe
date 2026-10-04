@@ -64,6 +64,7 @@ export const audioItemSchema = z.object({
     englishReading: z.enum(["off", "katakana", "hiragana"]).optional(),
     kanaStyle: z.enum(["katakana", "hiragana"]).optional(),
     englishSpacing: z.enum(["keep", "join"]).optional(),
+    tokenSplit: z.enum(["on", "off"]).optional(),
     seconds: z.number().min(0.1).max(60).nullable().optional(),
     caption: z.string().max(2000).optional(),
     captionStrength: z.number().min(0).max(1).optional(),

@@ -582,6 +582,12 @@ class EditorAdapter:
                 f"audio={result['audioSeconds']}s asr={result['asrSeconds']}s")
         return result
 
+    def text_tokenizer(self):
+        """読み込み中のモデルのトークナイザ。未読み込みなら None（既定のもので代わりに分ける）。"""
+        with self.state_lock:
+            delegate = self.delegate
+        return delegate.text_tokenizer() if delegate is not None else None
+
     def status(self):
         available = self.available_backends()
         with self.state_lock:
