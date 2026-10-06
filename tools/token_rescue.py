@@ -577,19 +577,23 @@ def load_dictionary() -> dict:
     return json.loads(DICTIONARY_PATH.read_text(encoding="utf-8"))
 
 
-def save_dictionary(entries: list[dict], tokenizer: Path, criteria: dict | None = None) -> None:
+def save_dictionary(entries: list[dict], tokenizer: Path, criteria: dict | None = None,
+                    excluded: list[str] | None = None) -> None:
     vocab = Vocab(tokenizer)
     entries = sorted(entries, key=lambda e: e["surface"])
+    previous = load_dictionary()
     data = {
         "version": 1,
         "description": "語彙分割辞書。tools/token_rescue.py build が生成する。"
                        "text の | は見えない区切り、[ZW] はゼロ幅スペース。"
                        "method が rule（機械判定の分割）・manual（手で決めた分割）の行は ASR で採点して"
-                       "いないもので、build でも消えない。"
+                       "いないもので、build でも消えない。excluded の語は、文の中で読ませて検証した結果、"
+                       "ASR の採点から作る登録には使わない（外した・書き換えを変えた語）。"
                        "自分の登録は token_split_user.json（同じ語ならそちらが優先）",
         "tokenizer": Path(tokenizer).parent.parent.parent.name.replace("models--", "").replace("--", "/"),
         "vocab_size": len(vocab.pieces),
-        "criteria": criteria if criteria is not None else load_dictionary().get("criteria", {}),
+        "criteria": criteria if criteria is not None else previous.get("criteria", {}),
+        "excluded": sorted(excluded if excluded is not None else previous.get("excluded", [])),
         "entries": [],
     }
     DICTIONARY_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -605,7 +609,10 @@ def cmd_build(args) -> int:
     groups: dict[str, list[dict]] = {}
     for row in read_csv(RESCUE_CSV):
         groups.setdefault(row["token_id"], []).append(row)
-    entries = [entry for rows in groups.values() if (entry := choose(rows, args))]
+    # 文の中での検証で外した・書き換えを変えた語は、ASR の採点から作り直さない
+    excluded = set(load_dictionary().get("excluded", []))
+    entries = [entry for rows in groups.values()
+               if (entry := choose(rows, args)) and entry["surface"] not in excluded]
     # ASR で採点していない登録（rule: 機械判定の分割、manual: 手で決めた分割）は作り直さずに残す
     scored = {entry["surface"] for entry in entries}
     entries += [entry for entry in load_dictionary().get("entries", [])
