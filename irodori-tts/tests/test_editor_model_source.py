@@ -5,6 +5,7 @@ MeanFlow モデルでは既定ステップ数を4にする。ここでは実モ�
 解決ロジックと既定値だけを検証する。
 """
 
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -205,6 +206,56 @@ class ModelInfoTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "TensorRT"):
             adapter.validate(settings)
         adapter.validate({**settings, "backend": "cuda"})
+
+    def test_int4_model_is_accepted_for_tensorrt_but_other_quantizations_are_not(self):
+        adapter = fake_adapter()
+        adapter.available_backends = lambda: {"cpu": True, "cuda": True, "trt": True, "radeon": False}
+        settings = dict(backend="trt", model="Aratako/Irodori-TTS-v4-Large-Quantized/int4-weight-only",
+                        seed=1, sway_coeff=-1.0)
+        adapter.model_info = lambda model: {"quantization": "int4_weight_only"}
+        adapter.validate(settings)
+        for other in ("int8_weight_only", "float8_weight_only", "unknown"):
+            adapter.model_info = lambda model, other=other: {"quantization": other}
+            with self.assertRaisesRegex(ValueError, "INT4"):
+                adapter.validate(settings)
+            adapter.validate({**settings, "backend": "cuda"})
+
+    def test_token_split_scope_is_validated_and_defaults_to_small(self):
+        adapter = fake_adapter()
+        adapter.available_backends = lambda: {"cpu": True, "cuda": False, "trt": False, "radeon": False}
+        self.assertEqual(EditorAdapter.DEFAULT_SETTINGS["token_split_scope"], "small")
+        settings = dict(backend="cpu", model="model.safetensors", seed=1, sway_coeff=-1.0)
+        adapter.validate(settings)                                   # 未指定は既定（small）
+        adapter.validate({**settings, "token_split_scope": "all"})
+        with self.assertRaisesRegex(ValueError, "token_split_scope"):
+            adapter.validate({**settings, "token_split_scope": "large"})
+
+    def test_token_split_state_follows_the_model_tokenizer(self):
+        adapter = fake_adapter(delegate=None)
+        small = {"textTokenizerRepo": "sbintuitions/modernbert-ja-310m"}
+        large = {"textTokenizerRepo": "google/t5gemma-2-1b-1b"}
+        self.assertTrue(adapter.token_split_state({"token_split_scope": "small"}, small)["active"])
+        state = adapter.token_split_state({"token_split_scope": "small"}, large)
+        self.assertFalse(state["active"])
+        self.assertEqual(state["modelTokenizer"], "google/t5gemma-2-1b-1b")
+        self.assertTrue(adapter.token_split_state({"token_split_scope": "all"}, large)["active"])
+        # メタデータが読めないモデルは従来どおり辞書を当てる
+        self.assertTrue(adapter.token_split_state({"token_split_scope": "small"}, {})["active"])
+        # 読み込み済みのモデルは、読み込んだトークナイザで判定する
+        adapter.delegate = Mock(text_tokenizer_repo="google/t5gemma-2-1b-1b")
+        self.assertFalse(adapter.token_split_state({"token_split_scope": "small"}, small)["active"])
+
+    def test_int4_checkpoint_gets_the_int4_plan_and_others_the_bf16_plan(self):
+        import trt_cache
+        import trt_int4
+        local = Path("C:/models/large.safetensors")
+        for is_int4, expected in ((True, "int4.plan"), (False, "bf16.plan")):
+            adapter = fake_adapter(model_info=Mock(), _prepare_trt_codec=Mock(),
+                                   _resolve_local_model=lambda source: local)
+            adapter.settings.update(backend="trt", model=str(local))
+            with patch.object(trt_int4, "is_int4_checkpoint", return_value=is_int4),                  patch.object(trt_int4, "ensure_plan", return_value=Path("int4.plan")),                  patch.object(trt_cache, "ensure_plan", return_value=Path("bf16.plan")),                  patch.dict(EDITOR_GLOBALS, {"VoicevoxAdapter": Mock()}),                  patch.dict(os.environ):
+                adapter._build_delegate_impl()
+            self.assertEqual(adapter._active_plan, Path(expected))
 
     def test_metadata_failure_falls_back_to_rf_default(self):
         adapter = fake_adapter()

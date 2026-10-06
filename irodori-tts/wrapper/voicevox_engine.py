@@ -43,7 +43,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tts_cli import IrodoriTTS, resolve_embed_dirs  # noqa: E402
 from reading_dictionary import (ENGLISH_READINGS, ENGLISH_SPACINGS, KANA_STYLES,
                                 READING_DICTIONARY, make_word)
-from token_split import TOKEN_SPLIT_DICTIONARY, TOKEN_SPLITS, describe_tokens
+from token_split import (DEFAULT_TOKEN_SPLIT_SCOPE, TOKEN_SPLIT_DICTIONARY, TOKEN_SPLITS,
+                         describe_tokens, token_split_active)
 from third_party_licenses import dependency_licenses
 from speaker_catalog import blink_thumbnail_for, credit_for, display_name_for, policy_for, mouth_open_thumbnail_for, mouth_parts_for, portrait_for, speaker_catalog, _fallback_icon  # noqa: E402
 
@@ -238,7 +239,7 @@ IRODORI_QUERY_FIELDS: dict[str, dict] = {
     },
     "irodori_token_split": {
         "type": "string", "enum": list(TOKEN_SPLITS), "default": "on",
-        "description": "語彙分割辞書（セリフごと）。on なら学習の少ないまとまりトークン（浦和レッズ など）を分けて読ませる",
+        "description": "語彙分割辞書（セリフごと）。on なら学習の少ないまとまりトークン（浦和レッズ など）を分けて読ませる。全体の設定（token_split_scope）が small のときは、辞書を作ったトークナイザを使う Small 系のモデルにだけ当たる",
     },
     "irodori_secondary_speaker_style_id": {
         "type": "integer", "nullable": True, "deprecated": True,
@@ -721,6 +722,18 @@ class VoicevoxAdapter:
         self.is_meanflow = self.flow_parameterization == "meanflow"
         self.default_steps = (
             DEFAULT_STEPS_MEANFLOW if self.is_meanflow else DEFAULT_STEPS_RF)
+        # 語彙分割辞書をどのモデルに当てるか（全体の設定。エディタが合成のたびに渡す）と、
+        # 読み込み中のモデルのトークナイザ（辞書を作ったものと同じか比べる）。
+        self.token_split_scope = DEFAULT_TOKEN_SPLIT_SCOPE
+        model_cfg = getattr(getattr(self.tts.backend, "runtime", None), "model_cfg", None)
+        self.text_tokenizer_repo = getattr(model_cfg, "text_tokenizer_repo", None)
+
+    def token_split_state(self, scope: str | None = None) -> dict:
+        """語彙分割辞書がいまのモデルに効くか（画面の表示用）。"""
+        scope = scope or getattr(self, "token_split_scope", DEFAULT_TOKEN_SPLIT_SCOPE)
+        repo = getattr(self, "text_tokenizer_repo", None)
+        return {"scope": scope, "active": token_split_active(scope, repo),
+                "modelTokenizer": repo, "dictionaryTokenizer": TOKEN_SPLIT_DICTIONARY.tokenizer_repo()}
 
     def text_tokenizer(self):
         """モデルに文を渡すトークナイザ（辞書画面のトークン表示用）。"""
@@ -737,7 +750,12 @@ class VoicevoxAdapter:
 
     def synthesize(self, query: dict, speaker_id: int) -> bytes:
         text = str(query.get("irodori_text") or query.get("kana") or "").strip()
-        text = READING_DICTIONARY.convert(text, **_reading_options(query))
+        options = _reading_options(query)
+        if options["token_split"] == "on" and not token_split_active(
+                getattr(self, "token_split_scope", DEFAULT_TOKEN_SPLIT_SCOPE),
+                getattr(self, "text_tokenizer_repo", None)):
+            options["token_split"] = "off"  # このモデルには辞書を当てない設定（Small 系のみ）
+        text = READING_DICTIONARY.convert(text, **options)
         if not text:
             raise ValueError("audio query does not contain text (irodori_text/kana)")
         if len(text) > MAX_TEXT_CHARS:

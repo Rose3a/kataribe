@@ -245,10 +245,22 @@ class ModelStorage:
                 unknown = True
             label = ("TensorRT plan: " + checkpoint_label(model)) if model else "TensorRT plan: モデル照合中 / 不明"
             detail = f"{identity.get('gpu', '?')} · TensorRT {identity.get('trt', '?')}"
-            env = {k: v for k, v in identity.items() if k != "model"}
+            # INT4 の plan（trt_int4.py）は identity に variant と変換スクリプトの内容ハッシュが加わる
+            int4 = identity.get("variant") == "int4"
+            env = {k: v for k, v in identity.items() if k not in ("model", "variant", "int4_sources")}
+            if int4:
+                try:
+                    from trt_int4 import int4_sources
+                    int4_current = identity.get("int4_sources") == int4_sources()
+                except Exception:  # noqa: BLE001
+                    int4_current = False
+            else:
+                int4_current = True
+            if int4:
+                label += "（INT4）"
             if active_dir is not None and folder.resolve() == active_dir:
                 status, note = "in_use", "読み込み中のモデルが使っています"
-            elif current is not None and env == current:
+            elif current is not None and env == current and int4_current:
                 status, note = "unused", "このモデルを TensorRT で使うときに再利用します（消すと次回変換し直し）"
             else:
                 status, note = "stale", "プログラムや GPU 環境が変わったため、もう使われません"

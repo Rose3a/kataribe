@@ -44,6 +44,9 @@
         {{ modelInfo.kind === "hf" ? "Hugging Face" : "ローカル" }} ·
         {{ modelInfo.flowParameterization }} · 既定
         {{ modelInfo.defaultSteps }} ステップ
+        <span v-if="modelInfo.quantization">
+          · 量子化 {{ modelInfo.quantization }}
+        </span>
         <span v-if="modelInfo.kind === 'hf' && !modelInfo.downloaded">
           （未ダウンロード: 適用時に取得します）
         </span>
@@ -65,6 +68,23 @@
       </div>
       <div v-if="modelInfo?.meanflow" class="text-caption q-mb-sm">
         MeanFlow モデル: ステップ数4が既定。ScheduleとCFGは未使用。
+      </div>
+      <QSelect
+        v-model="tokenSplitScope"
+        outlined
+        dense
+        label="語彙分割辞書の対象（読めない語の対策）"
+        :options="tokenSplitScopes"
+        emitValue
+        mapOptions
+        :disable="locked"
+        class="q-mb-sm"
+      />
+      <div class="text-caption q-mb-sm">
+        辞書は Small
+        系のトークナイザ（modernbert-ja）の出現度で作ってあります。Large
+        は日本語の語句を細かく割るので、同じ語句が読めない問題は起きにくく、既定では
+        Small 系だけに当てます。{{ tokenSplitNote }}
       </div>
       <div v-if="hasUnappliedChanges" class="text-caption text-warning q-mb-sm">
         未適用の変更があります。「設定を適用」を押すと反映されます。
@@ -167,6 +187,7 @@ import { createEngineUrl } from "@/domain/url";
 import { clearAudioCache } from "@/store/audioGenerate";
 import {
   IRODORI_DEFAULT_STEPS,
+  IRODORI_DEFAULT_TOKEN_SPLIT_SCOPE,
   irodoriDefaultSteps,
   irodoriMeanflow,
 } from "@/domain/irodori";
@@ -174,6 +195,8 @@ import type {
   IrodoriModelInfo as ModelInfo,
   IrodoriSettings as Settings,
   IrodoriStatus as Status,
+  IrodoriTokenSplitScope,
+  IrodoriTokenSplitState,
 } from "@/domain/irodori";
 import {
   fetchIrodoriStatus,
@@ -200,13 +223,41 @@ const hasUnappliedChanges = computed(
     settings.value != undefined &&
     appliedSettings.value != undefined &&
     (settings.value.backend !== appliedSettings.value.backend ||
-      settings.value.model !== appliedSettings.value.model),
+      settings.value.model !== appliedSettings.value.model ||
+      (settings.value.token_split_scope ??
+        IRODORI_DEFAULT_TOKEN_SPLIT_SCOPE) !==
+        (appliedSettings.value.token_split_scope ??
+          IRODORI_DEFAULT_TOKEN_SPLIT_SCOPE)),
 );
 watch(defaultSteps, (value) => {
   irodoriDefaultSteps.value = value;
 });
 watch(modelInfo, (value) => {
   if (value) irodoriMeanflow.value = value.meanflow;
+});
+const tokenSplit = ref<IrodoriTokenSplitState>();
+const tokenSplitScope = computed<IrodoriTokenSplitScope>({
+  get: () =>
+    settings.value?.token_split_scope ?? IRODORI_DEFAULT_TOKEN_SPLIT_SCOPE,
+  set: (value) => {
+    if (settings.value) settings.value.token_split_scope = value;
+  },
+});
+const tokenSplitScopes: { label: string; value: IrodoriTokenSplitScope }[] = [
+  { label: "Small 系のみ（既定）", value: "small" },
+  { label: "Small と Large の両方", value: "all" },
+];
+// 選んだ対象で、読み込み中（または選択中）のモデルに辞書が効くか。
+const tokenSplitNote = computed(() => {
+  const state = tokenSplit.value;
+  if (!state) return "";
+  const active =
+    tokenSplitScope.value === "all" ||
+    !state.modelTokenizer ||
+    state.modelTokenizer === state.dictionaryTokenizer;
+  return active
+    ? "いまのモデルには辞書が効きます（セリフごとの設定が「使う」のとき）。"
+    : "いまのモデルには辞書を当てません。";
 });
 const modelFolder = ref("");
 // 開いたときだけ一覧を取る（フォルダサイズの集計に数秒かかる）。
@@ -264,6 +315,14 @@ const modelOptions = ref<ModelOption[]>([
     value: "phasefield-audio/Irodori-TTS-v4.1-Anime",
     description: "Anime fine-tune / MIT",
     license: "MIT",
+  },
+  {
+    label: "Irodori-TTS v4 Large INT4（TensorRT 対応・省VRAM）",
+    value: "Aratako/Irodori-TTS-v4-Large-Quantized/int4-weight-only",
+    description:
+      "RFモデル 3.3B・INT4量子化 / CUDA・TensorRT / Gemma Terms of Use",
+    license: "Gemma Terms of Use",
+    note: "約2.8GBをダウンロードします。VRAMは約3.5〜5GBで、生成は PyTorch の INT4 より速くなります。NVIDIA Ampere 以降（RTX 30 シリーズ以降）が必要です。TensorRT では、初回だけ INT4 用の plan を作ります（数分、作業用に約4GBの空きが必要）。既存の話者ファイル（v4.1 Small 用）は使えないため、「話者なし」か参照音声、または 名前.1280.speaker.safetensors を使います。Gemma の利用規約と禁止用途ポリシーにも従ってください。",
   },
   {
     label: "Irodori-TTS v4 Large INT8（Large の推奨）",
@@ -360,6 +419,7 @@ async function run(save: boolean, refreshSpeakers = false) {
     ensureModelOption(result.settings.model);
     progress.value = result.progress;
     modelInfo.value = result.modelInfo ?? modelInfo.value;
+    tokenSplit.value = result.tokenSplit ?? tokenSplit.value;
     availableBackends.value = result.availableBackends ?? { cpu: true };
     modelFolder.value = result.modelFolder;
     speakerFolder.value = result.speakerFolder;
@@ -389,6 +449,7 @@ async function pollStatus() {
     const result = await fetchIrodoriStatus(endpoint.value, 10000);
     progress.value = result.progress;
     if (result.modelInfo) modelInfo.value = result.modelInfo;
+    if (result.tokenSplit) tokenSplit.value = result.tokenSplit;
   } catch {
     // The engine can be restarting while the editor remains open.
   }

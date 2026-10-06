@@ -37,6 +37,8 @@ from asr_timeline import (AsrTimeline, decode_wav, ensure_asr_model, asr_package
 from tts_cli import SpeakerCassette, resolve_embed_dirs
 from speaker_mix import compose_speaker_mix
 from model_storage import ModelStorage
+from token_split import (DEFAULT_TOKEN_SPLIT_SCOPE, TOKEN_SPLIT_DICTIONARY, TOKEN_SPLIT_SCOPES,
+                         token_split_active)
 
 # 初回のASRモデル取得でリクエストを待たせる上限（秒）。待ち切れなくても
 # ダウンロードは続くので、次の要求で揃っていれば使える。
@@ -83,7 +85,7 @@ def _wav_seconds(data):
 
 class EditorAdapter:
     DEFAULT_SETTINGS = dict(backend="cpu", model="Aratako/Irodori-TTS-v4.1-Small", seed=4763674,
-                            sway_coeff=-1.0)
+                            sway_coeff=-1.0, token_split_scope=DEFAULT_TOKEN_SPLIT_SCOPE)
 
     def __init__(self):
         self.backend_name = "editor"
@@ -112,7 +114,7 @@ class EditorAdapter:
         self._model_info_cache = {}
         self.config_path = ROOT / "editor-settings.json"
         self.settings = dict(backend="cpu", model="Aratako/Irodori-TTS-v4.1-Small", seed=4763674,
-                             sway_coeff=-1.0)
+                             sway_coeff=-1.0, token_split_scope=DEFAULT_TOKEN_SPLIT_SCOPE)
         try:
             saved = json.loads(self.config_path.read_text(encoding="utf-8"))
             if isinstance(saved, dict):
@@ -324,6 +326,7 @@ class EditorAdapter:
             metadataAvailable=bool(config),
             speakerDim=int(config["speaker_dim"]) if config.get("speaker_dim") else None,
             quantization=config.get("_quantization"),
+            textTokenizerRepo=config.get("text_tokenizer_repo"),
         )
         known = {
             "Aratako/Irodori-TTS-v4.1-Small": ("MIT", "https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small"),
@@ -360,9 +363,14 @@ class EditorAdapter:
                 quantization = self.model_info(model).get("quantization")
             except Exception:  # noqa: BLE001 - 判定できなければ変換時のエラーに任せる
                 quantization = None
-            if quantization:
+            # INT4（torchao int4-weight-only）は INT4 の DequantizeLinear に組み直して plan にする
+            # （trt_int4.py）。INT8・FP8 は変換先が無いので CUDA で使う。
+            if quantization and quantization != "int4_weight_only":
                 raise ValueError(
-                    "量子化モデルは TensorRT では使えません。NVIDIA / CUDA を選んでください")
+                    "TensorRT で使える量子化モデルは INT4（int4-weight-only）だけです。"
+                    "INT8 などは NVIDIA / CUDA を選んでください")
+        if value.get("token_split_scope", DEFAULT_TOKEN_SPLIT_SCOPE) not in TOKEN_SPLIT_SCOPES:
+            raise ValueError("token_split_scope は small か all を指定してください")
         if not isinstance(value["seed"], int) or not 0 <= value["seed"] < 2**31:
             raise ValueError("seedは0〜2147483647です")
         try:
@@ -588,6 +596,19 @@ class EditorAdapter:
             delegate = self.delegate
         return delegate.text_tokenizer() if delegate is not None else None
 
+    def token_split_state(self, settings, model_info):
+        """語彙分割辞書が選択中のモデルに効くか（画面の表示用）。読み込み前はメタデータから判定する。"""
+        scope = settings.get("token_split_scope", DEFAULT_TOKEN_SPLIT_SCOPE)
+        with self.state_lock:
+            delegate = self.delegate
+        repo = (getattr(delegate, "text_tokenizer_repo", None) if delegate is not None
+                else model_info.get("textTokenizerRepo"))
+        try:
+            return {"scope": scope, "active": token_split_active(scope, repo), "modelTokenizer": repo,
+                    "dictionaryTokenizer": TOKEN_SPLIT_DICTIONARY.tokenizer_repo()}
+        except ValueError:
+            return {"scope": scope, "active": True, "modelTokenizer": repo, "dictionaryTokenizer": None}
+
     def status(self):
         available = self.available_backends()
         with self.state_lock:
@@ -598,9 +619,11 @@ class EditorAdapter:
         with self.progress_lock:
             progress = dict(self.progress)
             logs = list(self.logs)
+        model_info = self.model_info(settings.get("model", ""))
         return dict(settings=settings, models=self.models(), loaded=loaded,
                     asr=self.timeline_reader.status(),
-                    modelInfo=self.model_info(settings.get("model", "")),
+                    modelInfo=model_info,
+                    tokenSplit=self.token_split_state(settings, model_info),
                     availableBackends=available, progress=progress, logs=logs,
                     modelFolder=str(MODEL_DIR), speakerFolder=str(SPEAKER_DIR))
 
@@ -676,7 +699,11 @@ class EditorAdapter:
             self._runtime_log(f"model metadata refresh skipped: {exc}")
         plan = self._plan_path()
         if self.settings['backend'] == 'trt':
-            from trt_cache import ensure_plan
+            from trt_int4 import is_int4_checkpoint
+            if is_int4_checkpoint(local_model):
+                from trt_int4 import ensure_plan
+            else:
+                from trt_cache import ensure_plan
             plan = ensure_plan(local_model, self._set_progress, self._runtime_log)
             self._active_plan = Path(plan)
             self._prepare_trt_codec()
@@ -958,6 +985,8 @@ class EditorAdapter:
                          irodori_sway_coeff=float(self.settings["sway_coeff"]))
             if "irodori_seed" not in query:
                 query["irodori_seed"] = self.settings["seed"]
+            self.delegate.token_split_scope = self.settings.get(
+                "token_split_scope", DEFAULT_TOKEN_SPLIT_SCOPE)
             started = time.perf_counter()
             try:
                 result = self.delegate.synthesize(query, sid)

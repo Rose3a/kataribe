@@ -24,6 +24,13 @@ SPLIT_MARK = "⁣"  # INVISIBLE SEPARATOR
 ZERO_WIDTH_SPACE = "​"
 # 語彙分割辞書を 使う / 使わない
 TOKEN_SPLITS = ("on", "off")
+# 辞書をどのモデルに当てるか（全体の設定）。
+#   small: 辞書を作ったトークナイザ（modernbert-ja）を使うモデル＝Small 系だけ。既定
+#   all  : Large など別のトークナイザのモデルにも当てる
+# 辞書は modernbert-ja のトークンの出現度で作ってあり、Large（T5Gemma 2 のトークナイザ）は日本語の
+# 語句を細かく割るので、同じ語句が読めない問題はもともと起きにくい。
+TOKEN_SPLIT_SCOPES = ("small", "all")
+DEFAULT_TOKEN_SPLIT_SCOPE = "small"
 DEFAULT_TOKENIZER_REPO = "sbintuitions/modernbert-ja-310m"
 DICTIONARY_PATH = Path(__file__).resolve().parent / "data" / "token_split_dictionary.json"
 # 自分で足した登録（読めない語の対策用）。読み方＆アクセント辞書（user_dictionary.json）とは別。
@@ -83,6 +90,12 @@ class TokenSplitDictionary:
         self.entries, self.repo = entries, repo
         self._phrases = None
         self._mtime = mtime
+
+    def tokenizer_repo(self) -> str:
+        """辞書を作ったトークナイザ（辞書ファイルの tokenizer 欄）。"""
+        with self.lock:
+            self._load()
+            return self.repo or DEFAULT_TOKENIZER_REPO
 
     def _tokenizer(self):
         if self._tokenize is None and self.repo:
@@ -238,6 +251,19 @@ def _check_entry(surface, text) -> tuple[str, str]:
 TOKEN_SPLIT_DICTIONARY = TokenSplitDictionary(user_path=USER_DICTIONARY_PATH)
 
 
+def token_split_active(scope: str, model_tokenizer_repo: str | None, dictionary=None) -> bool:
+    """語彙分割辞書をこのモデルに当てるか。
+
+    scope が all なら常に当てる。small なら、モデルのトークナイザが辞書を作ったものと同じときだけ。
+    モデルのトークナイザが分からないとき（読み込み前・古い経路）は、従来どおり当てる。
+    """
+    if scope not in TOKEN_SPLIT_SCOPES:
+        raise ValueError(f"token_split_scope must be one of {', '.join(TOKEN_SPLIT_SCOPES)}")
+    if scope == "all" or not model_tokenizer_repo:
+        return True
+    return str(model_tokenizer_repo) == (dictionary or TOKEN_SPLIT_DICTIONARY).tokenizer_repo()
+
+
 # 出現度の低い側の複数文字トークン（tools/token_rescue.py の --rare-id と同じ境目）。
 RARE_TOKEN_ID = 60000
 _SCORES: dict[int, dict[int, float]] = {}
@@ -282,6 +308,9 @@ def describe_tokens(texts, text_tokenizer=None) -> dict:
         def normalize_text(text):
             return unicodedata.normalize("NFKC", text)
     scores = _scores(tokenizer)
+    # 「出現度の低い側」の判定（ID の境目と Unigram の logp）は modernbert-ja のもの。BPE など
+    # 出現度を持たないトークナイザ（Large）では、ID が大きくても珍しいトークンとは限らないので付けない。
+    rare_applies = bool(scores)
     with TOKEN_SPLIT_DICTIONARY.lock:
         TOKEN_SPLIT_DICTIONARY._load()
         split_entries = set(TOKEN_SPLIT_DICTIONARY.entries)
@@ -299,7 +328,7 @@ def describe_tokens(texts, text_tokenizer=None) -> dict:
                 piece = part[start:end]
                 tokens.append({"text": piece, "id": token_id,
                                "score": round(scores.get(token_id, 0.0), 2),
-                               "rare": token_id >= RARE_TOKEN_ID and len(piece) > 1,
+                               "rare": rare_applies and token_id >= RARE_TOKEN_ID and len(piece) > 1,
                                "dictionary": piece in split_entries})
         results.append({"text": text, "tokens": tokens})
     return {"available": True, "source": source, "results": results}

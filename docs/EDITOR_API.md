@@ -48,10 +48,14 @@ Editor 経由の `/synthesis` では、次のように設定が適用されま�
 | `model` | Editor の「モデル」設定、`/irodori/settings` | 全リクエスト |
 | `seed` | Editor の共通設定 | `irodori_seed` が省略された場合の既定値 |
 | `sway_coeff` | Editor の共通設定 | 行クエリへ適用。入力側の同名値より優先 |
+| `token_split_scope` | Editor の共通設定、`/irodori/settings` | 語彙分割辞書を当てるモデル。`small`（既定: Small 系のみ）/ `all`（Large にも）。変更はモデルの再読み込みなしで次の合成から有効。セリフごとの `irodori_token_split` が `off` なら常に当てない |
 | CFG / step / Schedule / 音声長 / caption / 話速など | 音声クエリの `irodori_*` / `speedScale` | その1行だけ |
 | ユーザー辞書 | プロジェクトルートの `user_dictionary.json` | `/audio_query` と合成時のテキスト変換 |
 
-現在の backend・model・seed は `GET /irodori/settings` で確認できます。Editor のセリフごとの
+現在の backend・model・seed・`token_split_scope` は `GET /irodori/settings` で確認できます。
+同じ応答の `tokenSplit`（`scope` / `active` / `modelTokenizer` / `dictionaryTokenizer`）で、語彙分割辞書が
+いまのモデルに効くかが分かり、`modelInfo` には量子化の種類（`quantization`）と
+モデルのテキストのトークナイザ（`textTokenizerRepo`）が入ります。Editor のセリフごとの
 設定まで同じにしたい場合は、`/audio_query` の応答へ同じ `irodori_*` 値を追加してから
 `/synthesis` に渡します。
 

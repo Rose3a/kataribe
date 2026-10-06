@@ -13,6 +13,14 @@ export type IrodoriKanaStyle = "katakana" | "hiragana";
 export type IrodoriEnglishSpacing = "keep" | "join";
 /** 語彙分割辞書。on なら学習の少ないまとまりトークン（浦和レッズ など）を分けて読ませる。 */
 export type IrodoriTokenSplit = "on" | "off";
+/**
+ * 語彙分割辞書をどのモデルに当てるか（全体の設定）。
+ * small: 辞書を作ったトークナイザ（modernbert-ja）を使う Small 系だけ。既定
+ * all: Large など別のトークナイザのモデルにも当てる
+ */
+export type IrodoriTokenSplitScope = "small" | "all";
+export const IRODORI_DEFAULT_TOKEN_SPLIT_SCOPE: IrodoriTokenSplitScope =
+  "small";
 export const IRODORI_DEFAULT_ENGLISH_READING: IrodoriEnglishReading =
   "katakana";
 export const IRODORI_DEFAULT_KANA_STYLE: IrodoriKanaStyle = "katakana";
@@ -80,6 +88,8 @@ export type IrodoriSettings = {
   model: string;
   seed: number;
   sway_coeff: number;
+  /** 語彙分割辞書の対象。古いエンジンは返さない（small として扱う）。 */
+  token_split_scope?: IrodoriTokenSplitScope;
 };
 
 /** 選択中モデルの情報。 */
@@ -92,8 +102,21 @@ export type IrodoriModelInfo = {
   meanflow: boolean;
   defaultSteps: number;
   metadataAvailable: boolean;
+  /** 量子化モデルの種類（int4_weight_only など）。量子化でなければ null。 */
+  quantization?: string | null;
+  /** モデルが使うテキストのトークナイザ。語彙分割辞書を当てるかの判定に使う。 */
+  textTokenizerRepo?: string | null;
   license?: string;
   licenseUrl?: string;
+};
+
+/** 語彙分割辞書がいま選択中のモデルに効くか（GET /irodori/settings の tokenSplit）。 */
+export type IrodoriTokenSplitState = {
+  scope: IrodoriTokenSplitScope;
+  /** true なら、セリフごとの設定が on のときに辞書を当てる。 */
+  active: boolean;
+  modelTokenizer: string | null;
+  dictionaryTokenizer: string | null;
 };
 
 /** エンジンが持つ進捗（生成だけでなくモデル取得でも動く）。 */
@@ -112,6 +135,7 @@ export type IrodoriStatus = {
   availableBackends: Record<string, boolean>;
   progress: IrodoriProgress;
   modelInfo?: IrodoriModelInfo;
+  tokenSplit?: IrodoriTokenSplitState;
 };
 
 /** ストレージ一覧の1項目（モデル・TensorRT キャッシュなど）。 */

@@ -9,7 +9,8 @@ never runs on the GPU:
 - speaker encoder: used only for user-supplied reference audio.
 
 Unused weights move to CPU RAM (nothing is dropped, nothing is recomputed in
-another precision, so outputs stay bit-identical).  The two occasional users
+another precision, so outputs stay bit-identical).  torchao INT4 weights (v4-Large
+INT4) move the same way; they are left out of ``repack`` (their data_ptr() is 0).  The two occasional users
 move their module back to the GPU for the call.  Cached allocator blocks are
 returned to the driver once the engine has been idle for a few seconds, so a
 game started next to the editor can use them; back-to-back synthesis keeps
@@ -30,8 +31,40 @@ KV_PROJECTION = frozenset({"wk_text", "wv_text", "wk_speaker", "wv_speaker",
 PLAN_ONLY = ("cond_module", "delta_cond_module", "in_proj", "out_norm", "out_proj")
 
 
+def _is_plain(tensor):
+    """素の torch.Tensor か。torchao の量子化テンソルなどのサブクラスは data_ptr() が 0 になる。"""
+    return type(tensor.data) is torch.Tensor
+
+
+def has_quantized_weights(model):
+    """torchao の量子化テンソル（INT4 など）を持つモデルか。"""
+    return any(not _is_plain(p) for p in model.parameters())
+
+
+def _param_bytes(param):
+    if _is_plain(param):
+        return param.numel() * param.element_size()
+    # torchao INT4/INT8 など。見かけの要素数ではなく、実際に持っているテンソルの大きさで数える
+    data = param.data
+    try:
+        names, _ = data.__tensor_flatten__()
+    except (AttributeError, TypeError):
+        return 0
+    return sum(getattr(data, name).numel() * getattr(data, name).element_size() for name in names)
+
+
+def _move(module, device):
+    """module.to(device)。torchao の量子化テンソルは inference_mode の中では .to() できないので外す。
+
+    合成は inference_mode で走り、その中で参照音声用の speaker_encoder や codec を GPU に戻す。
+    素の Tensor は inference_mode(False) の中で動かしても結果は同じ。
+    """
+    with torch.inference_mode(False):
+        return module.to(device)
+
+
 def _size(module):
-    return sum(p.numel() * p.element_size() for p in module.parameters())
+    return sum(_param_bytes(p) for p in module.parameters())
 
 
 def offload_plan_weights(model):
@@ -44,12 +77,12 @@ def offload_plan_weights(model):
                         if name == "attention" else [child])
             for module in children:
                 moved += _size(module)
-                module.to("cpu")
+                _move(module, "cpu")
     for name in PLAN_ONLY:
         module = getattr(model, name, None)
         if module is not None and all(p is not first for p in module.parameters()):
             moved += _size(module)
-            module.to("cpu")
+            _move(module, "cpu")
     return moved
 
 
@@ -60,11 +93,11 @@ class OnDemand:
         self.module, self.fn, self.device = module, fn, device
 
     def __call__(self, *args, **kwargs):
-        self.module.to(self.device)
+        _move(self.module, self.device)
         try:
             return self.fn(*args, **kwargs)
         finally:
-            self.module.to("cpu")
+            _move(self.module, "cpu")
 
 
 def park_on_demand(module, device):
@@ -72,7 +105,7 @@ def park_on_demand(module, device):
     moved = _size(module)
     # Instance attribute: nn.Module.__call__ dispatches to it.
     module.forward = OnDemand(module, module.forward, device)
-    module.to("cpu")
+    _move(module, "cpu")
     return moved
 
 
@@ -131,7 +164,7 @@ def install(backend, log=None):
         # The TensorRT codec's PyTorch fallback brings the decoder back.
         decoder = runtime.codec.model.decoder
         moved += _size(decoder)
-        decoder.to("cpu")
+        _move(decoder, "cpu")
         backend.codec.fallback = OnDemand(decoder, backend.codec.fallback, device)
     repack(model, runtime.codec.model)
     return moved
@@ -148,7 +181,8 @@ def repack(*modules):
     tensors = {}
     for module in modules:
         for tensor in (*module.parameters(), *module.buffers()):
-            if tensor.is_cuda:
+            # 量子化テンソルは data_ptr() が全部 0 で1つにまとめられてしまうので、詰め直さない
+            if tensor.is_cuda and _is_plain(tensor):
                 tensors.setdefault(tensor.data_ptr(), []).append(tensor)
     # Only whole-storage tensors; a view would be split from its base.
     for group in tensors.values():

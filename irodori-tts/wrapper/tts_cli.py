@@ -366,8 +366,16 @@ class TrtBackend:
         self.trt_version = trt_version
         # Both accelerations below keep or improve numerics and can be turned
         # off for comparison: IRODORI_CUDA_GRAPHS=0, IRODORI_TRT_CODEC=0.
+        # CUDA graphs are off by default for torchao-quantized models (v4-Large INT4): the DiT
+        # in the plan dominates there, so graphs gain nothing (1.34 s vs 1.39 s for 8.5 s of
+        # audio) while their private memory pools add 1.5-4.5 GB of VRAM.  Set
+        # IRODORI_CUDA_GRAPHS=1 to force them on.
+        import vram_trim
+        graphs = os.environ.get("IRODORI_CUDA_GRAPHS")
+        if graphs is None:
+            graphs = "0" if vram_trim.has_quantized_weights(self.runtime.model) else "1"
         self.graphs = {}
-        if os.environ.get("IRODORI_CUDA_GRAPHS", "1") != "0":
+        if graphs != "0":
             import cuda_graphs
             self.graphs = cuda_graphs.install(self.runtime.model)
         self.codec = None

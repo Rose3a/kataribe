@@ -14,7 +14,7 @@
 
 エンジンフォルダの `models` に対応するIrodoriチェックポイント(.safetensors)、`embeddings` に *.speaker.safetensors を置いて、画面の「一覧を更新」を押します。話者なしでも生成できます。話者のサムネイルは同じ名前の `.png` / `.jpg` / `.webp` を隣に置くとVOICEVOXの話者一覧へ表示されます。
 
-Torchで追加した話者埋め込みはTensorRTでもそのまま共用します。話者追加のための変換やplan再構築は不要です。WebエディターのTensorRTは選択モデルを初回にONNX化して専用planを構築し、モデル内容・GPU・ランタイムに対応するキャッシュを再利用します。MeanFlowにも対応し、進捗表示が完了するとモデルが読み込まれます。Radeonは既存のDirectML PythonとONNX codecの追加準備が必要です。
+Torchで追加した話者埋め込みはTensorRTでもそのまま共用します。話者追加のための変換やplan再構築は不要です。WebエディターのTensorRTは選択モデルを初回にONNX化して専用planを構築し、モデル内容・GPU・ランタイムに対応するキャッシュを再利用します。MeanFlowにも対応し、進捗表示が完了するとモデルが読み込まれます。v4-LargeのINT4量子化版（int4-weight-only）もTensorRTで使え、INT4の重みのまま専用planを作ります（初回のみ数分、VRAMは約3.5〜5GB）。語彙分割辞書をLargeにも当てるかは、設定の「語彙分割辞書の対象」で選びます（既定はSmall系のみ）。Radeonは既存のDirectML PythonとONNX codecの追加準備が必要です。
 
 配布フォルダを分ける場合は、フロントエンドの `irodori-engine-path.txt` にバックエンドフォルダを指定します。推奨レイアウトはエンジン側の `DEPLOYMENT_LAYOUT.md` を参照してください。
 
