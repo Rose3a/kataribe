@@ -326,7 +326,7 @@
             :hint="
               showStepsQualityWarning
                 ? `既定値 ${defaultSteps} より少ないため、音声の質が下がる場合があります`
-                : `既定値: ${defaultSteps}（このモデル）。多いほど高品質・低速`
+                : `既定値: ${defaultSteps}（全行共通の設定）。多いほど高品質・低速`
             "
             :min="1"
             :max="80"
@@ -661,7 +661,8 @@ async function selectPrimaryVoice(voice: Voice | undefined) {
   if (
     audioItem.value?.voice.engineId === voice.engineId &&
     audioItem.value.voice.styleId === voice.styleId
-  ) return;
+  )
+    return;
   try {
     await store.actions.COMMAND_MULTI_CHANGE_VOICE({
       audioKeys: [props.activeAudioKey],

@@ -77,8 +77,22 @@
         {{ selectedModelOption.note }}
       </div>
       <div v-if="modelInfo?.meanflow" class="text-caption q-mb-sm">
-        MeanFlow モデル: ステップ数4が既定。ScheduleとCFGは未使用。
+        MeanFlow モデル: ScheduleとCFGは未使用。ステップ数はモデル自身の既定が{{
+          modelInfo.modelDefaultSteps ?? 4
+        }}ですが、下の既定ステップ数に従います。
       </div>
+      <QInput
+        v-model.number="defaultStepsSetting"
+        outlined
+        dense
+        type="number"
+        :min="IRODORI_MIN_STEPS"
+        :max="IRODORI_MAX_STEPS"
+        label="既定ステップ数（全行共通・1〜80）"
+        hint="ステップ数を指定していないセリフに使います。多いほど高品質・低速。「設定を適用」で反映されます。"
+        :disable="locked"
+        class="q-mb-md"
+      />
       <QSelect
         v-model="tokenSplitScope"
         outlined
@@ -95,6 +109,16 @@
         系のトークナイザ（modernbert-ja）の出現度で作ってあります。Large
         は日本語の語句を細かく割るので、同じ語句が読めない問題は起きにくく、既定では
         Small 系だけに当てます。{{ tokenSplitNote }}
+      </div>
+      <QToggle
+        v-model="streamPlayback"
+        dense
+        label="ストリーミング再生（生成の完了を待たずに再生を始める）"
+        :disable="locked"
+      />
+      <div class="text-caption q-mb-sm">
+        長いセリフで再生が始まるまでの待ちが短くなります（トグルを切り替えるとすぐ保存されます）。
+        参照音声を使うセリフは、透かしを入れるため生成後にまとめて再生します。ストリーミング中はクリック位置からの再生や口パクは使えず、再生し終えると通常の再生になります。
       </div>
       <div v-if="hasUnappliedChanges" class="text-caption text-warning q-mb-sm">
         未適用の変更があります。「設定を適用」を押すと反映されます。
@@ -198,8 +222,11 @@ import { clearAudioCache } from "@/store/audioGenerate";
 import {
   IRODORI_DEFAULT_STEPS,
   IRODORI_DEFAULT_TOKEN_SPLIT_SCOPE,
+  IRODORI_MAX_STEPS,
+  IRODORI_MIN_STEPS,
   irodoriDefaultSteps,
   irodoriMeanflow,
+  irodoriStreamPlayback,
 } from "@/domain/irodori";
 import type {
   IrodoriModelInfo as ModelInfo,
@@ -211,6 +238,7 @@ import type {
 import {
   fetchIrodoriStatus,
   forgetIrodoriSession,
+  irodoriRequest,
   openIrodoriFolder,
   refreshIrodoriSpeakers,
   saveIrodoriSettings,
@@ -234,6 +262,8 @@ const hasUnappliedChanges = computed(
     appliedSettings.value != undefined &&
     (settings.value.backend !== appliedSettings.value.backend ||
       settings.value.model !== appliedSettings.value.model ||
+      (settings.value.default_steps ?? IRODORI_DEFAULT_STEPS) !==
+        (appliedSettings.value.default_steps ?? IRODORI_DEFAULT_STEPS) ||
       (settings.value.token_split_scope ??
         IRODORI_DEFAULT_TOKEN_SPLIT_SCOPE) !==
         (appliedSettings.value.token_split_scope ??
@@ -244,6 +274,36 @@ watch(defaultSteps, (value) => {
 });
 watch(modelInfo, (value) => {
   if (value) irodoriMeanflow.value = value.meanflow;
+});
+// ストリーミング再生。切り替えるとすぐエンジンへ保存する（モデルの再読み込みは起きない）。
+const streamPlayback = computed<boolean>({
+  get: () => settings.value?.stream_playback === true,
+  set: (value) => {
+    if (!settings.value) return;
+    settings.value.stream_playback = value;
+    irodoriStreamPlayback.value = value;
+    irodoriRequest(endpoint.value, "/irodori/settings", {
+      method: "POST",
+      body: { stream_playback: value },
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await response.text());
+      })
+      .catch((cause: unknown) => {
+        error.value = cause instanceof Error ? cause.message : String(cause);
+      });
+  },
+});
+// 全行共通の既定ステップ数。範囲外や空欄は 1〜80 に丸める（適用で保存）。
+const defaultStepsSetting = computed<number>({
+  get: () => settings.value?.default_steps ?? IRODORI_DEFAULT_STEPS,
+  set: (value) => {
+    if (!settings.value) return;
+    const steps = Math.round(Number(value));
+    settings.value.default_steps = Number.isFinite(steps)
+      ? Math.min(IRODORI_MAX_STEPS, Math.max(IRODORI_MIN_STEPS, steps))
+      : IRODORI_DEFAULT_STEPS;
+  },
 });
 const tokenSplit = ref<IrodoriTokenSplitState>();
 const tokenSplitScope = computed<IrodoriTokenSplitScope>({
@@ -256,15 +316,17 @@ const tokenSplitScope = computed<IrodoriTokenSplitScope>({
 const tokenSplitScopes: { label: string; value: IrodoriTokenSplitScope }[] = [
   { label: "Small 系のみ（既定）", value: "small" },
   { label: "Small と Large の両方", value: "all" },
+  { label: "使わない（どのモデルにも当てない）", value: "none" },
 ];
 // 選んだ対象で、読み込み中（または選択中）のモデルに辞書が効くか。
 const tokenSplitNote = computed(() => {
   const state = tokenSplit.value;
   if (!state) return "";
   const active =
-    tokenSplitScope.value === "all" ||
-    !state.modelTokenizer ||
-    state.modelTokenizer === state.dictionaryTokenizer;
+    tokenSplitScope.value !== "none" &&
+    (tokenSplitScope.value === "all" ||
+      !state.modelTokenizer ||
+      state.modelTokenizer === state.dictionaryTokenizer);
   return active
     ? "いまのモデルには辞書が効きます（セリフごとの設定が「使う」のとき）。"
     : "いまのモデルには辞書を当てません。";
@@ -303,6 +365,7 @@ type ModelOption = {
   label: string;
   value: string;
   description: string;
+  group?: string;
   license?: string;
   note?: string;
   unsupportedBackends?: string[];
@@ -311,24 +374,36 @@ const modelOptions = ref<ModelOption[]>([
   {
     label: "Irodori-TTS v4.1 Small（既定・8ステップ）",
     value: "Aratako/Irodori-TTS-v4.1-Small",
+    group: "Small 系（軽量・おすすめ）",
     description: "RFモデル / MIT",
     license: "MIT",
   },
   {
     label: "Irodori-TTS v4.1 Small MF（4ステップ）",
     value: "Aratako/Irodori-TTS-v4.1-Small-MF",
+    group: "Small 系（軽量・おすすめ）",
     description: "MeanFlowモデル / MIT",
     license: "MIT",
   },
   {
+    label: "Irodori-TTS v4.1 Small Yomi Tech（難読漢字・技術用語の読み改善）",
+    value: "j-llm/Irodori-TTS-v4.1-Small-Yomi-Tech-tuned",
+    group: "Small 系（軽量・おすすめ）",
+    description: "RFモデル / 重み・コード MIT、読み辞書 CC BY-SA 4.0",
+    license: "MIT（重み・コード）/ CC BY-SA 4.0（読み辞書: JMdict © EDRDG）",
+    note: "v4.1 Small に、難読漢字の読み（Yomi）と英語・技術用語の読み（Tech）の改善を加えたモデルです。埋め込みの読み辞書は JMdict（© EDRDG, CC BY-SA 4.0）を含みます。読み間違いが減るだけで、声質は v4.1 Small と同じです。技術用語の読み替えは作者の推論スクリプト側の処理のため、このアプリでは Yomi の改善が中心です。",
+  },
+  {
     label: "Irodori-TTS v4.1 Anime（8ステップ）",
     value: "phasefield-audio/Irodori-TTS-v4.1-Anime",
+    group: "Small 系（軽量・おすすめ）",
     description: "Anime fine-tune / MIT",
     license: "MIT",
   },
   {
     label: "Irodori-TTS v4 Large INT4（TensorRT 対応・省VRAM）",
     value: "Aratako/Irodori-TTS-v4-Large-Quantized/int4-weight-only",
+    group: "Large 系（高品質・VRAM多め）",
     description:
       "RFモデル 3.3B・INT4量子化 / CUDA・TensorRT / Gemma Terms of Use",
     license: "Gemma Terms of Use",
@@ -337,6 +412,7 @@ const modelOptions = ref<ModelOption[]>([
   {
     label: "Irodori-TTS v4 Large INT8（Large の推奨）",
     value: "Aratako/Irodori-TTS-v4-Large-Quantized/int8-weight-only",
+    group: "Large 系（高品質・VRAM多め）",
     description: "RFモデル 3.3B・INT8量子化 / CUDA専用 / Gemma Terms of Use",
     license: "Gemma Terms of Use",
     note: "約3.6GBをダウンロードします。VRAMは6GB以上を推奨。音質は元の Large とほぼ同じで、生成は bf16 版より1〜2割遅くなります。NVIDIA / CUDA 専用（TensorRT は不可）。既存の話者ファイル（v4.1 Small 用）は使えないため、「話者なし」か参照音声で生成します。Gemma の利用規約と禁止用途ポリシーにも従ってください。",
@@ -345,9 +421,19 @@ const modelOptions = ref<ModelOption[]>([
   {
     label: "Irodori-TTS v4 Large（bf16・TensorRT向け）",
     value: "Aratako/Irodori-TTS-v4-Large",
+    group: "Large 系（高品質・VRAM多め）",
     description: "RFモデル 3.3B / Gemma Terms of Use",
     license: "Gemma Terms of Use",
     note: "約13GBをダウンロードします。VRAMは8GB以上、初回の TensorRT 変換には RAM 16GB 以上を推奨。既存の話者ファイル（v4.1 Small 用）は使えないため、「話者なし」か参照音声で生成します。Gemma の利用規約と禁止用途ポリシーにも従ってください。",
+  },
+  {
+    label: "Irodori-TTS 500M v3（旧版・読み比べ用）",
+    value: "Aratako/Irodori-TTS-500M-v3",
+    group: "旧版（v3）",
+    description:
+      "RFモデル 500M・スタイル指示（絵文字・キャプション）なし / MIT",
+    license: "MIT",
+    note: "約1GBをダウンロードします。トークナイザが llm-jp-3 で、v4 系（modernbert-ja）とは語句の割り方が違います。語彙分割辞書は modernbert-ja 用のため、このモデルには当てません。既存の話者ファイル（768次元）はそのまま使えます。",
   },
 ]);
 // 量子化モデルは TensorRT に変換できないので、選んだときは CUDA（無ければ CPU）へ切り替える。
@@ -365,45 +451,33 @@ function ensureModelOption(source: string) {
   const value = source.trim();
   if (!value || modelOptions.value.some((option) => option.value === value)) {
     return;
-  group?: string;
   }
   modelOptions.value.push({
     label: value,
     value,
+    group: "カスタム",
     description: "カスタムモデル",
   });
 }
 const selectedModelOption = computed(() =>
-    group: "Small 系（軽量・おすすめ）",
   modelOptions.value.find((option) => option.value === settings.value?.model),
 );
 const licenseName = computed(
   () => modelInfo.value?.license ?? selectedModelOption.value?.license,
 );
 const licenseUrl = computed(
-    group: "Small 系（軽量・おすすめ）",
   () =>
     modelInfo.value?.licenseUrl ??
     (settings.value?.model.includes("/")
-  {
-    label: "Irodori-TTS v4.1 Small Yomi Tech（難読漢字・技術用語の読み改善）",
-    value: "j-llm/Irodori-TTS-v4.1-Small-Yomi-Tech-tuned",
-    group: "Small 系（軽量・おすすめ）",
-    description: "RFモデル / 重み・コード MIT、読み辞書 CC BY-SA 4.0",
-    license: "MIT（重み・コード）/ CC BY-SA 4.0（読み辞書: JMdict © EDRDG）",
-    note: "v4.1 Small に、難読漢字の読み（Yomi）と英語・技術用語の読み（Tech）の改善を加えたモデルです。埋め込みの読み辞書は JMdict（© EDRDG, CC BY-SA 4.0）を含みます。読み間違いが減るだけで、声質は v4.1 Small と同じです。技術用語の読み替えは作者の推論スクリプト側の処理のため、このアプリでは Yomi の改善が中心です。",
-  },
       ? `https://huggingface.co/${settings.value.model}`
       : undefined),
 );
-    group: "Small 系（軽量・おすすめ）",
 function setCustomModel(value: string, done: () => void) {
   const trimmed = value.trim();
   if (!trimmed || !settings.value) return done();
   // QSelect の emit-value と new-value-mode の組み合わせでは、プリセット外の
   // 文字列が次の描画で失われることがある。選択肢と v-model を明示的に更新する。
   ensureModelOption(trimmed);
-    group: "Large 系（高品質・VRAM多め）",
   settings.value.model = trimmed;
   done();
 }
@@ -412,7 +486,6 @@ const endpoint = computed(() => {
   return createEngineUrl({
     ...info,
     port: store.state.altPortInfos[props.engineId] ?? info.defaultPort,
-    group: "Large 系（高品質・VRAM多め）",
   });
 });
 /** 設定の保存（save=true）または状態の取得。 */
@@ -421,20 +494,10 @@ async function loadSettings(save: boolean): Promise<Status> {
   return save && current != undefined
     ? await saveIrodoriSettings(endpoint.value, current)
     : await fetchIrodoriStatus(endpoint.value);
-    group: "Large 系（高品質・VRAM多め）",
 }
 
 async function openFolder(folder: "models" | "speakers") {
   try {
-  {
-    label: "Irodori-TTS 500M v3（旧版・読み比べ用）",
-    value: "Aratako/Irodori-TTS-500M-v3",
-    group: "旧版（v3）",
-    description:
-      "RFモデル 500M・スタイル指示（絵文字・キャプション）なし / MIT",
-    license: "MIT",
-    note: "約1GBをダウンロードします。トークナイザが llm-jp-3 で、v4 系（modernbert-ja）とは語句の割り方が違います。語彙分割辞書は modernbert-ja 用のため、このモデルには当てません。既存の話者ファイル（768次元）はそのまま使えます。",
-  },
     await openIrodoriFolder(endpoint.value, folder);
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : String(cause);
@@ -450,12 +513,12 @@ async function run(save: boolean, refreshSpeakers = false) {
     const result = await loadSettings(save);
     settings.value = result.settings;
     appliedSettings.value = { ...result.settings };
+    irodoriStreamPlayback.value = result.settings.stream_playback === true;
     ensureModelOption(result.settings.model);
     progress.value = result.progress;
     modelInfo.value = result.modelInfo ?? modelInfo.value;
     tokenSplit.value = result.tokenSplit ?? tokenSplit.value;
     availableBackends.value = result.availableBackends ?? { cpu: true };
-    group: "カスタム",
     modelFolder.value = result.modelFolder;
     speakerFolder.value = result.speakerFolder;
     if (refreshSpeakers) {

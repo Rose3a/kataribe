@@ -24,6 +24,7 @@ import math
 import mimetypes
 import os
 import re
+import struct
 import sys
 import tempfile
 import threading
@@ -239,7 +240,7 @@ IRODORI_QUERY_FIELDS: dict[str, dict] = {
     },
     "irodori_token_split": {
         "type": "string", "enum": list(TOKEN_SPLITS), "default": "on",
-        "description": "語彙分割辞書（セリフごと）。on なら学習の少ないまとまりトークン（浦和レッズ など）を分けて読ませる。全体の設定（token_split_scope）が small のときは、辞書を作ったトークナイザを使う Small 系のモデルにだけ当たる",
+        "description": "語彙分割辞書（セリフごと）。on なら学習の少ないまとまりトークン（浦和レッズ など）を分けて読ませる。全体の設定（token_split_scope）が small のときは、辞書を作ったトークナイザを使う Small 系のモデルにだけ当たる（none ならどのモデルにも当たらない）",
     },
     "irodori_secondary_speaker_style_id": {
         "type": "integer", "nullable": True, "deprecated": True,
@@ -1195,6 +1196,19 @@ class Handler(BaseHTTPRequestHandler):
                     self.adapter.synthesis_slots.release()
                 self._send(200, data, "audio/wav")
                 return
+            if parsed.path == "/irodori/synthesis_stream":
+                params = parse_qs(parsed.query)
+                speaker = _int_query_param(params, "speaker")
+                query = self._body_json()
+                _validate_query(query)
+                if not self.adapter.synthesis_slots.acquire(timeout=0.1):
+                    self._json(429, {"detail": "synthesis queue is full"}, retry_after=1)
+                    return
+                try:
+                    self._stream_synthesis(query, speaker)
+                finally:
+                    self.adapter.synthesis_slots.release()
+                return
             if parsed.path == "/initialize_speaker":
                 self._send(204, b"")
                 return
@@ -1240,6 +1254,71 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             self.log_message("request failed (500): %s", exc)
             self._json(500, {"detail": str(exc)})
+
+    def _stream_synthesis(self, query: dict, speaker: int) -> None:
+        """POST /irodori/synthesis_stream: /synthesis, but audio is sent as it is decoded.
+
+        The body is a sequence of frames, each a little-endian uint32 length and a payload:
+        a JSON header ({"sampleRate", "channels", "format": "s16le"}), then raw PCM frames,
+        then a zero-length frame.  A length with the top bit set carries an error message
+        instead (synthesis failed after the header went out).  The body is delimited by the
+        connection closing (HTTP/1.0), so no Content-Length is sent.
+        """
+        import numpy as np
+        import soundfile as sf
+        from stream_decode import stream_to
+
+        state = {"started": False, "samples": 0}
+
+        def frame(payload: bytes, flag: int = 0) -> bytes:
+            return struct.pack("<I", len(payload) | flag) + payload
+
+        def start(rate: int) -> None:
+            if state["started"]:
+                return
+            state["started"] = True
+            self.send_response(200)
+            origin = self.headers.get("Origin")
+            if origin in ALLOWED_ORIGINS:
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Vary", "Origin")
+            self.send_header("Content-Type", "application/x-irodori-pcm-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            header = {"sampleRate": rate, "channels": 1, "format": "s16le"}
+            self.wfile.write(frame(json.dumps(header).encode("utf-8")))
+
+        def sink(data: bytes, rate: int) -> None:
+            start(rate)
+            self.wfile.write(frame(data))
+            self.wfile.flush()
+            state["samples"] += len(data) // 2
+
+        self.close_connection = True
+        try:
+            with stream_to(sink):
+                wav = self.adapter.synthesize(query, speaker)
+            # The WAV is the authoritative result (tail trimmed, watermarked, ...).  Send
+            # whatever the streamed windows did not already cover.
+            audio, rate = sf.read(io.BytesIO(wav), dtype="int16", always_2d=True)
+            start(rate)
+            rest = np.ascontiguousarray(audio[:, 0][state["samples"]:])
+            if rest.size:
+                self.wfile.write(frame(rest.tobytes()))
+            self.wfile.write(frame(b""))
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            self.log_message("stream client went away; synthesis cancelled")
+        except Exception as exc:
+            if not state["started"]:
+                raise
+            self.log_message("stream failed after the header was sent: %s", exc)
+            try:
+                self.wfile.write(frame(str(exc).encode("utf-8"), 0x80000000))
+                self.wfile.flush()
+            except OSError:
+                pass
 
     def _change_dictionary(self, delete=False):
         if not self._authorized():

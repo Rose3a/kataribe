@@ -23,6 +23,9 @@ import {
   IRODORI_DEFAULT_ENGLISH_SPACING,
   irodoriDefaultSteps,
 } from "@/domain/irodori";
+import { AudioQueryToJSON } from "@/openapi/models";
+import { irodoriRequest } from "@/helpers/irodoriEngine";
+import { pcm16ToWav, readIrodoriPcmStream } from "@/helpers/irodoriStream";
 
 const audioBlobCache: Record<string, Blob> = {};
 let audioCacheRevision = 0;
@@ -35,6 +38,61 @@ export function clearAudioCache() {
 type Instance = {
   invoke: IEngineConnectorFactoryActionsMapper;
 };
+
+/** `synthesis` に渡す引数（通常の生成とストリーミング再生で共有する）。 */
+function synthesisParams(
+  state: AudioStoreState & SettingStoreState,
+  audioItem: AudioItem,
+  engineAudioQuery: ReturnType<typeof convertAudioQueryFromEditorToEngine>,
+) {
+  const speaker = audioItem.voice.styleId;
+  const effectiveSeed =
+    audioItem.irodori?.seed === null
+      ? null
+      : (audioItem.irodori?.seed ?? IRODORI_DEFAULT_SEED);
+  return {
+    audioQuery: {
+      ...engineAudioQuery,
+      // The OpenAPI serializer emits this typed field as `irodori_seed`.
+      // irodori_seed: effectiveSeed (serialized from the camelCase field)
+      irodoriSeed: effectiveSeed,
+      // 既定ステップ数はモデル依存（MeanFlow は4、RF は8）。
+      irodoriSteps: audioItem.irodori?.steps ?? irodoriDefaultSteps.value,
+      irodoriSchedule: audioItem.irodori?.schedule ?? IRODORI_DEFAULT_SCHEDULE,
+      irodoriEnglishReading:
+        audioItem.irodori?.englishReading ?? IRODORI_DEFAULT_ENGLISH_READING,
+      irodoriKanaStyle:
+        audioItem.irodori?.kanaStyle ?? IRODORI_DEFAULT_KANA_STYLE,
+      irodoriEnglishSpacing:
+        audioItem.irodori?.englishSpacing ?? IRODORI_DEFAULT_ENGLISH_SPACING,
+      irodoriTokenSplit:
+        audioItem.irodori?.tokenSplit ?? IRODORI_DEFAULT_TOKEN_SPLIT,
+      irodoriSeconds: audioItem.irodori?.seconds ?? null,
+      irodoriCaption: audioItem.irodori?.caption,
+      irodoriCaptionStrength:
+        audioItem.irodori?.captionStrength ?? IRODORI_DEFAULT_CAPTION_STRENGTH,
+      irodoriCfgText: audioItem.irodori?.cfgText ?? IRODORI_DEFAULT_CFG_TEXT,
+      irodoriCfgCaption:
+        audioItem.irodori?.cfgCaption ?? IRODORI_DEFAULT_CFG_CAPTION,
+      irodoriCfgSpeaker:
+        audioItem.irodori?.cfgSpeaker ?? IRODORI_DEFAULT_CFG_SPEAKER,
+      irodoriReferenceStrength:
+        audioItem.irodori?.referenceStrength ??
+        IRODORI_DEFAULT_REFERENCE_STRENGTH,
+      irodoriSpeakerStrength:
+        audioItem.irodori?.speakerStrength ?? IRODORI_DEFAULT_SPEAKER_STRENGTH,
+      irodoriSecondarySpeakerStyleId:
+        audioItem.irodori?.secondarySpeakerStyleId ?? undefined,
+      irodoriSecondarySpeakerStrength:
+        audioItem.irodori?.secondarySpeakerStrength ?? 0.5,
+      irodoriAdditionalSpeakers: audioItem.irodori?.additionalSpeakers,
+      irodoriReferenceAudio: audioItem.irodori?.referenceAudio,
+    },
+    speaker,
+    enableInterrogativeUpspeak:
+      state.experimentalSetting.enableInterrogativeUpspeak,
+  };
+}
 
 /**
  * エンジンで音声を合成する。音声のキャッシュ機構も備える。
@@ -77,58 +135,81 @@ export async function fetchAudioFromAudioItem(
       morphRate: audioItem.morphingInfo.rate,
     });
   } else {
-    const effectiveSeed =
-      audioItem.irodori?.seed === null
-        ? null
-        : (audioItem.irodori?.seed ?? IRODORI_DEFAULT_SEED);
-    blob = await instance.invoke("synthesis")({
-      audioQuery: {
-        ...engineAudioQuery,
-        // The OpenAPI serializer emits this typed field as `irodori_seed`.
-        // irodori_seed: effectiveSeed (serialized from the camelCase field)
-        irodoriSeed: effectiveSeed,
-        // 既定ステップ数はモデル依存（MeanFlow は4、RF は8）。
-        irodoriSteps: audioItem.irodori?.steps ?? irodoriDefaultSteps.value,
-        irodoriSchedule:
-          audioItem.irodori?.schedule ?? IRODORI_DEFAULT_SCHEDULE,
-        irodoriEnglishReading:
-          audioItem.irodori?.englishReading ?? IRODORI_DEFAULT_ENGLISH_READING,
-        irodoriKanaStyle:
-          audioItem.irodori?.kanaStyle ?? IRODORI_DEFAULT_KANA_STYLE,
-        irodoriEnglishSpacing:
-          audioItem.irodori?.englishSpacing ?? IRODORI_DEFAULT_ENGLISH_SPACING,
-        irodoriTokenSplit:
-          audioItem.irodori?.tokenSplit ?? IRODORI_DEFAULT_TOKEN_SPLIT,
-        irodoriSeconds: audioItem.irodori?.seconds ?? null,
-        irodoriCaption: audioItem.irodori?.caption,
-        irodoriCaptionStrength:
-          audioItem.irodori?.captionStrength ??
-          IRODORI_DEFAULT_CAPTION_STRENGTH,
-        irodoriCfgText: audioItem.irodori?.cfgText ?? IRODORI_DEFAULT_CFG_TEXT,
-        irodoriCfgCaption:
-          audioItem.irodori?.cfgCaption ?? IRODORI_DEFAULT_CFG_CAPTION,
-        irodoriCfgSpeaker:
-          audioItem.irodori?.cfgSpeaker ?? IRODORI_DEFAULT_CFG_SPEAKER,
-        irodoriReferenceStrength:
-          audioItem.irodori?.referenceStrength ??
-          IRODORI_DEFAULT_REFERENCE_STRENGTH,
-        irodoriSpeakerStrength:
-          audioItem.irodori?.speakerStrength ??
-          IRODORI_DEFAULT_SPEAKER_STRENGTH,
-        irodoriSecondarySpeakerStyleId:
-          audioItem.irodori?.secondarySpeakerStyleId ?? undefined,
-        irodoriSecondarySpeakerStrength:
-          audioItem.irodori?.secondarySpeakerStrength ?? 0.5,
-        irodoriAdditionalSpeakers: audioItem.irodori?.additionalSpeakers,
-        irodoriReferenceAudio: audioItem.irodori?.referenceAudio,
-      },
-      speaker,
-      enableInterrogativeUpspeak:
-        state.experimentalSetting.enableInterrogativeUpspeak,
-    });
+    blob = await instance.invoke("synthesis")(
+      synthesisParams(state, audioItem, engineAudioQuery),
+    );
   }
   audioBlobCache[id] = blob;
   return { audioQuery, blob };
+}
+
+/**
+ * 生成しながら音声を受け取る（Irodori エンジンの `/irodori/synthesis_stream`）。
+ *
+ * キャッシュにあればそれを返す（streamed: false）。ストリーミングできない
+ * 条件（モーフィング、古いエンジン）では undefined を返すので、呼び出し側は
+ * 通常の生成にフォールバックする。最後まで受け取れたら通常の生成と同じ
+ * キャッシュに入れるので、2回目以降の再生は待たない。
+ */
+export async function streamAudioFromAudioItem(
+  state: AudioStoreState & SettingStoreState,
+  {
+    audioItem,
+    endpoint,
+    signal,
+    onPcm,
+  }: {
+    audioItem: AudioItem;
+    endpoint: string;
+    signal: AbortSignal;
+    onPcm: (samples: Int16Array, sampleRate: number) => void | Promise<void>;
+  },
+): Promise<{ blob: Blob; streamed: boolean } | undefined> {
+  const engineId = audioItem.voice.engineId;
+  const [id, audioQuery] = await generateUniqueIdAndQuery(state, audioItem);
+  if (audioQuery == undefined)
+    throw new Error("audioQuery is not defined for audioItem");
+  if (Object.prototype.hasOwnProperty.call(audioBlobCache, id))
+    return { blob: audioBlobCache[id], streamed: false };
+  if (audioItem.morphingInfo != undefined) return undefined;
+
+  const params = synthesisParams(
+    state,
+    audioItem,
+    convertAudioQueryFromEditorToEngine(
+      audioQuery,
+      state.engineManifests[engineId].defaultSamplingRate,
+    ),
+  );
+  const revision = audioCacheRevision;
+  const response = await irodoriRequest(
+    endpoint,
+    `/irodori/synthesis_stream?speaker=${params.speaker}`,
+    {
+      method: "POST",
+      body: AudioQueryToJSON(params.audioQuery),
+      timeoutMs: 10 * 60_000,
+      signal,
+    },
+  );
+  if (response.status === 404) return undefined;
+  if (!response.ok)
+    throw new Error(`音声の生成に失敗しました (${response.status})`);
+
+  const parts: Int16Array[] = [];
+  let sampleRate = 0;
+  await readIrodoriPcmStream(response, {
+    onHeader: (header) => {
+      sampleRate = header.sampleRate;
+    },
+    onPcm: async (samples) => {
+      parts.push(samples);
+      await onPcm(samples, sampleRate);
+    },
+  });
+  const blob = pcm16ToWav(parts, sampleRate);
+  if (revision === audioCacheRevision) audioBlobCache[id] = blob;
+  return { blob, streamed: true };
 }
 
 export async function generateLabFromAudioQuery(

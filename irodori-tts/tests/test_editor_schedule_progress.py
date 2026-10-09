@@ -271,12 +271,12 @@ class EditorScheduleProgressTests(unittest.TestCase):
         )
 
     def test_audio_generate_forwards_selected_audio_item_irodori_settings(self):
-        synthesis = AUDIO_GENERATE[AUDIO_GENERATE.index('invoke("synthesis")') :]
+        synthesis = AUDIO_GENERATE[AUDIO_GENERATE.index("function synthesisParams(") :]
         self.assertRegex(synthesis, r"irodoriCaption\s*:\s*audioItem\.irodori\?\.caption")
         self.assertRegex(synthesis, r"irodoriReferenceAudio\s*:\s*audioItem\.irodori\?\.referenceAudio")
 
     def test_audio_generate_forwards_seed_and_randomizes_blank_seed_cache_nonce(self):
-        synthesis = AUDIO_GENERATE[AUDIO_GENERATE.index('invoke("synthesis")') :]
+        synthesis = AUDIO_GENERATE[AUDIO_GENERATE.index("function synthesisParams(") :]
         self.assertRegex(synthesis, r"irodori_seed\s*:\s*effectiveSeed")
         self.assertIn("IRODORI_DEFAULT_SEED = 4763674", IRODORI_CONSTANTS)
         self.assertRegex(

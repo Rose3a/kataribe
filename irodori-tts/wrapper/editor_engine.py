@@ -85,7 +85,8 @@ def _wav_seconds(data):
 
 class EditorAdapter:
     DEFAULT_SETTINGS = dict(backend="cpu", model="Aratako/Irodori-TTS-v4.1-Small", seed=4763674,
-                            sway_coeff=-1.0, token_split_scope=DEFAULT_TOKEN_SPLIT_SCOPE)
+                            sway_coeff=-1.0, token_split_scope=DEFAULT_TOKEN_SPLIT_SCOPE,
+                            stream_playback=False, default_steps=DEFAULT_STEPS_RF)
 
     def __init__(self):
         self.backend_name = "editor"
@@ -114,7 +115,8 @@ class EditorAdapter:
         self._model_info_cache = {}
         self.config_path = ROOT / "editor-settings.json"
         self.settings = dict(backend="cpu", model="Aratako/Irodori-TTS-v4.1-Small", seed=4763674,
-                             sway_coeff=-1.0, token_split_scope=DEFAULT_TOKEN_SPLIT_SCOPE)
+                             sway_coeff=-1.0, token_split_scope=DEFAULT_TOKEN_SPLIT_SCOPE,
+                            stream_playback=False, default_steps=DEFAULT_STEPS_RF)
         try:
             saved = json.loads(self.config_path.read_text(encoding="utf-8"))
             if isinstance(saved, dict):
@@ -331,12 +333,12 @@ class EditorAdapter:
         known = {
             "Aratako/Irodori-TTS-v4.1-Small": ("MIT", "https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small"),
             "Aratako/Irodori-TTS-v4.1-Small-MF": ("MIT", "https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small-MF"),
-            "phasefield-audio/Irodori-TTS-v4.1-Anime": ("MIT", "https://huggingface.co/phasefield-audio/Irodori-TTS-v4.1-Anime"),
-            # テキストエンコーダが T5Gemma 2 由来のため Gemma の規約が掛かる。
             # 重み・コードは MIT。埋め込みの読み辞書は JMdict 由来で CC BY-SA 4.0（© EDRDG）。
             "j-llm/Irodori-TTS-v4.1-Small-Yomi-Tech-tuned": ("MIT（重み・コード）/ CC BY-SA 4.0（読み辞書: JMdict © EDRDG）", "https://huggingface.co/j-llm/Irodori-TTS-v4.1-Small-Yomi-Tech-tuned"),
-            "Aratako/Irodori-TTS-v4-Large": ("Gemma Terms of Use", "https://huggingface.co/Aratako/Irodori-TTS-v4-Large/blob/main/GEMMA_TERMS_OF_USE.md"),
+            "phasefield-audio/Irodori-TTS-v4.1-Anime": ("MIT", "https://huggingface.co/phasefield-audio/Irodori-TTS-v4.1-Anime"),
             "Aratako/Irodori-TTS-500M-v3": ("MIT", "https://huggingface.co/Aratako/Irodori-TTS-500M-v3"),
+            # テキストエンコーダが T5Gemma 2 由来のため Gemma の規約が掛かる。
+            "Aratako/Irodori-TTS-v4-Large": ("Gemma Terms of Use", "https://huggingface.co/Aratako/Irodori-TTS-v4-Large/blob/main/GEMMA_TERMS_OF_USE.md"),
             "Aratako/Irodori-TTS-v4-Large-Quantized": ("Gemma Terms of Use", "https://huggingface.co/Aratako/Irodori-TTS-v4-Large-Quantized/blob/main/GEMMA_TERMS_OF_USE.md"),
         }
         # サブフォルダ付き（repo/int8-weight-only など）はリポジトリ単位で引く。
@@ -349,10 +351,10 @@ class EditorAdapter:
         return info
 
     def _default_steps(self):
-        try:
-            return int(self.model_info().get("defaultSteps") or DEFAULT_STEPS_RF)
-        except Exception:
-            return DEFAULT_STEPS_RF
+        """全行共通の既定ステップ数（設定。既定は MeanFlow も含めて8）。"""
+        with self.state_lock:
+            value = self.settings.get("default_steps", DEFAULT_STEPS_RF)
+        return value if isinstance(value, int) and not isinstance(value, bool) else DEFAULT_STEPS_RF
 
     def validate(self, value):
         if value["backend"] not in ("cpu", "cuda", "trt", "radeon"):
@@ -373,7 +375,12 @@ class EditorAdapter:
                     "TensorRT で使える量子化モデルは INT4（int4-weight-only）だけです。"
                     "INT8 などは NVIDIA / CUDA を選んでください")
         if value.get("token_split_scope", DEFAULT_TOKEN_SPLIT_SCOPE) not in TOKEN_SPLIT_SCOPES:
-            raise ValueError("token_split_scope は small か all を指定してください")
+            raise ValueError("token_split_scope は small、all、none のどれかを指定してください")
+        steps = value.get("default_steps", DEFAULT_STEPS_RF)
+        if isinstance(steps, bool) or not isinstance(steps, int) or not 1 <= steps <= 80:
+            raise ValueError("default_steps は1〜80の整数で指定してください")
+        if not isinstance(value.get("stream_playback", False), bool):
+            raise ValueError("stream_playback は true か false を指定してください")
         if not isinstance(value["seed"], int) or not 0 <= value["seed"] < 2**31:
             raise ValueError("seedは0〜2147483647です")
         try:
@@ -395,7 +402,7 @@ class EditorAdapter:
         return value
 
     def _line_steps(self, query):
-        """セリフごとのステップ数。未指定ならモデルの既定（MeanFlowは4）。"""
+        """セリフごとのステップ数。未指定なら全行共通の既定（設定の default_steps）。"""
         raw = query.get("irodori_steps", self._default_steps())
         if isinstance(raw, bool) or not isinstance(raw, int) or not 1 <= raw <= 80:
             raise ValueError("irodori_steps must be an integer between 1 and 80")
@@ -481,7 +488,7 @@ class EditorAdapter:
         for label, stamped in marks:
             if label is None:
                 continue
-            phases.append(f"{label}={max(0.0, stamped - previous):.1f}s")
+            phases.append(f"{label}={max(0.0, stamped - previous):.2f}s")
             previous = stamped
         text = str(query.get("irodori_text") or query.get("kana") or "")
         if wav:
@@ -493,7 +500,7 @@ class EditorAdapter:
         rtf = f"{elapsed / audio_seconds:.2f}x" if audio_seconds else "-"
         speaker_label = speaker_name or "話者なし"
         parts = [
-            f"total={elapsed:.1f}s",
+            f"total={elapsed:.2f}s",
             f"audio={audio_text}",
             f"rtf={rtf}",
             f"wav={len(wav)}B",
@@ -623,6 +630,9 @@ class EditorAdapter:
             progress = dict(self.progress)
             logs = list(self.logs)
         model_info = self.model_info(settings.get("model", ""))
+        # 画面の「既定ステップ数」は共通設定に従う。モデル自身の既定は modelDefaultSteps。
+        model_info = dict(model_info, modelDefaultSteps=model_info.get("defaultSteps"),
+                          defaultSteps=settings["default_steps"])
         return dict(settings=settings, models=self.models(), loaded=loaded,
                     asr=self.timeline_reader.status(),
                     modelInfo=model_info,
@@ -873,7 +883,7 @@ class EditorAdapter:
                 self.delegate.tts.synthesize(
                     text=text.strip(), speaker="", out_wav=output,
                     seed=int(self.settings["seed"]),
-                    num_steps=self.delegate.default_steps,
+                    num_steps=self._default_steps(),
                     cfg_scale_text=3.0, cfg_scale_speaker=5.0,
                     cfg_scale_caption=3.0,
                     speaker_tensor_override=tensor,

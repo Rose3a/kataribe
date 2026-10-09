@@ -21,6 +21,16 @@ const getAudioElement = (() => {
   };
 })();
 
+// ストリーミング再生中の音声（WebAudio）。STOP_AUDIO で止められるようにしておく。
+let activeAudioStream: { stop: () => void } | undefined;
+export function setActiveAudioStream(
+  stream: { stop: () => void } | undefined,
+  onlyIfCurrent?: { stop: () => void },
+) {
+  if (onlyIfCurrent != undefined && activeAudioStream !== onlyIfCurrent) return;
+  activeAudioStream = stream;
+}
+
 let playbackBlob: Blob | undefined;
 export function getPlaybackBlob(): Blob | undefined {
   return playbackBlob;
@@ -170,6 +180,7 @@ export const audioPlayerStore = createPartialStore<AudioPlayerStoreTypes>({
     action() {
       // PLAY_ でonpause時の処理が設定されているため、pauseするだけで良い
       getAudioElement().pause();
+      activeAudioStream?.stop();
     },
   },
 });

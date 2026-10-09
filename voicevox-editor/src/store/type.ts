@@ -503,6 +503,11 @@ export type AudioStoreTypes = {
     action(payload: { audioKey: AudioKey }): boolean;
   };
 
+  PLAY_AUDIO_STREAM: {
+    /** ストリーミングできない条件では undefined（通常の再生に進む）。 */
+    action(payload: { audioKey: AudioKey }): boolean | undefined;
+  };
+
   PLAY_AUDIO_BLOB: {
     action(payload: { audioBlob: Blob; audioKey?: AudioKey }): boolean;
   };

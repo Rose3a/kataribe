@@ -29,7 +29,7 @@ TOKEN_SPLITS = ("on", "off")
 #   all  : Large など別のトークナイザのモデルにも当てる
 # 辞書は modernbert-ja のトークンの出現度で作ってあり、Large（T5Gemma 2 のトークナイザ）は日本語の
 # 語句を細かく割るので、同じ語句が読めない問題はもともと起きにくい。
-TOKEN_SPLIT_SCOPES = ("small", "all")
+TOKEN_SPLIT_SCOPES = ("small", "all", "none")
 DEFAULT_TOKEN_SPLIT_SCOPE = "small"
 DEFAULT_TOKENIZER_REPO = "sbintuitions/modernbert-ja-310m"
 DICTIONARY_PATH = Path(__file__).resolve().parent / "data" / "token_split_dictionary.json"
@@ -254,11 +254,14 @@ TOKEN_SPLIT_DICTIONARY = TokenSplitDictionary(user_path=USER_DICTIONARY_PATH)
 def token_split_active(scope: str, model_tokenizer_repo: str | None, dictionary=None) -> bool:
     """語彙分割辞書をこのモデルに当てるか。
 
-    scope が all なら常に当てる。small なら、モデルのトークナイザが辞書を作ったものと同じときだけ。
+    scope が none なら、どのモデルにも当てない。all なら常に当てる。small なら、モデルのトークナイザが
+    辞書を作ったものと同じときだけ。
     モデルのトークナイザが分からないとき（読み込み前・古い経路）は、従来どおり当てる。
     """
     if scope not in TOKEN_SPLIT_SCOPES:
         raise ValueError(f"token_split_scope must be one of {', '.join(TOKEN_SPLIT_SCOPES)}")
+    if scope == "none":
+        return False
     if scope == "all" or not model_tokenizer_repo:
         return True
     return str(model_tokenizer_repo) == (dictionary or TOKEN_SPLIT_DICTIONARY).tokenizer_repo()

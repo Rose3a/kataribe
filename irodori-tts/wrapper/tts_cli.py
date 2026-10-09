@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 import torch
+from stream_decode import StreamingDecode, current_sink
 
 # ---------------------------------------------------------------- defaults
 # 既定値はこのリポジトリからの相対で決める。開発機の絶対パスは置かない。
@@ -318,6 +319,7 @@ class TorchBackend:
             compile_model=False,
             compile_dynamic=False,
         ))
+        self.stream_decoder = StreamingDecode.install(self.runtime)
 
     def synthesize(self, request, speaker_tensor: torch.Tensor, out_wav, log_fn=None) -> dict:
         # IrodoriTTS.synthesize has already put the speaker tensor on the request.
@@ -388,6 +390,8 @@ class TrtBackend:
             except Exception as exc:  # noqa: BLE001 - the PyTorch codec still works
                 print(f"[trt] codec plan unusable, using the PyTorch codec: {exc}",
                       file=sys.stderr, flush=True)
+        # Windowed decoding for streaming playback; a pass-through until a sink is set.
+        self.stream_decoder = StreamingDecode.install(self.runtime)
         # Weights only the plans use go to CPU RAM, and idle cache goes back
         # to the driver (IRODORI_TRT_LOW_VRAM=0 keeps everything resident).
         self.busy = threading.Lock()
@@ -731,7 +735,19 @@ class IrodoriTTS:
             if view:
                 print(f"[irodori] {view}", file=sys.stderr, flush=True)
         start = time.perf_counter()
-        result = self.backend.synthesize(request, speaker_tensor, out_wav, log_fn=log_fn)
+        # A sink set by the HTTP layer (stream_decode.stream_to) receives the first windows
+        # of the audio while the rest is still being decoded.  Reference audio is
+        # watermarked as a whole, so it is never streamed; backends without a window
+        # decoder (Radeon) simply deliver everything at the end.
+        stream = current_sink()
+        decoder = getattr(self.backend, "stream_decoder", None)
+        if stream is not None and decoder is not None and ref_wav is None:
+            decoder.begin(stream)
+        try:
+            result = self.backend.synthesize(request, speaker_tensor, out_wav, log_fn=log_fn)
+        finally:
+            if decoder is not None:
+                decoder.end()
         wall = time.perf_counter() - start
         return {
             "backend": result["backend"],

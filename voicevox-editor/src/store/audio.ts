@@ -32,13 +32,18 @@ import {
   generateLabFromAudioQuery,
   handlePossiblyNotMorphableError,
   isMorphable,
+  streamAudioFromAudioItem,
 } from "./audioGenerate";
 import {
   IRODORI_DEFAULT_CFG_CAPTION,
   IRODORI_DEFAULT_CFG_SPEAKER,
   IRODORI_DEFAULT_CFG_TEXT,
   IRODORI_DEFAULT_SEED,
+  irodoriStreamPlayback,
 } from "@/domain/irodori";
+import { createEngineUrl } from "@/domain/url";
+import { PcmStreamPlayer } from "@/helpers/pcmStreamPlayer";
+import { setActiveAudioStream } from "./audioPlayer";
 import {
   ContinuousPlayer,
   filterNonEmptyAudioKeys,
@@ -1903,6 +1908,13 @@ export const audioStore = createPartialStore<AudioStoreTypes>({
       async ({ mutations, actions }, { audioKey }: { audioKey: AudioKey }) => {
         await actions.STOP_AUDIO();
 
+        // ストリーミング再生（設定でオン）: 生成の完了を待たずに鳴らし始める。
+        // 使えない条件では undefined が返るので、下の通常の生成に進む。
+        if (irodoriStreamPlayback.value) {
+          const streamed = await actions.PLAY_AUDIO_STREAM({ audioKey });
+          if (streamed != undefined) return streamed;
+        }
+
         // 音声用意
         let fetchAudioResult: FetchAudioResult;
         mutations.SET_AUDIO_NOW_GENERATING({
@@ -1926,6 +1938,97 @@ export const audioStore = createPartialStore<AudioStoreTypes>({
           audioBlob: blob,
           audioKey,
         });
+      },
+    ),
+  },
+
+  PLAY_AUDIO_STREAM: {
+    action: createUILockAction(
+      async (
+        { state, getters, mutations, actions },
+        { audioKey }: { audioKey: AudioKey },
+      ) => {
+        // 途中のアクセント句から再生するときは、全体が揃ってからの通常再生にする。
+        if ((getters.AUDIO_PLAY_START_POINT ?? 0) !== 0) return undefined;
+        const audioItem: AudioItem = cloneWithUnwrapProxy(
+          state.audioItems[audioKey],
+        );
+        const engineId = audioItem.voice.engineId;
+        const info = state.engineInfos[engineId];
+        const endpoint = createEngineUrl({
+          ...info,
+          port: state.altPortInfos[engineId] ?? info.defaultPort,
+        });
+
+        const abort = new AbortController();
+        const player = new PcmStreamPlayer(
+          state.savingSetting.audioOutputDevice,
+        );
+        const handle = {
+          stop: () => {
+            abort.abort();
+            player.stop();
+          },
+        };
+        setActiveAudioStream(handle);
+
+        // 最初の音が届くか、ストリーミングが終わる（失敗・対象外を含む）まで待つ。
+        let markFirst!: () => void;
+        const first = new Promise<void>((resolve) => {
+          markFirst = resolve;
+        });
+        const result = streamAudioFromAudioItem(state, {
+          audioItem,
+          endpoint,
+          signal: abort.signal,
+          onPcm: async (samples, sampleRate) => {
+            await player.push(samples, sampleRate);
+            markFirst();
+          },
+        }).then(
+          (value) => {
+            if (value?.streamed) player.finish();
+            return value;
+          },
+          (error: unknown) => {
+            player.stop();
+            throw error;
+          },
+        );
+        void result.catch(() => undefined).finally(markFirst);
+
+        mutations.SET_AUDIO_NOW_GENERATING({ audioKey, nowGenerating: true });
+        try {
+          await withProgress(first, actions);
+        } finally {
+          mutations.SET_AUDIO_NOW_GENERATING({
+            audioKey,
+            nowGenerating: false,
+          });
+        }
+
+        try {
+          if (player.startedAt == undefined) {
+            // 鳴らす前に終わった: キャッシュ済み、対象外、または失敗。
+            const value = await result;
+            if (value == undefined) return undefined;
+            return await actions.PLAY_AUDIO_BLOB({
+              audioBlob: value.blob,
+              audioKey,
+            });
+          }
+          mutations.SET_AUDIO_NOW_PLAYING({ audioKey, nowPlaying: true });
+          const completed = await player.ended;
+          // 途中で失敗していたらここで例外になる（止められた場合は握りつぶす）。
+          await result.catch((error: unknown) => {
+            if (!abort.signal.aborted) throw error;
+          });
+          return completed;
+        } finally {
+          mutations.SET_AUDIO_NOW_PLAYING({ audioKey, nowPlaying: false });
+          setActiveAudioStream(undefined, handle);
+          abort.abort();
+        }
       },
     ),
   },

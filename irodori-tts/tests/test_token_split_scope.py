@@ -52,6 +52,10 @@ class ScopeDecisionTests(unittest.TestCase):
         self.assertTrue(token_split_active("all", SMALL_TOKENIZER, self.dictionary))
         self.assertTrue(token_split_active("all", LARGE_TOKENIZER, self.dictionary))
 
+    def test_none_scope_applies_to_no_model(self):
+        for repo in (SMALL_TOKENIZER, LARGE_TOKENIZER, None, ""):
+            self.assertFalse(token_split_active("none", repo, self.dictionary))
+
     def test_unknown_model_tokenizer_keeps_the_old_behaviour(self):
         # モデルが読み込まれる前や古い経路ではトークナイザが分からない。従来どおり当てる。
         self.assertTrue(token_split_active("small", None, self.dictionary))
@@ -60,7 +64,7 @@ class ScopeDecisionTests(unittest.TestCase):
     def test_invalid_scope_is_rejected(self):
         with self.assertRaises(ValueError):
             token_split_active("large", SMALL_TOKENIZER, self.dictionary)
-        self.assertEqual(TOKEN_SPLIT_SCOPES, ("small", "all"))
+        self.assertEqual(TOKEN_SPLIT_SCOPES, ("small", "all", "none"))
 
 
 class SynthesisScopeTests(unittest.TestCase):
@@ -106,6 +110,10 @@ class SynthesisScopeTests(unittest.TestCase):
 
     def test_small_scope_leaves_large_untouched(self):
         self.assertEqual(self.spoken(self.adapter("small", LARGE_TOKENIZER)), "浦和レッズが勝った")
+
+    def test_none_scope_never_splits(self):
+        for repo in (SMALL_TOKENIZER, LARGE_TOKENIZER):
+            self.assertEqual(self.spoken(self.adapter("none", repo)), "浦和レッズが勝った")
 
     def test_all_scope_splits_for_large_too(self):
         self.assertEqual(self.spoken(self.adapter("all", LARGE_TOKENIZER)),

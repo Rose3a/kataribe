@@ -18,7 +18,7 @@ export type IrodoriTokenSplit = "on" | "off";
  * small: 辞書を作ったトークナイザ（modernbert-ja）を使う Small 系だけ。既定
  * all: Large など別のトークナイザのモデルにも当てる
  */
-export type IrodoriTokenSplitScope = "small" | "all";
+export type IrodoriTokenSplitScope = "small" | "all" | "none";
 export const IRODORI_DEFAULT_TOKEN_SPLIT_SCOPE: IrodoriTokenSplitScope =
   "small";
 export const IRODORI_DEFAULT_ENGLISH_READING: IrodoriEnglishReading =
@@ -40,12 +40,20 @@ export const IRODORI_DEFAULT_SPEAKER_STRENGTH = 1;
  * IrodoriSettings.vue が反映し、生成側もここを参照する。
  */
 export const irodoriDefaultSteps = ref(IRODORI_DEFAULT_STEPS);
+export const IRODORI_MIN_STEPS = 1;
+export const IRODORI_MAX_STEPS = 80;
 
 /**
  * 選択中モデルが MeanFlow か。MeanFlow では Schedule と CFG が使われないため、
  * 行設定の画面でそれらの入力を無効にする。
  */
 export const irodoriMeanflow = ref(false);
+
+/**
+ * ストリーミング再生が有効か（設定の stream_playback）。
+ * IrodoriGlobalSettings.vue が反映し、再生側（PLAY_AUDIO）が参照する。
+ */
+export const irodoriStreamPlayback = ref(false);
 
 /**
  * ここから下はエンジン（ローカルの HTTP サーバ）とのやり取りの型。
@@ -90,6 +98,10 @@ export type IrodoriSettings = {
   sway_coeff: number;
   /** 語彙分割辞書の対象。古いエンジンは返さない（small として扱う）。 */
   token_split_scope?: IrodoriTokenSplitScope;
+  /** 生成の完了を待たずに鳴らし始める（ストリーミング再生）。古いエンジンは返さない。 */
+  stream_playback?: boolean;
+  /** 全行共通の既定ステップ数（1〜80）。MeanFlow も含めて既定は8。古いエンジンは返さない。 */
+  default_steps?: number;
 };
 
 /** 選択中モデルの情報。 */
@@ -100,7 +112,10 @@ export type IrodoriModelInfo = {
   downloaded: boolean;
   flowParameterization: string;
   meanflow: boolean;
+  /** 全行共通の既定ステップ数（設定の default_steps）。 */
   defaultSteps: number;
+  /** モデル自身の既定（MeanFlow なら4、RF なら8）。古いエンジンは返さない。 */
+  modelDefaultSteps?: number;
   metadataAvailable: boolean;
   /** 量子化モデルの種類（int4_weight_only など）。量子化でなければ null。 */
   quantization?: string | null;

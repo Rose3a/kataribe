@@ -51,6 +51,8 @@ export type IrodoriRequestInit = {
   method?: "GET" | "POST";
   body?: unknown;
   timeoutMs?: number;
+  /** 呼び出し側から中断するためのシグナル（ストリーミング再生の停止用）。 */
+  signal?: AbortSignal;
 };
 
 /**
@@ -64,11 +66,7 @@ export async function irodoriRequest(
   path: string,
   init: IrodoriRequestInit = {},
 ): Promise<Response> {
-  const {
-    method = "GET",
-    body,
-    timeoutMs = DEFAULT_TIMEOUT_MS,
-  } = init;
+  const { method = "GET", body, timeoutMs = DEFAULT_TIMEOUT_MS, signal } = init;
   const send = async (token: string) =>
     await fetch(`${endpoint}${path}`, {
       method,
@@ -77,7 +75,10 @@ export async function irodoriRequest(
         "X-Irodori-Session": token,
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
-      signal: AbortSignal.timeout(timeoutMs),
+      signal:
+        signal == undefined
+          ? AbortSignal.timeout(timeoutMs)
+          : AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
     });
   let response = await send(await irodoriSessionToken(endpoint));
   if (response.status === 403) {
