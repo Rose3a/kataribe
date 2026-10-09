@@ -78,6 +78,13 @@ def inputs_from(model, kw, compact=False):
     freq = model._rope_freqs(kw['x_t'].shape[1], kw['x_t'].device)
     cache = kw['context_kv_cache']
     masks = [kw[k] for k in ('text_mask', 'speaker_mask', 'caption_mask')]
+    if masks[2] is None:
+        # caption を持たないモデル（v3 など）: 全部無効な長さ1の caption を補い、
+        # plan の入力（caption_mask / kv_4, kv_5）は v4 系と同じ形のままにする。
+        masks[2] = torch.zeros((kw['x_t'].shape[0], 1), dtype=torch.bool, device=kw['x_t'].device)
+    # 各層の kv は (text k, v, speaker k, v[, caption k, v])。足りない caption 分はゼロで埋める。
+    cache = [tuple(layer) + tuple(torch.zeros_like(layer[0][:, :1]) for _ in range(6 - len(layer)))
+             for layer in cache]
     lengths = [mask.shape[1] for mask in masks]
     if compact:
         lengths = []

@@ -39,6 +39,7 @@ Editor の JavaScript 依存パッケージと実行環境の依存パッケー�
 
 | 名前 | 用途 | ライセンス | 主な条件・確認先 |
 | --- | --- | --- | --- |
+| Irodori-TTS-v4.1-Small-Yomi-Tech-tuned | 音声生成モデル（難読漢字・技術用語の読み改善版） | 重み・コード: MIT License + モデルカードの Ethical Restrictions / 埋め込みの読み辞書: CC BY-SA 4.0 | 読み辞書の外来語は JMdict（© EDRDG, CC BY-SA 4.0）由来です。出典の表示を残します。辞書データを取り出して加工・再配布する場合は CC BY-SA 4.0 を適用します。配布ページ: <https://huggingface.co/j-llm/Irodori-TTS-v4.1-Small-Yomi-Tech-tuned>、JMdict のライセンス: <https://www.edrdg.org/edrdg/licence.html> |
 | Irodori-TTS-v4-Large | 音声生成モデル（大容量版） | Gemma Terms of Use + モデルカードの Ethical Restrictions | テキストエンコーダーが T5Gemma 2 由来のため、Gemma の利用規約と禁止用途ポリシーに従います。なりすましや、誤情報を目的とする音声生成は禁止されています。配布ページ: <https://huggingface.co/Aratako/Irodori-TTS-v4-Large> |
 | Irodori-TTS-v4-Large-Quantized | 音声生成モデル（大容量版の INT8 などの量子化版） | Gemma Terms of Use + モデルカードの Ethical Restrictions | Irodori-TTS-v4-Large と同じ条件です。配布ページ: <https://huggingface.co/Aratako/Irodori-TTS-v4-Large-Quantized> |
 

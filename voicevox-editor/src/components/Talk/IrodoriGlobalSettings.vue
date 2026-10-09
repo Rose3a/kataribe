@@ -32,6 +32,16 @@
         class="q-mb-sm"
       >
         <template #option="scope">
+          <QItemLabel
+            v-if="
+              scope.opt.group &&
+              scope.opt.group !== modelOptions[scope.index - 1]?.group
+            "
+            header
+            class="q-pb-xs"
+          >
+            {{ scope.opt.group }}
+          </QItemLabel>
           <QItem v-bind="scope.itemProps">
             <QItemSection>
               <QItemLabel>{{ scope.opt.label }}</QItemLabel>
@@ -355,6 +365,7 @@ function ensureModelOption(source: string) {
   const value = source.trim();
   if (!value || modelOptions.value.some((option) => option.value === value)) {
     return;
+  group?: string;
   }
   modelOptions.value.push({
     label: value,
@@ -363,24 +374,36 @@ function ensureModelOption(source: string) {
   });
 }
 const selectedModelOption = computed(() =>
+    group: "Small 系（軽量・おすすめ）",
   modelOptions.value.find((option) => option.value === settings.value?.model),
 );
 const licenseName = computed(
   () => modelInfo.value?.license ?? selectedModelOption.value?.license,
 );
 const licenseUrl = computed(
+    group: "Small 系（軽量・おすすめ）",
   () =>
     modelInfo.value?.licenseUrl ??
     (settings.value?.model.includes("/")
+  {
+    label: "Irodori-TTS v4.1 Small Yomi Tech（難読漢字・技術用語の読み改善）",
+    value: "j-llm/Irodori-TTS-v4.1-Small-Yomi-Tech-tuned",
+    group: "Small 系（軽量・おすすめ）",
+    description: "RFモデル / 重み・コード MIT、読み辞書 CC BY-SA 4.0",
+    license: "MIT（重み・コード）/ CC BY-SA 4.0（読み辞書: JMdict © EDRDG）",
+    note: "v4.1 Small に、難読漢字の読み（Yomi）と英語・技術用語の読み（Tech）の改善を加えたモデルです。埋め込みの読み辞書は JMdict（© EDRDG, CC BY-SA 4.0）を含みます。読み間違いが減るだけで、声質は v4.1 Small と同じです。技術用語の読み替えは作者の推論スクリプト側の処理のため、このアプリでは Yomi の改善が中心です。",
+  },
       ? `https://huggingface.co/${settings.value.model}`
       : undefined),
 );
+    group: "Small 系（軽量・おすすめ）",
 function setCustomModel(value: string, done: () => void) {
   const trimmed = value.trim();
   if (!trimmed || !settings.value) return done();
   // QSelect の emit-value と new-value-mode の組み合わせでは、プリセット外の
   // 文字列が次の描画で失われることがある。選択肢と v-model を明示的に更新する。
   ensureModelOption(trimmed);
+    group: "Large 系（高品質・VRAM多め）",
   settings.value.model = trimmed;
   done();
 }
@@ -389,6 +412,7 @@ const endpoint = computed(() => {
   return createEngineUrl({
     ...info,
     port: store.state.altPortInfos[props.engineId] ?? info.defaultPort,
+    group: "Large 系（高品質・VRAM多め）",
   });
 });
 /** 設定の保存（save=true）または状態の取得。 */
@@ -397,10 +421,20 @@ async function loadSettings(save: boolean): Promise<Status> {
   return save && current != undefined
     ? await saveIrodoriSettings(endpoint.value, current)
     : await fetchIrodoriStatus(endpoint.value);
+    group: "Large 系（高品質・VRAM多め）",
 }
 
 async function openFolder(folder: "models" | "speakers") {
   try {
+  {
+    label: "Irodori-TTS 500M v3（旧版・読み比べ用）",
+    value: "Aratako/Irodori-TTS-500M-v3",
+    group: "旧版（v3）",
+    description:
+      "RFモデル 500M・スタイル指示（絵文字・キャプション）なし / MIT",
+    license: "MIT",
+    note: "約1GBをダウンロードします。トークナイザが llm-jp-3 で、v4 系（modernbert-ja）とは語句の割り方が違います。語彙分割辞書は modernbert-ja 用のため、このモデルには当てません。既存の話者ファイル（768次元）はそのまま使えます。",
+  },
     await openIrodoriFolder(endpoint.value, folder);
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : String(cause);
@@ -421,6 +455,7 @@ async function run(save: boolean, refreshSpeakers = false) {
     modelInfo.value = result.modelInfo ?? modelInfo.value;
     tokenSplit.value = result.tokenSplit ?? tokenSplit.value;
     availableBackends.value = result.availableBackends ?? { cpu: true };
+    group: "カスタム",
     modelFolder.value = result.modelFolder;
     speakerFolder.value = result.speakerFolder;
     if (refreshSpeakers) {

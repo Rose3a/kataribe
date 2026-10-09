@@ -21,9 +21,11 @@ BOX = Path(__file__).resolve().parents[2]
 KNOWN_REPOS = {
     "Aratako/Irodori-TTS-v4.1-Small": "Irodori-TTS v4.1 Small",
     "Aratako/Irodori-TTS-v4.1-Small-MF": "Irodori-TTS v4.1 Small MF（MeanFlow）",
+    "j-llm/Irodori-TTS-v4.1-Small-Yomi-Tech-tuned": "Irodori-TTS v4.1 Small Yomi Tech",
     "phasefield-audio/Irodori-TTS-v4.1-Anime": "Irodori-TTS v4.1 Anime",
     "Aratako/Irodori-TTS-v4-Large": "Irodori-TTS v4 Large（bf16）",
     "Aratako/Irodori-TTS-v4-Large-Quantized": "Irodori-TTS v4 Large 量子化版",
+    "Aratako/Irodori-TTS-500M-v3": "Irodori-TTS 500M v3（旧版）",
 }
 # Shared parts every synthesis needs; shown but never deletable.
 REQUIRED_REPOS = {

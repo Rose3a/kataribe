@@ -36,6 +36,10 @@ class Engine:
         if len(xs) != len(self.input_names):
             raise ValueError('Wrong number of engine inputs')
         for name, tensor in zip(self.input_names, xs):
+            # caption を持たないモデル（v3 など）では caption_mask / kv_4, kv_5 が未使用で
+            # ONNX 変換時に削られる。エンジンに無い入力は検証も束縛もしない。
+            if name not in self.names:
+                continue
             expected = self.dtype_map[self.engine.get_tensor_dtype(name)]
             if not tensor.is_cuda or not tensor.is_contiguous() or tensor.dtype != expected:
                 raise ValueError(f'{name} must be contiguous CUDA {expected}')

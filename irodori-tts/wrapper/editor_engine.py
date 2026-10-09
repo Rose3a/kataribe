@@ -333,7 +333,10 @@ class EditorAdapter:
             "Aratako/Irodori-TTS-v4.1-Small-MF": ("MIT", "https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small-MF"),
             "phasefield-audio/Irodori-TTS-v4.1-Anime": ("MIT", "https://huggingface.co/phasefield-audio/Irodori-TTS-v4.1-Anime"),
             # テキストエンコーダが T5Gemma 2 由来のため Gemma の規約が掛かる。
+            # 重み・コードは MIT。埋め込みの読み辞書は JMdict 由来で CC BY-SA 4.0（© EDRDG）。
+            "j-llm/Irodori-TTS-v4.1-Small-Yomi-Tech-tuned": ("MIT（重み・コード）/ CC BY-SA 4.0（読み辞書: JMdict © EDRDG）", "https://huggingface.co/j-llm/Irodori-TTS-v4.1-Small-Yomi-Tech-tuned"),
             "Aratako/Irodori-TTS-v4-Large": ("Gemma Terms of Use", "https://huggingface.co/Aratako/Irodori-TTS-v4-Large/blob/main/GEMMA_TERMS_OF_USE.md"),
+            "Aratako/Irodori-TTS-500M-v3": ("MIT", "https://huggingface.co/Aratako/Irodori-TTS-500M-v3"),
             "Aratako/Irodori-TTS-v4-Large-Quantized": ("Gemma Terms of Use", "https://huggingface.co/Aratako/Irodori-TTS-v4-Large-Quantized/blob/main/GEMMA_TERMS_OF_USE.md"),
         }
         # サブフォルダ付き（repo/int8-weight-only など）はリポジトリ単位で引く。
