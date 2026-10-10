@@ -7,3 +7,6 @@
 
 # Keep this file out of generated source archives.
 .gitattributes export-ignore
+
+# Shell scripts run on Linux / Colab, so keep LF line endings.
+*.sh text eol=lf
