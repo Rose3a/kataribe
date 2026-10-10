@@ -9,7 +9,6 @@ import unicodedata
 import uuid
 
 from english_reading import convert_english, to_hiragana
-from token_split import TOKEN_SPLIT_DICTIONARY, TOKEN_SPLITS
 
 KANA_STYLES = ("katakana", "hiragana")
 # 英単語・英文の読み: 変換しない / カタカナにする / ひらがなにする
@@ -100,17 +99,14 @@ class ReadingDictionary:
         with self.lock:
             self._save({**self.words, **incoming} if override else {**incoming, **self.words})
 
-    def convert(self, text, english="katakana", kana_style="katakana", spacing="keep",
-                token_split="on"):
+    def convert(self, text, english="katakana", kana_style="katakana", spacing="keep"):
         """ユーザー辞書を当て、残った英語をカナ読みにする。
 
         english は英語の読み方（off なら英字はそのまま残す、hiragana なら英語の
         読みだけひらがなにする）。kana_style="hiragana" なら、辞書と英語の読みを
         含む文中のカタカナをすべてひらがなにする。spacing="join" なら、変換した
         英語とユーザー辞書の読みの前後の空白を詰める（英語を変換するときだけ）。
-        token_split="on" なら、最後に語彙分割辞書（token_split.py）で学習の少ない
-        まとまりトークンを分ける。モデルに渡る直前の文字列に当てるので、ユーザー辞書の
-        読みやひらがな化した文にも効く。
+        語彙分割（token_split.py）は文字列を書き換えず、エンコード時に当てる。
         """
         if english not in ENGLISH_READINGS:
             raise ValueError(f"english must be one of {ENGLISH_READINGS}")
@@ -118,8 +114,6 @@ class ReadingDictionary:
             raise ValueError(f"kana_style must be one of {KANA_STYLES}")
         if spacing not in ENGLISH_SPACINGS:
             raise ValueError(f"spacing must be one of {ENGLISH_SPACINGS}")
-        if token_split not in TOKEN_SPLITS:
-            raise ValueError(f"token_split must be one of {TOKEN_SPLITS}")
         join = english != "off" and spacing == "join"
 
         def rest(part):
@@ -128,12 +122,9 @@ class ReadingDictionary:
             return convert_english(part, hiragana=english == "hiragana", join=join)
 
         out = []
-        for part, from_user in self._apply_words(normalize_width(text), rest, join=join):
+        for part, _from_user in self._apply_words(normalize_width(text), rest, join=join):
             if kana_style == "hiragana":
                 part = to_hiragana(part)
-            # 読み方辞書が当たった部分には語彙分割辞書を重ねない（2つの辞書は別々に効く）
-            if token_split == "on" and not from_user:
-                part = TOKEN_SPLIT_DICTIONARY.apply(part)
             out.append(part)
         return "".join(out)
 

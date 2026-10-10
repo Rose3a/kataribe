@@ -37,8 +37,8 @@ from asr_timeline import (AsrTimeline, decode_wav, ensure_asr_model, asr_package
 from tts_cli import SpeakerCassette, resolve_embed_dirs
 from speaker_mix import compose_speaker_mix
 from model_storage import ModelStorage
-from token_split import (DEFAULT_TOKEN_SPLIT_SCOPE, TOKEN_SPLIT_DICTIONARY, TOKEN_SPLIT_SCOPES,
-                         token_split_active)
+from token_split import (DEFAULT_TOKEN_SPLIT_THRESHOLD, TOKEN_SPLIT_THRESHOLDS,
+                         token_split_applies)
 
 # 初回のASRモデル取得でリクエストを待たせる上限（秒）。待ち切れなくても
 # ダウンロードは続くので、次の要求で揃っていれば使える。
@@ -85,7 +85,7 @@ def _wav_seconds(data):
 
 class EditorAdapter:
     DEFAULT_SETTINGS = dict(backend="cpu", model="Aratako/Irodori-TTS-v4.1-Small", seed=4763674,
-                            sway_coeff=-1.0, token_split_scope=DEFAULT_TOKEN_SPLIT_SCOPE,
+                            sway_coeff=-1.0, token_split_threshold=DEFAULT_TOKEN_SPLIT_THRESHOLD,
                             stream_playback=False, default_steps=DEFAULT_STEPS_RF)
 
     def __init__(self):
@@ -115,7 +115,7 @@ class EditorAdapter:
         self._model_info_cache = {}
         self.config_path = ROOT / "editor-settings.json"
         self.settings = dict(backend="cpu", model="Aratako/Irodori-TTS-v4.1-Small", seed=4763674,
-                             sway_coeff=-1.0, token_split_scope=DEFAULT_TOKEN_SPLIT_SCOPE,
+                             sway_coeff=-1.0, token_split_threshold=DEFAULT_TOKEN_SPLIT_THRESHOLD,
                             stream_playback=False, default_steps=DEFAULT_STEPS_RF)
         try:
             saved = json.loads(self.config_path.read_text(encoding="utf-8"))
@@ -129,6 +129,10 @@ class EditorAdapter:
                 # 読み方は開発版では共通設定だったが、今はセリフごとの設定。
                 saved.pop("english_reading", None)
                 saved.pop("kana_style", None)
+                # 語彙分割辞書の対象（small / all / none）は、出現度の境目に置き換えた。
+                # 「使わない」にしていたなら、境目も「使わない」にする。
+                if saved.pop("token_split_scope", None) == "none":
+                    saved.setdefault("token_split_threshold", "none")
                 # セットアップ（tools/prepare.py）は固定リビジョンの既定モデルを
                 # models/model.safetensors に置く。それがあるなら使い続ける。
                 # HF の repo_id に置き換えると、同じ約3GBを最新リビジョンで取り直す。
@@ -374,8 +378,8 @@ class EditorAdapter:
                 raise ValueError(
                     "TensorRT で使える量子化モデルは INT4（int4-weight-only）だけです。"
                     "INT8 などは NVIDIA / CUDA を選んでください")
-        if value.get("token_split_scope", DEFAULT_TOKEN_SPLIT_SCOPE) not in TOKEN_SPLIT_SCOPES:
-            raise ValueError("token_split_scope は small、all、none のどれかを指定してください")
+        if value.get("token_split_threshold", DEFAULT_TOKEN_SPLIT_THRESHOLD) not in TOKEN_SPLIT_THRESHOLDS:
+            raise ValueError("token_split_threshold は -10、-11、-12、-13、none のどれかを指定してください")
         steps = value.get("default_steps", DEFAULT_STEPS_RF)
         if isinstance(steps, bool) or not isinstance(steps, int) or not 1 <= steps <= 80:
             raise ValueError("default_steps は1〜80の整数で指定してください")
@@ -606,18 +610,27 @@ class EditorAdapter:
             delegate = self.delegate
         return delegate.text_tokenizer() if delegate is not None else None
 
+    @property
+    def token_split_threshold(self):
+        """語彙分割の境目（全体の設定）。/irodori/tokenize も合成と同じ値で分ける。"""
+        with self.state_lock:
+            return self.settings.get("token_split_threshold", DEFAULT_TOKEN_SPLIT_THRESHOLD)
+
+    @property
+    def text_tokenizer_repo(self):
+        """読み込み中のモデルのトークナイザ。未読み込みなら None。"""
+        with self.state_lock:
+            delegate = self.delegate
+        return getattr(delegate, "text_tokenizer_repo", None) if delegate is not None else None
+
     def token_split_state(self, settings, model_info):
-        """語彙分割辞書が選択中のモデルに効くか（画面の表示用）。読み込み前はメタデータから判定する。"""
-        scope = settings.get("token_split_scope", DEFAULT_TOKEN_SPLIT_SCOPE)
+        """語彙分割が選択中のモデルに効くか（画面の表示用）。読み込み前はメタデータから判定する。"""
+        threshold = settings.get("token_split_threshold", DEFAULT_TOKEN_SPLIT_THRESHOLD)
         with self.state_lock:
             delegate = self.delegate
         repo = (getattr(delegate, "text_tokenizer_repo", None) if delegate is not None
                 else model_info.get("textTokenizerRepo"))
-        try:
-            return {"scope": scope, "active": token_split_active(scope, repo), "modelTokenizer": repo,
-                    "dictionaryTokenizer": TOKEN_SPLIT_DICTIONARY.tokenizer_repo()}
-        except ValueError:
-            return {"scope": scope, "active": True, "modelTokenizer": repo, "dictionaryTokenizer": None}
+        return {"threshold": threshold, "applies": token_split_applies(repo), "modelTokenizer": repo}
 
     def status(self):
         available = self.available_backends()
@@ -654,6 +667,7 @@ class EditorAdapter:
         value.pop("steps", None)
         value.pop("t_schedule_mode", None)
         value.pop("seconds", None)
+        value.pop("token_split_scope", None)
         self.validate(value)
         changed_backend = False
         retry_trt = False
@@ -998,8 +1012,8 @@ class EditorAdapter:
                          irodori_sway_coeff=float(self.settings["sway_coeff"]))
             if "irodori_seed" not in query:
                 query["irodori_seed"] = self.settings["seed"]
-            self.delegate.token_split_scope = self.settings.get(
-                "token_split_scope", DEFAULT_TOKEN_SPLIT_SCOPE)
+            self.delegate.token_split_threshold = self.settings.get(
+                "token_split_threshold", DEFAULT_TOKEN_SPLIT_THRESHOLD)
             started = time.perf_counter()
             try:
                 result = self.delegate.synthesize(query, sid)

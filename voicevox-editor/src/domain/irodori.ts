@@ -11,16 +11,16 @@ export type IrodoriEnglishReading = "off" | "katakana" | "hiragana";
 export type IrodoriKanaStyle = "katakana" | "hiragana";
 /** 変換した英語の前後の空白。keep は語ごとに区切り、join は詰めてつなげて読む。 */
 export type IrodoriEnglishSpacing = "keep" | "join";
-/** 語彙分割辞書。on なら学習の少ないまとまりトークン（浦和レッズ など）を分けて読ませる。 */
+/** 語彙分割。on なら学習の少ないまとまりトークン（浦和レッズ など）を分けて読ませる。 */
 export type IrodoriTokenSplit = "on" | "off";
 /**
- * 語彙分割辞書をどのモデルに当てるか（全体の設定）。
- * small: 辞書を作ったトークナイザ（modernbert-ja）を使う Small 系だけ。既定
- * all: Large など別のトークナイザのモデルにも当てる
+ * 語彙分割で避けるトークンの出現度の境目（全体の設定）。4文字以上で出現度がこれ以下の
+ * トークンを使わない。0 に近い（-10）ほど分ける語が増える。none ならどのセリフにも当てない。
+ * 出現度の尺度は modernbert-ja のものなので、v4 Small 系のモデルにだけ当たる。
  */
-export type IrodoriTokenSplitScope = "small" | "all" | "none";
-export const IRODORI_DEFAULT_TOKEN_SPLIT_SCOPE: IrodoriTokenSplitScope =
-  "small";
+export type IrodoriTokenSplitThreshold = "-10" | "-11" | "-12" | "-13" | "none";
+export const IRODORI_DEFAULT_TOKEN_SPLIT_THRESHOLD: IrodoriTokenSplitThreshold =
+  "-13";
 export const IRODORI_DEFAULT_ENGLISH_READING: IrodoriEnglishReading =
   "katakana";
 export const IRODORI_DEFAULT_KANA_STYLE: IrodoriKanaStyle = "katakana";
@@ -96,8 +96,8 @@ export type IrodoriSettings = {
   model: string;
   seed: number;
   sway_coeff: number;
-  /** 語彙分割辞書の対象。古いエンジンは返さない（small として扱う）。 */
-  token_split_scope?: IrodoriTokenSplitScope;
+  /** 語彙分割の境目。古いエンジンは返さない（-13 として扱う）。 */
+  token_split_threshold?: IrodoriTokenSplitThreshold;
   /** 生成の完了を待たずに鳴らし始める（ストリーミング再生）。古いエンジンは返さない。 */
   stream_playback?: boolean;
   /** 全行共通の既定ステップ数（1〜80）。MeanFlow も含めて既定は8。古いエンジンは返さない。 */
@@ -119,19 +119,18 @@ export type IrodoriModelInfo = {
   metadataAvailable: boolean;
   /** 量子化モデルの種類（int4_weight_only など）。量子化でなければ null。 */
   quantization?: string | null;
-  /** モデルが使うテキストのトークナイザ。語彙分割辞書を当てるかの判定に使う。 */
+  /** モデルが使うテキストのトークナイザ。語彙分割を当てるかの判定に使う。 */
   textTokenizerRepo?: string | null;
   license?: string;
   licenseUrl?: string;
 };
 
-/** 語彙分割辞書がいま選択中のモデルに効くか（GET /irodori/settings の tokenSplit）。 */
+/** 語彙分割がいま選択中のモデルに効くか（GET /irodori/settings の tokenSplit）。 */
 export type IrodoriTokenSplitState = {
-  scope: IrodoriTokenSplitScope;
-  /** true なら、セリフごとの設定が on のときに辞書を当てる。 */
-  active: boolean;
+  threshold: IrodoriTokenSplitThreshold;
+  /** true なら、v4 Small 系（modernbert-ja）のモデルで、境目が none でなければ当てる。 */
+  applies: boolean;
   modelTokenizer: string | null;
-  dictionaryTokenizer: string | null;
 };
 
 /** エンジンが持つ進捗（生成だけでなくモデル取得でも動く）。 */
@@ -174,42 +173,6 @@ export type IrodoriStorageEntry = {
   note: string;
   bytes: number;
   modified: number | null;
-};
-
-/** POST /irodori/tokenize の1トークン。split はトークンではなく見えない区切りの位置。 */
-export type IrodoriToken =
-  | {
-      text: string;
-      id: number;
-      /** 出現度（Unigram の logp）。低いほど学習で見ていない。 */
-      score: number;
-      /** 出現度の低い側の複数文字トークン（読めないことが多い）。 */
-      rare: boolean;
-      /** 語彙分割辞書に登録がある（合成時に自動で分ける）。 */
-      dictionary: boolean;
-    }
-  | { split: true };
-
-/** POST /irodori/tokenize の応答。 */
-export type IrodoriTokenView = {
-  available: boolean;
-  /** model: 読み込み中のモデル / fallback: 未読み込みのため既定のトークナイザ */
-  source: "model" | "fallback";
-  results: { text: string; tokens: IrodoriToken[] }[];
-};
-
-/**
- * 語彙分割辞書（読めない語句の対策）の1件。読み方＆アクセント辞書とは別に持つ。
- * text の | は見えない区切り、[ZW] はゼロ幅スペース。
- */
-export type TokenSplitEntry = {
-  surface: string;
-  text: string;
-  note?: string;
-  /** 自動の登録だけ: 選ばれた書き換え方と、書き換え前後の OK率 */
-  method?: string;
-  ok_before?: number;
-  ok_after?: number;
 };
 
 /** GET /irodori/storage と POST /irodori/storage/delete の応答。 */

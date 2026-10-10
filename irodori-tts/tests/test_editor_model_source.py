@@ -220,30 +220,32 @@ class ModelInfoTests(unittest.TestCase):
                 adapter.validate(settings)
             adapter.validate({**settings, "backend": "cuda"})
 
-    def test_token_split_scope_is_validated_and_defaults_to_small(self):
+    def test_token_split_threshold_is_validated_and_defaults_to_minus_13(self):
         adapter = fake_adapter()
         adapter.available_backends = lambda: {"cpu": True, "cuda": False, "trt": False, "radeon": False}
-        self.assertEqual(EditorAdapter.DEFAULT_SETTINGS["token_split_scope"], "small")
+        self.assertEqual(EditorAdapter.DEFAULT_SETTINGS["token_split_threshold"], "-13")
         settings = dict(backend="cpu", model="model.safetensors", seed=1, sway_coeff=-1.0)
-        adapter.validate(settings)                                   # 未指定は既定（small）
-        adapter.validate({**settings, "token_split_scope": "all"})
-        with self.assertRaisesRegex(ValueError, "token_split_scope"):
-            adapter.validate({**settings, "token_split_scope": "large"})
+        adapter.validate(settings)                                   # 未指定は既定（-13）
+        for value in ("-10", "-11", "-12", "-13", "none"):
+            adapter.validate({**settings, "token_split_threshold": value})
+        for bad in ("-14", -13, "small"):
+            with self.assertRaisesRegex(ValueError, "token_split_threshold"):
+                adapter.validate({**settings, "token_split_threshold": bad})
 
     def test_token_split_state_follows_the_model_tokenizer(self):
         adapter = fake_adapter(delegate=None)
         small = {"textTokenizerRepo": "sbintuitions/modernbert-ja-310m"}
         large = {"textTokenizerRepo": "google/t5gemma-2-1b-1b"}
-        self.assertTrue(adapter.token_split_state({"token_split_scope": "small"}, small)["active"])
-        state = adapter.token_split_state({"token_split_scope": "small"}, large)
-        self.assertFalse(state["active"])
-        self.assertEqual(state["modelTokenizer"], "google/t5gemma-2-1b-1b")
-        self.assertTrue(adapter.token_split_state({"token_split_scope": "all"}, large)["active"])
-        # メタデータが読めないモデルは従来どおり辞書を当てる
-        self.assertTrue(adapter.token_split_state({"token_split_scope": "small"}, {})["active"])
+        self.assertEqual(adapter.token_split_state({"token_split_threshold": "-12"}, small),
+                         {"threshold": "-12", "applies": True,
+                          "modelTokenizer": "sbintuitions/modernbert-ja-310m"})
+        self.assertFalse(adapter.token_split_state({}, large)["applies"])
+        self.assertEqual(adapter.token_split_state({}, large)["threshold"], "-13")
+        # メタデータが読めないモデルは当てる側に倒す
+        self.assertTrue(adapter.token_split_state({}, {})["applies"])
         # 読み込み済みのモデルは、読み込んだトークナイザで判定する
         adapter.delegate = Mock(text_tokenizer_repo="google/t5gemma-2-1b-1b")
-        self.assertFalse(adapter.token_split_state({"token_split_scope": "small"}, small)["active"])
+        self.assertFalse(adapter.token_split_state({}, small)["applies"])
 
     def test_int4_checkpoint_gets_the_int4_plan_and_others_the_bf16_plan(self):
         import trt_cache

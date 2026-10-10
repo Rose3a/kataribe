@@ -12,8 +12,6 @@ import type {
   IrodoriSettings,
   IrodoriStatus,
   IrodoriStorageStatus,
-  IrodoriTokenView,
-  TokenSplitEntry,
 } from "@/domain/irodori";
 
 const SESSION_TIMEOUT_MS = 5000;
@@ -217,75 +215,6 @@ export async function fetchAsrTimeline(
   } catch {
     return null;
   }
-}
-
-/** 文がモデルにどう分けて渡るか（辞書画面の表示用）。失敗したら undefined。 */
-export async function fetchTokenView(
-  endpoint: string,
-  texts: string[],
-): Promise<IrodoriTokenView | undefined> {
-  try {
-    const response = await irodoriRequest(endpoint, "/irodori/tokenize", {
-      method: "POST",
-      body: { texts },
-      timeoutMs: SESSION_TIMEOUT_MS,
-    });
-    if (!response.ok) return undefined;
-    return (await response.json()) as IrodoriTokenView;
-  } catch {
-    return undefined;
-  }
-}
-
-async function readJson<T>(response: Response): Promise<T> {
-  if (!response.ok) {
-    let detail = await response.text();
-    try {
-      detail = (JSON.parse(detail) as { detail?: string }).detail ?? detail;
-    } catch {
-      // 本文が JSON でなければそのまま出す
-    }
-    throw new Error(detail);
-  }
-  return (await response.json()) as T;
-}
-
-/** 語彙分割辞書の一覧（自分の登録と自動の登録）。 */
-export async function listTokenSplit(
-  endpoint: string,
-): Promise<{ user: TokenSplitEntry[]; auto: TokenSplitEntry[] }> {
-  return await readJson(
-    await irodoriRequest(endpoint, "/irodori/token_split/list", {
-      method: "POST",
-      body: {},
-    }),
-  );
-}
-
-/** 自分の登録に足す（同じ語句なら上書き）。 */
-export async function putTokenSplit(
-  endpoint: string,
-  entry: { surface: string; text: string; note: string },
-): Promise<TokenSplitEntry> {
-  return await readJson(
-    await irodoriRequest(endpoint, "/irodori/token_split/put", {
-      method: "POST",
-      body: entry,
-    }),
-  );
-}
-
-/** 自分の登録から消す。 */
-export async function deleteTokenSplit(
-  endpoint: string,
-  surface: string,
-): Promise<void> {
-  await readJson(
-    await irodoriRequest(endpoint, "/irodori/token_split/delete", {
-      method: "POST",
-      body: { surface },
-    }),
-  );
 }
 
 /** 行設定の既定値（ステップ数・MeanFlowか）を、現在選ばれているモデルに合わせる。 */

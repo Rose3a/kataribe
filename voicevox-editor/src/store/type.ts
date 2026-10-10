@@ -2306,7 +2306,6 @@ export type DialogStates = {
   isAcceptRetrieveTelemetryDialogOpen: boolean;
   isAcceptTermsDialogOpen: boolean;
   isDictionaryManageDialogOpen: boolean;
-  isTokenSplitDialogOpen: boolean;
   isEngineManageDialogOpen: boolean;
   isUpdateNotificationDialogOpen: boolean;
   isExportSongAudioDialogOpen: boolean;

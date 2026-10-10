@@ -19,8 +19,7 @@ Editor 経由では、`http://127.0.0.1:50125` の API を使います。
 | 音声クエリ作成 | POST | `/audio_query?text=...&speaker=...` | `text` と `speaker` は必須（VOICEVOX と同じ） |
 | 音声合成 | POST | `/synthesis?speaker=...` | `speaker` は必須 |
 | ユーザー辞書 | GET/POST/PUT/DELETE | `/user_dict`, `/user_dict_word...` | VOICEVOX 互換 |
-| 語彙分割辞書 | POST | `/irodori/token_split/list`, `/irodori/token_split/put`, `/irodori/token_split/delete` | 読めない語句の対策。ユーザー辞書とは別（`docs/TOKEN_SPLIT.md`） |
-| トークンの分け方 | POST | `/irodori/tokenize` | `{"texts": [...]}`。読み込み中のモデルのトークナイザで分ける |
+| トークンの分け方 | POST | `/irodori/tokenize` | `{"texts": [...]}`。読み込み中のモデルのトークナイザで分ける。結果の `original` は語彙分割なし、`tokens` は合成と同じ境目で語彙分割したとき（`docs/TOKEN_SPLIT.md`） |
 | 辞書一括取込 | POST | `/import_user_dict?override=...` | |
 | 共通設定・状態 | GET/POST | `/irodori/settings` | Irodori 独自 |
 
@@ -48,12 +47,12 @@ Editor 経由の `/synthesis` では、次のように設定が適用されま�
 | `model` | Editor の「モデル」設定、`/irodori/settings` | 全リクエスト |
 | `seed` | Editor の共通設定 | `irodori_seed` が省略された場合の既定値 |
 | `sway_coeff` | Editor の共通設定 | 行クエリへ適用。入力側の同名値より優先 |
-| `token_split_scope` | Editor の共通設定、`/irodori/settings` | 語彙分割辞書を当てるモデル。`small`（既定: Small 系のみ）/ `all`（Large にも）。変更はモデルの再読み込みなしで次の合成から有効。セリフごとの `irodori_token_split` が `off` なら常に当てない |
+| `token_split_threshold` | Editor の共通設定、`/irodori/settings` | 語彙分割の境目。`-10` / `-11` / `-12` / `-13`（既定）/ `none`。4文字以上で出現度がこれ以下のトークンを避けて分ける。v4 Small 系（modernbert-ja）のモデルにだけ当たる。変更はモデルの再読み込みなしで次の合成から有効。セリフごとの `irodori_token_split` が `off` なら常に当てない |
 | CFG / step / Schedule / 音声長 / caption / 話速など | 音声クエリの `irodori_*` / `speedScale` | その1行だけ |
 | ユーザー辞書 | プロジェクトルートの `user_dictionary.json` | `/audio_query` と合成時のテキスト変換 |
 
-現在の backend・model・seed・`token_split_scope` は `GET /irodori/settings` で確認できます。
-同じ応答の `tokenSplit`（`scope` / `active` / `modelTokenizer` / `dictionaryTokenizer`）で、語彙分割辞書が
+現在の backend・model・seed・`token_split_threshold` は `GET /irodori/settings` で確認できます。
+同じ応答の `tokenSplit`（`threshold` / `applies` / `modelTokenizer`）で、語彙分割が
 いまのモデルに効くかが分かり、`modelInfo` には量子化の種類（`quantization`）と
 モデルのテキストのトークナイザ（`textTokenizerRepo`）が入ります。Editor のセリフごとの
 設定まで同じにしたい場合は、`/audio_query` の応答へ同じ `irodori_*` 値を追加してから
@@ -115,7 +114,7 @@ JSON のキーは snake_case で指定します。`irodoriSteps` のような ca
 | `irodori_english_reading` | string | `off` / `katakana`（既定） / `hiragana` | 英単語・英文の読み。`off` は英字のまま、ほかはその表記に変換してから合成する |
 | `irodori_english_spacing` | string | `keep`（既定） / `join` | 変換した英語の前後の空白。`join` なら詰めてつなげて読む（`アイ ラブ ユー.` → `アイラブユー.`）。`off` のときは使わない |
 | `irodori_kana_style` | string | `katakana`（既定） / `hiragana` | `hiragana` なら文中のカタカナをひらがなにして読ませる |
-| `irodori_token_split` | string | `on`（既定） / `off` | 語彙分割辞書。学習の少ないまとまりトークン（`浦和レッズ` など）を間を入れずに分けて読ませる（`docs/TOKEN_SPLIT.md`） |
+| `irodori_token_split` | string | `on`（既定） / `off` | 語彙分割。4文字以上で出現度が境目以下のまとまりトークン（`浦和レッズ` など）を避けて、細かいトークンで読ませる（`docs/TOKEN_SPLIT.md`） |
 | `speedScale` | number | 0.25〜4.0、既定 1 | 話速（VOICEVOX と同じ名前） |
 
 - `irodori_text` は元の文章として保持してください。`kana` だけを置き換えると、合成時
@@ -179,6 +178,6 @@ Invoke-RestMethod "$Base/user_dict"
 - `irodori-tts/wrapper/voicevox_engine.py` — VOICEVOX互換エンドポイント、認証、入力チェック（`IRODORI_QUERY_FIELDS`）
 - `irodori-tts/wrapper/reading_dictionary.py` — `user_dictionary.json` の読み変換
 - `irodori-tts/wrapper/english_reading.py` — 英単語・英文のカタカナ読み（発音データは `tools/build_english_dictionary.py` で再生成）
-- `irodori-tts/wrapper/token_split.py` — 語彙分割辞書（`data/token_split_dictionary.json` は `tools/token_rescue.py` で生成）
+- `irodori-tts/wrapper/token_split.py` — 語彙分割（出現度の低い長いトークンを避けてエンコードする）
 - `irodori-tts/tests/test_voicevox_compat.py` — VOICEVOX 互換 API の契約テスト
 - `voicevox-editor/IRODORI_EDITOR.md` — Editor画面とエンジンの設定説明

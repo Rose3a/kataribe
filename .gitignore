@@ -91,7 +91,6 @@ irodori-tts/manifest.py
 .env.*
 !.env.example
 user_dictionary.json
-token_split_user.json
 voicevox-editor/.env
 voicevox-editor/irodori-engine-path.txt
 irodori-tts/editor-settings.json

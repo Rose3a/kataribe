@@ -11,15 +11,6 @@ from urllib.parse import urlencode
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "wrapper"))
 from reading_dictionary import ReadingDictionary, make_word
-from token_split import TokenSplitDictionary
-
-
-def setUpModule():
-    # 同梱の語彙分割辞書の中身で読み変換のテスト結果が変わらないよう、空の辞書にする
-    patcher = patch("reading_dictionary.TOKEN_SPLIT_DICTIONARY",
-                    TokenSplitDictionary(Path(tempfile.gettempdir()) / "no-token-split.json"))
-    patcher.start()
-    unittest.addModuleCleanup(patcher.stop)
 
 
 class DictionaryTests(unittest.TestCase):

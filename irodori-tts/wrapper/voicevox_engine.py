@@ -44,8 +44,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tts_cli import IrodoriTTS, resolve_embed_dirs  # noqa: E402
 from reading_dictionary import (ENGLISH_READINGS, ENGLISH_SPACINGS, KANA_STYLES,
                                 READING_DICTIONARY, make_word)
-from token_split import (DEFAULT_TOKEN_SPLIT_SCOPE, TOKEN_SPLIT_DICTIONARY, TOKEN_SPLITS,
-                         describe_tokens, token_split_active)
+from token_split import (DEFAULT_TOKEN_SPLIT_THRESHOLD, TOKEN_SPLITS, active_threshold,
+                         describe_tokens, threshold_value, token_split_applies)
 from third_party_licenses import dependency_licenses
 from speaker_catalog import blink_thumbnail_for, credit_for, display_name_for, policy_for, mouth_open_thumbnail_for, mouth_parts_for, portrait_for, speaker_catalog, _fallback_icon  # noqa: E402
 
@@ -240,7 +240,7 @@ IRODORI_QUERY_FIELDS: dict[str, dict] = {
     },
     "irodori_token_split": {
         "type": "string", "enum": list(TOKEN_SPLITS), "default": "on",
-        "description": "語彙分割辞書（セリフごと）。on なら学習の少ないまとまりトークン（浦和レッズ など）を分けて読ませる。全体の設定（token_split_scope）が small のときは、辞書を作ったトークナイザを使う Small 系のモデルにだけ当たる（none ならどのモデルにも当たらない）",
+        "description": "語彙分割（セリフごと）。on なら、4文字以上で出現度が境目以下のまとまりトークン（浦和レッズ など）を使わず、細かいトークンに分けて読ませる。境目は全体の設定（token_split_threshold、既定 -13。none ならどのセリフにも当たらない）。v4 Small 系（modernbert-ja のトークナイザ）のモデルにだけ当たる",
     },
     "irodori_secondary_speaker_style_id": {
         "type": "integer", "nullable": True, "deprecated": True,
@@ -655,7 +655,7 @@ def _speaker_table(tts: IrodoriTTS, progress_callback=None) -> tuple[list[dict],
     return output, id_to_name
 
 
-def _reading_options(query: dict) -> dict:
+def _reading_options(query: dict) -> tuple[dict, bool]:
     """英単語の読み変換とカナ表記の指定（セリフごとの設定）。"""
     english = query.get("irodori_english_reading", "katakana")
     kana_style = query.get("irodori_kana_style", "katakana")
@@ -671,8 +671,7 @@ def _reading_options(query: dict) -> dict:
             f"irodori_english_spacing must be one of {', '.join(ENGLISH_SPACINGS)}")
     if token_split not in TOKEN_SPLITS:
         raise ValueError(f"irodori_token_split must be one of {', '.join(TOKEN_SPLITS)}")
-    return dict(english=english, kana_style=kana_style, spacing=spacing,
-                token_split=token_split)
+    return dict(english=english, kana_style=kana_style, spacing=spacing), token_split == "on"
 
 
 def _query(text: str) -> dict:
@@ -689,10 +688,8 @@ def _query(text: str) -> dict:
         "postPhonemeLength": 0.1,
         "outputSamplingRate": 48000,
         "outputStereo": False,
-        # 語彙分割辞書はセリフごとの設定（irodori_token_split）で合成時に当てる。
-        # kana にはまだ当てない（irodori_text の無いクライアントが kana を送り返しても、
-        # 合成時の設定どおりになるように）。
-        "kana": READING_DICTIONARY.convert(text, token_split="off"),
+        # 語彙分割はセリフごとの設定（irodori_token_split）で合成時（エンコード時）に当てる。
+        "kana": READING_DICTIONARY.convert(text),
         "irodori_text": text,
     }
 
@@ -723,21 +720,20 @@ class VoicevoxAdapter:
         self.is_meanflow = self.flow_parameterization == "meanflow"
         self.default_steps = (
             DEFAULT_STEPS_MEANFLOW if self.is_meanflow else DEFAULT_STEPS_RF)
-        # 語彙分割辞書をどのモデルに当てるか（全体の設定。エディタが合成のたびに渡す）と、
-        # 読み込み中のモデルのトークナイザ（辞書を作ったものと同じか比べる）。
-        self.token_split_scope = DEFAULT_TOKEN_SPLIT_SCOPE
+        # 語彙分割の境目（全体の設定。エディタが合成のたびに渡す）と、読み込み中のモデルの
+        # トークナイザ（境目の尺度の modernbert-ja と同じか比べる）。
+        self.token_split_threshold = DEFAULT_TOKEN_SPLIT_THRESHOLD
         model_cfg = getattr(getattr(self.tts.backend, "runtime", None), "model_cfg", None)
         self.text_tokenizer_repo = getattr(model_cfg, "text_tokenizer_repo", None)
 
-    def token_split_state(self, scope: str | None = None) -> dict:
-        """語彙分割辞書がいまのモデルに効くか（画面の表示用）。"""
-        scope = scope or getattr(self, "token_split_scope", DEFAULT_TOKEN_SPLIT_SCOPE)
-        repo = getattr(self, "text_tokenizer_repo", None)
-        return {"scope": scope, "active": token_split_active(scope, repo),
-                "modelTokenizer": repo, "dictionaryTokenizer": TOKEN_SPLIT_DICTIONARY.tokenizer_repo()}
+    def split_threshold(self) -> float | None:
+        """いまのモデルに当てる語彙分割の境目。当てないなら None。"""
+        if not token_split_applies(getattr(self, "text_tokenizer_repo", None)):
+            return None
+        return threshold_value(getattr(self, "token_split_threshold", DEFAULT_TOKEN_SPLIT_THRESHOLD))
 
     def text_tokenizer(self):
-        """モデルに文を渡すトークナイザ（辞書画面のトークン表示用）。"""
+        """モデルに文を渡すトークナイザ（/irodori/tokenize 用）。"""
         return getattr(getattr(self.tts.backend, "runtime", None), "tokenizer", None)
 
     def refresh(self) -> None:
@@ -750,12 +746,13 @@ class VoicevoxAdapter:
             self.name_to_id = {name: sid for sid, name in self.id_to_name.items()}
 
     def synthesize(self, query: dict, speaker_id: int) -> bytes:
+        options, token_split = _reading_options(query)
+        # 語彙分割はエンコード時に当てる（文字列は書き換えない）
+        with active_threshold(self.split_threshold() if token_split else None):
+            return self._synthesize(query, speaker_id, options)
+
+    def _synthesize(self, query: dict, speaker_id: int, options: dict) -> bytes:
         text = str(query.get("irodori_text") or query.get("kana") or "").strip()
-        options = _reading_options(query)
-        if options["token_split"] == "on" and not token_split_active(
-                getattr(self, "token_split_scope", DEFAULT_TOKEN_SPLIT_SCOPE),
-                getattr(self, "text_tokenizer_repo", None)):
-            options["token_split"] = "off"  # このモデルには辞書を当てない設定（Small 系のみ）
         text = READING_DICTIONARY.convert(text, **options)
         if not text:
             raise ValueError("audio query does not contain text (irodori_text/kana)")
@@ -1221,25 +1218,11 @@ class Handler(BaseHTTPRequestHandler):
                 # アダプタが無い（テストなど）・モデル未読み込みなら既定のトークナイザで分ける
                 adapter = getattr(self, "adapter", None)
                 tokenizer = getattr(adapter, "text_tokenizer", lambda: None)()
-                self._json(200, describe_tokens(texts, tokenizer))
-                return
-            # 語彙分割辞書（読めない語の対策）。読み方＆アクセント辞書（/user_dict）とは別に持つ
-            if parsed.path == "/irodori/token_split/list":
-                self._json(200, {"user": TOKEN_SPLIT_DICTIONARY.user_entries(),
-                                 "auto": TOKEN_SPLIT_DICTIONARY.auto_entries()})
-                return
-            if parsed.path == "/irodori/token_split/put":
-                body = self._body_json()
-                if not isinstance(body, dict):
-                    raise ValueError("body must be an object")
-                self._json(200, TOKEN_SPLIT_DICTIONARY.put_user(
-                    body.get("surface"), body.get("text"), body.get("note")))
-                return
-            if parsed.path == "/irodori/token_split/delete":
-                body = self._body_json()
-                if not isinstance(body, dict) or not isinstance(body.get("surface"), str):
-                    raise ValueError("surface is required")
-                self._json(200, {"deleted": TOKEN_SPLIT_DICTIONARY.delete_user(body["surface"])})
+                # 合成と同じ境目で分ける（モデル未読み込みなら既定のトークナイザで表示する）
+                threshold = threshold_value(getattr(adapter, "token_split_threshold",
+                                                    DEFAULT_TOKEN_SPLIT_THRESHOLD))
+                repo = getattr(adapter, "text_tokenizer_repo", None) if tokenizer is not None else None
+                self._json(200, describe_tokens(texts, tokenizer, threshold, repo))
                 return
             self._json(404, {"detail": "Not Found"})
         except RequestBodyError as exc:

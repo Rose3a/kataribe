@@ -519,7 +519,7 @@ def token_view(runtime, text: str) -> Optional[str]:
     from irodori_tts.text_normalization import normalize_text
     from token_split import split_token_ids
 
-    # 語彙分割辞書の見えない区切りは、合成時と同じくその位置で分けてエンコードする
+    # 見えない区切りと語彙分割は、合成時と同じく split_token_ids でエンコードする
     ids = split_token_ids(tokenizer, normalize_text(text).strip())
     pieces = []
     for piece in tokenizer.convert_ids_to_tokens(ids):
@@ -562,7 +562,7 @@ class IrodoriTTS:
             self.backend = RadeonBackend(project_root=Path(__file__).resolve().parents[2])
         else:
             self.backend = TorchBackend()
-        # 語彙分割辞書の見えない区切り（U+2063）の位置でトークンを分ける
+        # 語彙分割（出現度の低い長いトークンを避ける）と見えない区切り（U+2063）に対応させる
         from token_split import install_split_encoding
         self.split_encoding = False
         tokenizer = getattr(getattr(self.backend, "runtime", None), "tokenizer", None)

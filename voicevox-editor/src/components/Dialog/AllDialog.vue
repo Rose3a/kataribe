@@ -28,7 +28,6 @@
   <DictionaryManageDialog
     v-model:dialogOpened="isDictionaryManageDialogOpenComputed"
   />
-  <TokenSplitDialog v-model:dialogOpened="isTokenSplitDialogOpenComputed" />
   <EngineManageDialog v-model:dialogOpened="isEngineManageDialogOpenComputed" />
   <UpdateNotificationDialogContainer
     v-if="!isIrodoriFork"
@@ -52,7 +51,6 @@ import CharacterOrderDialog from "@/components/Dialog/OldCharacterOrderDialog.vu
 import AcceptRetrieveTelemetryDialog from "@/components/Dialog/AcceptDialog/AcceptRetrieveTelemetryDialog.vue";
 import AcceptTermsDialog from "@/components/Dialog/AcceptDialog/AcceptTermsDialog.vue";
 import DictionaryManageDialog from "@/components/Dialog/DictionaryManageDialog/DictionaryManageDialog.vue";
-import TokenSplitDialog from "@/components/Dialog/TokenSplitDialog/TokenSplitDialog.vue";
 import EngineManageDialog from "@/components/Dialog/EngineManageDialog.vue";
 import UpdateNotificationDialogContainer from "@/components/Dialog/UpdateNotificationDialog/Container.vue";
 import ImportSongProjectDialog from "@/components/Dialog/ImportSongProjectDialog.vue";
@@ -156,15 +154,6 @@ const isDictionaryManageDialogOpenComputed = computed({
   set: (val) =>
     store.actions.SET_DIALOG_OPEN({
       isDictionaryManageDialogOpen: val,
-    }),
-});
-
-// 読めない語句の辞書（語彙分割辞書）
-const isTokenSplitDialogOpenComputed = computed({
-  get: () => store.state.isTokenSplitDialogOpen,
-  set: (val) =>
-    store.actions.SET_DIALOG_OPEN({
-      isTokenSplitDialogOpen: val,
     }),
 });
 

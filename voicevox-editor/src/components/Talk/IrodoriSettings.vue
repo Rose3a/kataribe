@@ -297,11 +297,11 @@
             v-model="tokenSplitValue"
             outlined
             dense
-            label="語彙分割辞書"
+            label="語彙分割"
             :options="tokenSplits"
             emit-value
             map-options
-            hint="学習の少ない語句（浦和レッズ など）を、間を入れずに分けて読ませます"
+            hint="学習の少ない長いトークン（浦和レッズ など）を細かく分けて読ませます。境目は全体の設定で選べます"
             :disable="locked"
             @update:model-value="saveTokenSplit"
           />

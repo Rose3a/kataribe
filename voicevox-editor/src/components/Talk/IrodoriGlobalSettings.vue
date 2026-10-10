@@ -94,21 +94,23 @@
         class="q-mb-md"
       />
       <QSelect
-        v-model="tokenSplitScope"
+        v-model="tokenSplitThreshold"
         outlined
         dense
-        label="語彙分割辞書の対象（読めない語の対策）"
-        :options="tokenSplitScopes"
+        label="語彙分割の境目（読めない語の対策）"
+        :options="tokenSplitThresholds"
         emitValue
         mapOptions
         :disable="locked"
         class="q-mb-sm"
       />
       <div class="text-caption q-mb-sm">
-        辞書は Small
-        系のトークナイザ（modernbert-ja）の出現度で作ってあります。Large
-        は日本語の語句を細かく割るので、同じ語句が読めない問題は起きにくく、既定では
-        Small 系だけに当てます。{{ tokenSplitNote }}
+        4文字以上で出現度（トークナイザのスコア）が境目以下のまとまりトークン（浦和レッズ
+        など）を使わず、細かいトークンに分けて読ませます。-10
+        に近いほど分ける語が増え、読めない語は減りますが、間が増えて発話が少し伸びます。出現度は
+        v4 Small 系（modernbert-ja）のものなので、そのモデルにだけ当たります。{{
+          tokenSplitNote
+        }}
       </div>
       <QToggle
         v-model="streamPlayback"
@@ -221,7 +223,7 @@ import { createEngineUrl } from "@/domain/url";
 import { clearAudioCache } from "@/store/audioGenerate";
 import {
   IRODORI_DEFAULT_STEPS,
-  IRODORI_DEFAULT_TOKEN_SPLIT_SCOPE,
+  IRODORI_DEFAULT_TOKEN_SPLIT_THRESHOLD,
   IRODORI_MAX_STEPS,
   IRODORI_MIN_STEPS,
   irodoriDefaultSteps,
@@ -232,8 +234,8 @@ import type {
   IrodoriModelInfo as ModelInfo,
   IrodoriSettings as Settings,
   IrodoriStatus as Status,
-  IrodoriTokenSplitScope,
   IrodoriTokenSplitState,
+  IrodoriTokenSplitThreshold,
 } from "@/domain/irodori";
 import {
   fetchIrodoriStatus,
@@ -264,10 +266,10 @@ const hasUnappliedChanges = computed(
       settings.value.model !== appliedSettings.value.model ||
       (settings.value.default_steps ?? IRODORI_DEFAULT_STEPS) !==
         (appliedSettings.value.default_steps ?? IRODORI_DEFAULT_STEPS) ||
-      (settings.value.token_split_scope ??
-        IRODORI_DEFAULT_TOKEN_SPLIT_SCOPE) !==
-        (appliedSettings.value.token_split_scope ??
-          IRODORI_DEFAULT_TOKEN_SPLIT_SCOPE)),
+      (settings.value.token_split_threshold ??
+        IRODORI_DEFAULT_TOKEN_SPLIT_THRESHOLD) !==
+        (appliedSettings.value.token_split_threshold ??
+          IRODORI_DEFAULT_TOKEN_SPLIT_THRESHOLD)),
 );
 watch(defaultSteps, (value) => {
   irodoriDefaultSteps.value = value;
@@ -306,30 +308,32 @@ const defaultStepsSetting = computed<number>({
   },
 });
 const tokenSplit = ref<IrodoriTokenSplitState>();
-const tokenSplitScope = computed<IrodoriTokenSplitScope>({
+const tokenSplitThreshold = computed<IrodoriTokenSplitThreshold>({
   get: () =>
-    settings.value?.token_split_scope ?? IRODORI_DEFAULT_TOKEN_SPLIT_SCOPE,
+    settings.value?.token_split_threshold ??
+    IRODORI_DEFAULT_TOKEN_SPLIT_THRESHOLD,
   set: (value) => {
-    if (settings.value) settings.value.token_split_scope = value;
+    if (settings.value) settings.value.token_split_threshold = value;
   },
 });
-const tokenSplitScopes: { label: string; value: IrodoriTokenSplitScope }[] = [
-  { label: "Small 系のみ（既定）", value: "small" },
-  { label: "Small と Large の両方", value: "all" },
-  { label: "使わない（どのモデルにも当てない）", value: "none" },
+const tokenSplitThresholds: {
+  label: string;
+  value: IrodoriTokenSplitThreshold;
+}[] = [
+  { label: "-13（既定・よく出る語は分けない）", value: "-13" },
+  { label: "-12", value: "-12" },
+  { label: "-11", value: "-11" },
+  { label: "-10（ほぼすべての長い語を分ける）", value: "-10" },
+  { label: "使わない（分けない）", value: "none" },
 ];
-// 選んだ対象で、読み込み中（または選択中）のモデルに辞書が効くか。
+// 読み込み中（または選択中）のモデルに語彙分割が効くか。
 const tokenSplitNote = computed(() => {
   const state = tokenSplit.value;
   if (!state) return "";
-  const active =
-    tokenSplitScope.value !== "none" &&
-    (tokenSplitScope.value === "all" ||
-      !state.modelTokenizer ||
-      state.modelTokenizer === state.dictionaryTokenizer);
-  return active
-    ? "いまのモデルには辞書が効きます（セリフごとの設定が「使う」のとき）。"
-    : "いまのモデルには辞書を当てません。";
+  if (tokenSplitThreshold.value === "none") return "";
+  return state.applies
+    ? "いまのモデルに効きます（セリフごとの設定が「使う」のとき）。"
+    : "いまのモデルはトークナイザが違うため、当てません。";
 });
 const modelFolder = ref("");
 // 開いたときだけ一覧を取る（フォルダサイズの集計に数秒かかる）。
@@ -433,7 +437,7 @@ const modelOptions = ref<ModelOption[]>([
     description:
       "RFモデル 500M・スタイル指示（絵文字・キャプション）なし / MIT",
     license: "MIT",
-    note: "約1GBをダウンロードします。トークナイザが llm-jp-3 で、v4 系（modernbert-ja）とは語句の割り方が違います。語彙分割辞書は modernbert-ja 用のため、このモデルには当てません。既存の話者ファイル（768次元）はそのまま使えます。",
+    note: "約1GBをダウンロードします。トークナイザが llm-jp-3 で、v4 系（modernbert-ja）とは語句の割り方が違います。語彙分割は modernbert-ja の出現度で判定するため、このモデルには当てません。既存の話者ファイル（768次元）はそのまま使えます。",
   },
 ]);
 // 量子化モデルは TensorRT に変換できないので、選んだときは CUDA（無ければ CPU）へ切り替える。

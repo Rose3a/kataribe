@@ -1,51 +1,51 @@
+"""語彙分割（4文字以上で出現度が境目以下のトークンを避けてエンコードする）の契約テスト。
+
+小さな Unigram トークナイザで境目の挙動を確かめる。modernbert-ja の tokenizer.json が
+キャッシュにあれば、実物でも確かめる。モデルは読まない。
+"""
 import json
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "wrapper"))
+import token_split  # noqa: E402
 from reading_dictionary import ReadingDictionary  # noqa: E402
-from token_split import (DICTIONARY_PATH, SPLIT_MARK, ZERO_WIDTH_SPACE,  # noqa: E402
-                         TokenSplitDictionary, find_tokenizer_json, install_split_encoding,
-                         split_token_ids)
+from token_split import (DEFAULT_TOKEN_SPLIT_THRESHOLD, SPLIT_MARK, TOKEN_SPLIT_THRESHOLDS,  # noqa: E402
+                         active_threshold, describe_tokens, find_tokenizer_json,
+                         install_split_encoding, low_score_tokenizer, split_token_ids,
+                         threshold_value, token_split_applies)
 
-VOCAB = ["浦和レッズ", "ゼルダの伝説", "テキストエディタ", "ワールド", "ワール", "ゼルダ",
-         "うらわれっず"]
-
-
-def fake_offsets(text):
-    """VOCAB の最長一致、それ以外は1文字ずつ（トークナイザの代わり）。"""
-    out, i = [], 0
-    while i < len(text):
-        size = next((len(w) for w in sorted(VOCAB, key=len, reverse=True)
-                     if text.startswith(w, i)), 1)
-        out.append((i, i + size))
-        i += size
-    return out
+SMALL_TOKENIZER = "sbintuitions/modernbert-ja-310m"
+LARGE_TOKENIZER = "google/t5gemma-2-1b-1b"
+# (トークン, 出現度)。浦和レッズ は珍しい5文字、ください はよく出る4文字、レッズ は3文字。
+VOCAB = [("<unk>", 0.0), ("浦和レッズ", -14.3), ("ください", -9.3), ("レッズ", -14.0),
+         ("浦和", -11.0), ("レッ", -12.0), ("が", -5.0), ("勝った", -10.0)]
 
 
-def write_dictionary(path, entries):
-    path.write_text(json.dumps({"version": 1, "tokenizer": "sbintuitions/modernbert-ja-310m",
-                                "entries": [{"surface": surface, "text": text}
-                                            for surface, text in entries.items()]},
-                               ensure_ascii=False), encoding="utf-8")
+def tiny_tokenizer():
+    from tokenizers import Tokenizer
+    from tokenizers.models import Unigram
+    chars = sorted({c for piece, _ in VOCAB[1:] for c in piece} - {p for p, _ in VOCAB})
+    vocab = VOCAB + [(c, -16.0) for c in chars]
+    return Tokenizer(Unigram(vocab, unk_id=0, byte_fallback=False))
 
 
-class FakeHF:
-    """1文字1トークン（ID は文字コード）。ただし「浦和レッズ」だけはまとまりの1トークン。"""
+def pieces(tokenizer, text):
+    return tokenizer.encode(text, add_special_tokens=False).tokens
+
+
+class HF:
+    """PreTrainedTokenizerFast の代わり（backend_tokenizer と encode だけ）。"""
+
+    def __init__(self, backend):
+        self.backend_tokenizer = backend
 
     def encode(self, text, add_special_tokens=False):
-        ids, rest = [], text
-        while rest:
-            if rest.startswith("浦和レッズ"):
-                ids.append(1)
-                rest = rest[5:]
-            else:
-                ids.append(ord(rest[0]))
-                rest = rest[1:]
-        return ids
+        return self.backend_tokenizer.encode(text, add_special_tokens=add_special_tokens).ids
 
 
 class FakeTextTokenizer:
@@ -53,8 +53,8 @@ class FakeTextTokenizer:
     bos_token_id = 2
     pad_token_id = 0
 
-    def __init__(self):
-        self.tokenizer = FakeHF()
+    def __init__(self, backend):
+        self.tokenizer = HF(backend)
         self.calls = 0
 
     def encode(self, text, add_bos=None):
@@ -66,118 +66,99 @@ class FakeTextTokenizer:
         return "original", max_length
 
 
-class TokenSplitDictionaryTests(unittest.TestCase):
+class LowScoreTokenizerTests(unittest.TestCase):
     def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.path = Path(tmp.name) / "token_split_dictionary.json"
+        self.tok = tiny_tokenizer()
 
-    def test_notation_and_token_positions(self):
-        write_dictionary(self.path, {"浦和レッズ": "浦和|レッ|ズ", "ゼルダの伝説": "ゼルダの 伝説",
-                                     "ゼルダ": "ぜるだ", "テキストエディタ": "テキスト[ZW]エディタ",
-                                     "ワール": "ワー|ル"})
-        d = TokenSplitDictionary(self.path, tokenizer=fake_offsets)
-        self.assertEqual(d.apply("浦和レッズとゼルダの伝説"),
-                         f"浦和{SPLIT_MARK}レッ{SPLIT_MARK}ズ{SPLIT_MARK}と{SPLIT_MARK}ゼルダの 伝説")
-        self.assertEqual(d.apply("テキストエディタ"), f"テキスト{ZERO_WIDTH_SPACE}エディタ")
-        self.assertEqual(d.apply("ゼルダ"), "ぜるだ")
-        # 「ワール」はトークンとして出たときだけ。「ワールド」の中では当てない
-        self.assertEqual(d.apply("ワールドとワール"), f"ワールドと{SPLIT_MARK}ワー{SPLIT_MARK}ル")
+    def test_settings(self):
+        self.assertEqual(TOKEN_SPLIT_THRESHOLDS, ("-10", "-11", "-12", "-13", "none"))
+        self.assertEqual(DEFAULT_TOKEN_SPLIT_THRESHOLD, "-13")
+        self.assertEqual(threshold_value("-13"), -13.0)
+        self.assertIsNone(threshold_value("none"))
+        with self.assertRaises(ValueError):
+            threshold_value("-14")
 
-    def test_phrases_that_are_not_one_token_match_as_text(self):
-        write_dictionary(self.path, {"浦和レッズ戦": "浦和|レッズ|戦", "ワール": "ワー|ル"})
-        d = TokenSplitDictionary(self.path, tokenizer=fake_offsets)
-        self.assertEqual(d.apply("浦和レッズ戦とワールドとワール"),
-                         f"浦和{SPLIT_MARK}レッズ{SPLIT_MARK}戦{SPLIT_MARK}とワールドと{SPLIT_MARK}ワー{SPLIT_MARK}ル")
+    def test_rare_long_tokens_are_split_and_common_ones_kept(self):
+        self.assertEqual(pieces(self.tok, "浦和レッズがください"), ["浦和レッズ", "が", "ください"])
+        low = low_score_tokenizer(self.tok, -13.0)
+        # 3文字の「レッズ」は対象外なので残る
+        self.assertEqual(pieces(low, "浦和レッズがください"), ["浦和", "レッズ", "が", "ください"])
 
-    def test_user_entries_are_a_separate_file_and_win(self):
-        write_dictionary(self.path, {"浦和レッズ": "浦和|レッ|ズ", "ゼルダの伝説": "ゼルダ|の|伝説"})
-        user = self.path.parent / "token_split_user.json"
-        d = TokenSplitDictionary(self.path, tokenizer=fake_offsets, user_path=user)
-        d.put_user("浦和レッズ", "浦和|れっず", note="試し")
-        d.put_user("自治スレ", "じち\u2063スレ")  # 実際の区切り文字でも | として保存する
-        d.put_user("ゼルダの伝説", "ゼルダの伝説")  # 単語と同じにすれば自動の登録を止められる
-        self.assertEqual(d.apply("浦和レッズとゼルダの伝説"),
-                         f"浦和{SPLIT_MARK}れっず{SPLIT_MARK}とゼルダの伝説")
-        self.assertEqual(d.apply("自治スレ"), f"じち{SPLIT_MARK}スレ")
-        saved = {e["surface"]: e for e in json.loads(user.read_text(encoding="utf-8"))["entries"]}
-        self.assertEqual(saved["自治スレ"]["text"], "じち|スレ")
-        self.assertEqual(saved["浦和レッズ"]["note"], "試し")
-        # メモを省いて書き換えだけ直すと、メモは残る
-        d.put_user("浦和レッズ", "浦和|レッズ")
-        self.assertEqual({e["surface"]: e["note"] for e in d.user_entries()}["浦和レッズ"], "試し")
-        self.assertTrue(d.delete_user("浦和レッズ"))
-        self.assertFalse(d.delete_user("浦和レッズ"))
-        self.assertEqual(d.apply("浦和レッズ"), f"浦和{SPLIT_MARK}レッ{SPLIT_MARK}ズ")
-        # 自動生成のファイルには触らない
-        self.assertEqual(len(d.auto_entries()), 2)
-        for bad in [("", "x"), ("x", " "), ("x", "a\nb")]:
-            with self.assertRaises(ValueError):
-                d.put_user(*bad)
+    def test_raising_the_threshold_splits_more_words(self):
+        low = low_score_tokenizer(self.tok, -9.0)
+        self.assertEqual(pieces(low, "ください"), list("ください"))
 
-    def test_reading_dictionary_hits_are_not_split_again(self):
-        write_dictionary(self.path, {"浦和レッズ": "浦和|レッ|ズ"})
-        dictionary = TokenSplitDictionary(self.path, tokenizer=fake_offsets)
-        with patch("reading_dictionary.TOKEN_SPLIT_DICTIONARY", dictionary):
-            from reading_dictionary import make_word
-            reading = ReadingDictionary(Path(self.path.parent) / "user.json")
-            reading.put(make_word("浦和レッズ戦", "ウラワレッズセン"))
-            self.assertEqual(reading.convert("浦和レッズ戦と浦和レッズ"),
-                             f"ウラワレッズセンと{SPLIT_MARK}浦和{SPLIT_MARK}レッ{SPLIT_MARK}ズ")
+    def test_three_character_tokens_are_never_split(self):
+        low = low_score_tokenizer(self.tok, -10.0)
+        self.assertEqual(pieces(low, "レッズ"), ["レッズ"])
 
-    def test_boundaries_keep_neighbours_apart(self):
-        # 元は「友達」「がシェアした投稿」と切れていた。置き換え後も「友達が」にくっつけない
-        write_dictionary(self.path, {"がシェアした投稿": "|が|シェア|した|投稿", "浦和レッズ": "浦和レッズ"})
-        VOCAB.extend(["がシェアした投稿", "友達"])
-        self.addCleanup(lambda: [VOCAB.remove(w) for w in ("がシェアした投稿", "友達")])
-        d = TokenSplitDictionary(self.path, tokenizer=fake_offsets)
-        self.assertEqual(d.apply("友達がシェアした投稿を見た"),
-                         f"友達{SPLIT_MARK}が{SPLIT_MARK}シェア{SPLIT_MARK}した{SPLIT_MARK}投稿{SPLIT_MARK}を見た")
-        # 文頭・文末には入れない。書き換えが語句と同じなら何もしない
-        self.assertEqual(d.apply("がシェアした投稿"),
-                         f"が{SPLIT_MARK}シェア{SPLIT_MARK}した{SPLIT_MARK}投稿")
-        self.assertEqual(d.apply("浦和レッズの試合"), "浦和レッズの試合")
+    def test_original_tokenizer_is_untouched_and_copies_are_cached(self):
+        low = low_score_tokenizer(self.tok, -13.0)
+        self.assertIs(low, low_score_tokenizer(self.tok, -13.0))
+        self.assertIsNot(low, low_score_tokenizer(self.tok, -12.0))
+        self.assertEqual(pieces(self.tok, "浦和レッズ"), ["浦和レッズ"])
 
-    def test_without_a_tokenizer_nothing_is_rewritten(self):
-        write_dictionary(self.path, {"浦和レッズ": "浦和|レッズ"})
-        self.assertEqual(TokenSplitDictionary(self.path, tokenizer=False).apply("浦和レッズ"),
-                         "浦和レッズ")
+    def test_non_unigram_tokenizers_are_left_alone(self):
+        from tokenizers import Tokenizer
+        from tokenizers.models import BPE
+        self.assertIsNone(low_score_tokenizer(Tokenizer(BPE()), -13.0))
 
-    @unittest.skipIf(find_tokenizer_json("sbintuitions/modernbert-ja-310m") is None,
-                     "modernbert-ja tokenizer is not cached")
-    def test_real_tokenizer_keeps_common_words_intact(self):
-        write_dictionary(self.path, {"浦和レッズ": "浦和|レッ|ズ", "ワール": "ワー|ル",
-                                     "ミング": "ミン|グ"})
-        d = TokenSplitDictionary(self.path)
-        self.assertEqual(d.apply("浦和レッズのワールドカップ、タイミング"),
-                         f"浦和{SPLIT_MARK}レッ{SPLIT_MARK}ズ{SPLIT_MARK}のワールドカップ、タイミング")
+    def test_only_the_modernbert_family_gets_it(self):
+        self.assertTrue(token_split_applies(SMALL_TOKENIZER))
+        self.assertFalse(token_split_applies(LARGE_TOKENIZER))
+        self.assertFalse(token_split_applies("llm-jp/llm-jp-3-1.8b"))
+        # 読み込み前・古い経路ではトークナイザが分からない。当てる側に倒す
+        self.assertTrue(token_split_applies(None))
 
-    @unittest.skipIf(not DICTIONARY_PATH.exists(), "no shipped dictionary")
-    def test_shipped_splits_keep_the_text(self):
-        data = json.loads(DICTIONARY_PATH.read_text(encoding="utf-8"))
-        for entry in data["entries"]:
-            if entry["method"] in ("split", "split_fine", "zw"):
-                self.assertEqual(entry["text"].replace("|", "").replace("[ZW]", ""),
-                                 entry["surface"])
 
-    def test_missing_file_is_a_no_op_and_reload_on_change(self):
-        d = TokenSplitDictionary(self.path, tokenizer=fake_offsets)
-        self.assertEqual(d.apply("浦和レッズ"), "浦和レッズ")
-        write_dictionary(self.path, {"浦和レッズ": "浦和|レッズ"})
-        self.assertEqual(d.apply("浦和レッズ"), f"浦和{SPLIT_MARK}レッズ")
+@unittest.skipIf(find_tokenizer_json(SMALL_TOKENIZER) is None, "modernbert-ja の tokenizer.json が無い")
+class RealTokenizerTests(unittest.TestCase):
+    def test_unreadable_names_split_and_common_words_stay(self):
+        from tokenizers import Tokenizer
+        tok = Tokenizer.from_file(str(find_tokenizer_json(SMALL_TOKENIZER)))
+        low = low_score_tokenizer(tok, -13.0)
+        self.assertEqual(pieces(tok, "浦和レッズ"), ["浦和レッズ"])
+        self.assertEqual(pieces(low, "浦和レッズ"), ["浦和", "レッ", "ズ"])
+        self.assertEqual(pieces(low, "ゼルダの伝説"), ["ゼルダ", "の", "伝説"])
+        for common in ("しました", "ください", "について"):
+            self.assertEqual(pieces(low, common), [common])
+        # パディングは写しに持ち込まない
+        self.assertNotIn("<pad>", pieces(low, "浦和レッズ"))
 
-    def test_reading_dictionary_applies_it_last_and_can_turn_it_off(self):
-        write_dictionary(self.path, {"浦和レッズ": "浦和|レッズ", "うらわれっず": "うらわ|れっず"})
-        dictionary = TokenSplitDictionary(self.path, tokenizer=fake_offsets)
-        with patch("reading_dictionary.TOKEN_SPLIT_DICTIONARY", dictionary):
-            reading = ReadingDictionary(Path(self.path.parent) / "user.json")
-            self.assertEqual(reading.convert("浦和レッズ"), f"浦和{SPLIT_MARK}レッズ")
-            self.assertEqual(reading.convert("浦和レッズ", token_split="off"), "浦和レッズ")
-            # ひらがな化した後の文字列に当てる
-            self.assertEqual(reading.convert("ウラワレッズ", kana_style="hiragana"),
-                             f"うらわ{SPLIT_MARK}れっず")
-            with self.assertRaises(ValueError):
-                reading.convert("x", token_split="maybe")
+
+class SplitEncodingTests(unittest.TestCase):
+    def setUp(self):
+        self.text_tokenizer = FakeTextTokenizer(tiny_tokenizer())
+        install_split_encoding(self.text_tokenizer)
+        install_split_encoding(self.text_tokenizer)  # 二重に包まない
+        vocab = self.text_tokenizer.tokenizer.backend_tokenizer.get_vocab()
+        self.id = vocab.__getitem__
+
+    def test_plain_text_keeps_the_original_path(self):
+        self.assertEqual(self.text_tokenizer.batch_encode(["浦和レッズ"], max_length=4), ("original", 4))
+        self.assertEqual(self.text_tokenizer.calls, 1)
+
+    def test_active_threshold_encodes_with_the_copy(self):
+        with active_threshold(-13.0):
+            ids, mask = self.text_tokenizer.batch_encode(["浦和レッズが"], max_length=8)
+        expected = [2] + [self.id(p) for p in ("浦和", "レッズ", "が")] + [0, 0, 0, 0]
+        self.assertEqual(ids.tolist(), [expected])
+        self.assertEqual(mask[0].tolist(), [True] * 4 + [False] * 4)
+        self.assertEqual(self.text_tokenizer.calls, 0)
+        # 抜けたら元に戻る
+        self.assertEqual(self.text_tokenizer.batch_encode(["浦和レッズ"]), ("original", None))
+
+    def test_none_threshold_means_no_split(self):
+        with active_threshold(None):
+            self.assertEqual(self.text_tokenizer.batch_encode(["浦和レッズ"]), ("original", None))
+
+    def test_split_mark_still_splits(self):
+        hf = self.text_tokenizer.tokenizer
+        self.assertEqual(split_token_ids(hf, f"浦和{SPLIT_MARK}レッズ"),
+                         [self.id("浦和"), self.id("レッズ")])
+        ids, mask = self.text_tokenizer.batch_encode([f"浦和{SPLIT_MARK}レッズ"], max_length=2)
+        self.assertEqual(ids.tolist(), [[2, self.id("浦和")]])
+        self.assertTrue(mask.all())
 
     def test_runtime_normalization_keeps_the_mark(self):
         sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "runtime" / "trt-lab" / "repo"))
@@ -185,101 +166,130 @@ class TokenSplitDictionaryTests(unittest.TestCase):
         self.assertIn(SPLIT_MARK, normalize_text(f"「浦和{SPLIT_MARK}レッズ」").strip())
 
 
-class TokenSplitApiTests(unittest.TestCase):
-    """辞書画面が使う /irodori/token_split/* と /irodori/tokenize（モデルなし）。"""
+class SynthesisTests(unittest.TestCase):
+    """合成のあいだだけ、全体の境目とセリフの設定に従って語彙分割が有効になる。文字列は変えない。"""
 
-    def test_list_put_delete_and_tokenize(self):
-        import threading
+    def setUp(self):
+        import voicevox_engine as engine
+        self.engine = engine
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        patcher = patch.object(engine, "READING_DICTIONARY",
+                               ReadingDictionary(Path(tmp.name) / "user_dictionary.json"))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def adapter(self, threshold, repo):
+        adapter = self.engine.VoicevoxAdapter.__new__(self.engine.VoicevoxAdapter)
+        adapter.id_to_name = {0: "話者なし"}
+        adapter.lock = threading.Lock()
+        adapter.progress_callback = None
+        adapter.tts = Mock()
+        adapter.seen = []
+
+        def synthesize(**kwargs):
+            adapter.seen.append((kwargs["text"], token_split._ACTIVE.get()))
+            kwargs["out_wav"].write(b"wav")
+        adapter.tts.synthesize.side_effect = synthesize
+        adapter.token_split_threshold = threshold
+        adapter.text_tokenizer_repo = repo
+        return adapter
+
+    def active(self, adapter, **extra):
+        adapter.synthesize({**self.engine._query("浦和レッズが勝った"), **extra}, 0)
+        text, threshold = adapter.seen[-1]
+        self.assertEqual(text, "浦和レッズが勝った")
+        return threshold
+
+    def test_default_threshold_for_the_small_family(self):
+        self.assertEqual(self.active(self.adapter("-13", SMALL_TOKENIZER)), -13.0)
+        self.assertEqual(self.active(self.adapter("-10", SMALL_TOKENIZER)), -10.0)
+        self.assertIsNone(token_split._ACTIVE.get())
+
+    def test_other_tokenizers_and_none_never_split(self):
+        self.assertIsNone(self.active(self.adapter("-13", LARGE_TOKENIZER)))
+        self.assertIsNone(self.active(self.adapter("none", SMALL_TOKENIZER)))
+
+    def test_line_setting_off_wins(self):
+        self.assertIsNone(self.active(self.adapter("-13", SMALL_TOKENIZER), irodori_token_split="off"))
+        with self.assertRaises(ValueError):
+            self.active(self.adapter("-13", SMALL_TOKENIZER), irodori_token_split="maybe")
+
+    def test_adapter_without_attributes_uses_the_default(self):
+        adapter = self.adapter("-13", SMALL_TOKENIZER)
+        del adapter.token_split_threshold, adapter.text_tokenizer_repo
+        self.assertEqual(self.active(adapter), -13.0)
+
+    def test_kana_is_not_rewritten(self):
+        query = self.engine._query("浦和レッズです")
+        self.assertEqual((query["kana"], query["irodori_text"]), ("浦和レッズです", "浦和レッズです"))
+
+
+class TokenizeApiTests(unittest.TestCase):
+    """/irodori/tokenize（モデルなし）。辞書の API はもう無い。"""
+
+    def test_tokenize_and_removed_dictionary_api(self):
         from http.client import HTTPConnection
         from http.server import ThreadingHTTPServer
         import voicevox_engine as engine
 
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        auto = Path(tmp.name) / "auto.json"
-        write_dictionary(auto, {"浦和レッズ": "浦和|レッ|ズ"})
-        dictionary = TokenSplitDictionary(auto, tokenizer=fake_offsets,
-                                          user_path=Path(tmp.name) / "user.json")
         server = ThreadingHTTPServer(("127.0.0.1", 0), engine.Handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
 
-        def post(path, body, authorized=True):
+        def post(path, body):
             conn = HTTPConnection("127.0.0.1", server.server_port)
-            headers = {"Origin": "http://localhost:5173", "Content-Type": "application/json"}
-            if authorized:
-                headers["X-Irodori-Session"] = engine.SESSION_TOKEN
+            headers = {"Origin": "http://localhost:5173", "Content-Type": "application/json",
+                       "X-Irodori-Session": engine.SESSION_TOKEN}
             conn.request("POST", path, json.dumps(body, ensure_ascii=False).encode("utf-8"), headers)
             response = conn.getresponse()
             data = response.read()
             conn.close()
             return response.status, json.loads(data) if data else None
 
-        with patch.object(engine, "TOKEN_SPLIT_DICTIONARY", dictionary):
-            self.assertEqual(post("/irodori/token_split/list", {}, authorized=False)[0], 403)
-            status, listed = post("/irodori/token_split/list", {})
-            self.assertEqual((status, listed["user"], len(listed["auto"])), (200, [], 1))
-            status, saved = post("/irodori/token_split/put",
-                                 {"surface": "自治スレ", "text": "じち|スレ", "note": "試し"})
-            self.assertEqual((status, saved["text"], saved["note"]), (200, "じち|スレ", "試し"))
-            self.assertEqual(post("/irodori/token_split/list", {})[1]["user"][0]["surface"], "自治スレ")
-            self.assertEqual(post("/irodori/token_split/put", {"surface": "", "text": "x"})[0], 400)
-            self.assertEqual(post("/irodori/token_split/delete", {"surface": "自治スレ"}),
-                             (200, {"deleted": True}))
-            self.assertEqual(post("/irodori/token_split/list", {})[1]["user"], [])
-            self.assertEqual(post("/irodori/tokenize", {"texts": "x"})[0], 400)
-            if find_tokenizer_json("sbintuitions/modernbert-ja-310m") is not None:
-                status, view = post("/irodori/tokenize", {"texts": ["浦和レッズ", "浦和|レッズ"]})
-                self.assertEqual((status, view["source"]), (200, "fallback"))
-                first, second = view["results"]
-                self.assertEqual([t["text"] for t in first["tokens"]], ["浦和レッズ"])
-                self.assertTrue(first["tokens"][0]["rare"])
-                self.assertEqual([t.get("text", "|") for t in second["tokens"]][:2], ["浦和", "|"])
+        self.assertEqual(post("/irodori/token_split/list", {})[0], 404)
+        self.assertEqual(post("/irodori/tokenize", {"texts": "x"})[0], 400)
+        if find_tokenizer_json(SMALL_TOKENIZER) is None:
+            return
+        status, view = post("/irodori/tokenize", {"texts": ["浦和レッズ", "浦和|レッズ"]})
+        self.assertEqual((status, view["source"], view["threshold"], view["applies"]),
+                         (200, "fallback", -13.0, True))
+        first, second = view["results"]
+        self.assertEqual([t["text"] for t in first["original"]], ["浦和レッズ"])
+        self.assertTrue(first["original"][0]["low"])
+        self.assertEqual([t["text"] for t in first["tokens"]], ["浦和", "レッ", "ズ"])
+        self.assertEqual([t.get("text", "|") for t in second["tokens"]][:2], ["浦和", "|"])
 
 
-class AudioQueryTests(unittest.TestCase):
-    def test_kana_is_not_split_until_synthesis(self):
-        # エディタは irodori_text を送らず kana を送り返すことがある。kana に区切りが
-        # 入っていると、セリフの設定で「使わない」にしても外せない。
-        import voicevox_engine as engine
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        auto = Path(tmp.name) / "auto.json"
-        write_dictionary(auto, {"浦和レッズ": "浦和|レッ|ズ"})
-        dictionary = TokenSplitDictionary(auto, tokenizer=fake_offsets)
-        with patch("reading_dictionary.TOKEN_SPLIT_DICTIONARY", dictionary):
-            query = engine._query("浦和レッズです")
-            self.assertEqual((query["kana"], query["irodori_text"]), ("浦和レッズです", "浦和レッズです"))
-            convert = engine.READING_DICTIONARY.convert
-            self.assertEqual(convert(query["kana"], **engine._reading_options({})),
-                             f"浦和{SPLIT_MARK}レッ{SPLIT_MARK}ズ{SPLIT_MARK}です")
-            self.assertEqual(convert(query["kana"], **engine._reading_options(
-                {"irodori_token_split": "off"})), "浦和レッズです")
+class DescribeTokensTests(unittest.TestCase):
+    @staticmethod
+    def tokenizer(unigram):
+        class Backend:
+            def encode(self, text, add_special_tokens=False):
+                return type("Enc", (), {"ids": [1], "offsets": [(0, len(text))]})()
 
+            def to_str(self):
+                model = ({"type": "Unigram", "vocab": [["<unk>", 0.0], ["浦和レッズ", -14.3]]} if unigram
+                         else {"type": "BPE", "vocab": {}})
+                return json.dumps({"model": model})
 
-class SplitEncodingTests(unittest.TestCase):
-    def test_split_ids_avoid_the_merged_token(self):
-        hf = FakeHF()
-        self.assertEqual(hf.encode("浦和レッズ"), [1])
-        self.assertEqual(split_token_ids(hf, f"浦和{SPLIT_MARK}レッズ"),
-                         [ord(c) for c in "浦和レッズ"])
+        hf = type("HF", (), {"backend_tokenizer": Backend()})()
+        return type("Tok", (), {"tokenizer": hf})()
 
-    def test_batch_encode_pads_and_masks_like_the_runtime(self):
-        tok = FakeTextTokenizer()
-        install_split_encoding(tok)
-        install_split_encoding(tok)  # 二重に包まない
-        self.assertEqual(tok.batch_encode(["浦和レッズ"], max_length=4), ("original", 4))
-        ids, mask = tok.batch_encode([f"浦和{SPLIT_MARK}レッズ"] * 2, max_length=8)
-        expected = [2] + [ord(c) for c in "浦和レッズ"] + [0, 0]
-        self.assertEqual(ids.tolist(), [expected, expected])
-        self.assertEqual(mask[0].tolist(), [True] * 6 + [False] * 2)
-        ids, mask = tok.batch_encode([f"浦和{SPLIT_MARK}レッズ"], max_length=3)
-        self.assertEqual(ids.tolist(), [[2, ord("浦"), ord("和")]])
-        self.assertTrue(mask.all())
-        ids, _ = tok.batch_encode([f"浦和{SPLIT_MARK}レッズ"])
-        self.assertEqual(ids.shape[1], 6)
-        self.assertEqual(tok.calls, 1)
+    def view(self, unigram, repo=SMALL_TOKENIZER):
+        token_split._SCORES.clear()
+        try:
+            return describe_tokens(["浦和レッズ"], self.tokenizer(unigram), -13.0, repo)
+        finally:
+            token_split._SCORES.clear()
+
+    def test_bpe_and_other_tokenizers_are_not_split(self):
+        self.assertFalse(self.view(unigram=False)["applies"])
+        self.assertFalse(self.view(unigram=True, repo=LARGE_TOKENIZER)["applies"])
+        result = self.view(unigram=False)["results"][0]
+        self.assertEqual(result["tokens"], result["original"])
+        self.assertFalse(result["original"][0]["low"])
 
 
 if __name__ == "__main__":
