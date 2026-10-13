@@ -43,9 +43,88 @@ def make_word(surface, pronunciation, accent_type=0, priority=5):
                 accent_associative_rule="*")
 
 
-class ReadingDictionary:
-    def __init__(self, path):
+BUILTIN_READINGS_PATH = Path(__file__).resolve().parent / "data" / "builtin_readings.json"
+_KANJI = "一-龯々〆ヶ"
+
+
+class BuiltinReadings:
+    """kataribe に同梱する読み辞書（ユーザー辞書とは別枠）。
+
+    data/builtin_readings.json の
+      entries: 読みが1通りに決まる語（四字熟語・難読語・地名・英字略語など）。表記 → 読み
+      units  : 数字の直後（空白1つまで）にあるときだけ読む単位（km → キロメートル）
+    読みは英字と単位がカタカナ、漢字の語がひらがな（データ側でそうしてある）。
+    ユーザー辞書に同じ語があればそちらが優先する（ユーザー辞書が先に当たり、残りにだけ当てる）。
+    英字の語は前後が英数字でないとき、漢字の語は前後が漢字でないときだけ当てる
+    （「AI」が「MAIL」の中に、「太秦」が長い漢字語の中に当たらないように）。
+    ファイルを書き換えたら、エンジンを再起動せずに次の変換から拾う。
+    """
+
+    def __init__(self, path=BUILTIN_READINGS_PATH):
         self.path = Path(path)
+        self.lock = threading.Lock()
+        self._mtime = None
+        self._words = None   # (正規表現, {表記: 読み})
+        self._units = None
+
+    def _load(self):
+        try:
+            mtime = self.path.stat().st_mtime
+        except OSError:
+            mtime = None
+        if mtime == self._mtime:
+            return
+        data = json.loads(self.path.read_text(encoding="utf-8")) if mtime is not None else {}
+        # 英字の語は大文字小文字を区別する（英文の it・am が IT・AM の読みにならないように）
+        words = {}
+        for entry in data.get("entries", []):
+            surface, reading = normalize_width(entry["surface"]), entry["reading"]
+            words.setdefault(surface, reading)
+        units = {normalize_width(e["surface"]): e["reading"] for e in data.get("units", [])}
+
+        # 前後の条件は置き換えのときに確かめる（語ごとに先読み・後読みを付けると、
+        # 数千語の正規表現のコンパイルに数秒かかる）
+        ordered = sorted(words, key=len, reverse=True)
+        self._words = (re.compile("|".join(map(re.escape, ordered))), words) if words else None
+        ordered = sorted(units, key=len, reverse=True)
+        self._units = (re.compile(r"(?<=[0-9]) ?(" + "|".join(map(re.escape, ordered)) + r")(?![A-Za-z])"),
+                       units) if units else None
+        self._mtime = mtime
+
+    def apply(self, text):
+        with self.lock:
+            self._load()
+            words, units = self._words, self._units
+        if words is not None:
+            pattern, table = words
+            text = pattern.sub(lambda m: table[m[0]] if _bounded(m) else m[0], text)
+        if units is not None:
+            pattern, table = units
+            text = pattern.sub(lambda m: table[m[1]], text)
+        return text
+
+
+_ASCII_WORD = re.compile(r"[A-Za-z0-9.+/&' -]+")
+_KANJI_CHAR = re.compile(rf"[{_KANJI}]")
+_ALNUM_CHAR = re.compile(r"[A-Za-z0-9]")
+
+
+def _bounded(match):
+    """英字の語は前後が英数字でないとき、漢字の語は前後が漢字でないときだけ当てる。"""
+    text, word, start, end = match.string, match[0], match.start(), match.end()
+    before, after = text[start - 1:start], text[end:end + 1]
+    if _ASCII_WORD.fullmatch(word):
+        return not (_ALNUM_CHAR.match(before) or _ALNUM_CHAR.match(after))
+    if _KANJI_CHAR.match(word[0]) and _KANJI_CHAR.match(before):
+        return False
+    return not (_KANJI_CHAR.match(word[-1]) and _KANJI_CHAR.match(after))
+
+
+class ReadingDictionary:
+    def __init__(self, path, builtin=None):
+        self.path = Path(path)
+        # 同梱の読み辞書（別枠）。ユーザー辞書に当たらなかった部分に、英語の読みより先に当てる
+        self.builtin = builtin
         self.lock = threading.RLock()
         self.words = {}
         if self.path.exists():
@@ -100,7 +179,7 @@ class ReadingDictionary:
             self._save({**self.words, **incoming} if override else {**incoming, **self.words})
 
     def convert(self, text, english="katakana", kana_style="katakana", spacing="keep"):
-        """ユーザー辞書を当て、残った英語をカナ読みにする。
+        """ユーザー辞書を当て、残りに同梱の読み辞書を当て、残った英語をカナ読みにする。
 
         english は英語の読み方（off なら英字はそのまま残す、hiragana なら英語の
         読みだけひらがなにする）。kana_style="hiragana" なら、辞書と英語の読みを
@@ -117,6 +196,8 @@ class ReadingDictionary:
         join = english != "off" and spacing == "join"
 
         def rest(part):
+            if self.builtin is not None:
+                part = self.builtin.apply(part)
             if english == "off":
                 return part
             return convert_english(part, hiragana=english == "hiragana", join=join)
@@ -133,17 +214,25 @@ class ReadingDictionary:
 
         ユーザー辞書に当たらなかった部分だけを rest で変換する（辞書の読みは再変換しない）。
         """
+        # 本文は合成の前に text_cleanup で整える（HUNTER×HUNTER → HUNTERHUNTER、¥100 → 100円）。
+        # 登録した表記も同じように整えてから比べないと、記号を含む語が当たらない。
+        from text_cleanup import clean_pasted_text
+
         words = sorted(self.snapshot().values(),
                        key=lambda w: (-len(w["surface"]), -w["priority"]))
         readings = {}
-        user_surfaces = set()
         for word in words:
-            surface = normalize_width(word["surface"]).lower()
-            # If the same surface is registered more than once, keep the
-            # highest-priority pronunciation (the list is already priority-sorted).
-            if surface not in user_surfaces:
-                readings[surface] = word["pronunciation"]
-                user_surfaces.add(surface)
+            surface = normalize_width(word["surface"])
+            surface = clean_pasted_text(surface) or surface
+            # 英字は大文字小文字を区別する（it を登録しても IT企業 には当てない）。
+            # 小文字だけで登録した語は、文頭の大文字始まり（It）にも当てる。
+            variants = [surface]
+            if surface.isascii() and surface == surface.lower() and surface[:1].isalpha():
+                variants.append(surface[:1].upper() + surface[1:])
+            for variant in variants:
+                # If the same surface is registered more than once, keep the
+                # highest-priority pronunciation (the list is already priority-sorted).
+                readings.setdefault(variant, word["pronunciation"])
         if not readings:
             return [(rest(text), False)]
         # Longest key first: Python's alternation keeps the first match, so a
@@ -152,13 +241,21 @@ class ReadingDictionary:
         pattern = '(' + '|'.join(re.escape(k) for k in ordered) + ')'
         if join:
             pattern = r'[ 	　]*' + pattern + r'[ 	　]*'
-        pattern = re.compile(pattern, re.IGNORECASE | re.ASCII)
+        pattern = re.compile(pattern)
         result, start = [], 0
         for match in pattern.finditer(text):
+            word = match[1]
+            # 英字の語は前後が英数字でないときだけ（AI を登録しても MAIL には当てない）
+            if _ASCII_WORD.fullmatch(word) and (
+                    _ALNUM_CHAR.match(text[match.start(1) - 1:match.start(1)])
+                    or _ALNUM_CHAR.match(text[match.end(1):match.end(1) + 1])):
+                continue
             result.extend(((rest(text[start:match.start()]), False),
-                           (readings[match[1].lower()], True)))
+                           (readings[word], True)))
             start = match.end()
         return result + [(rest(text[start:]), False)]
 
 
-READING_DICTIONARY = ReadingDictionary(Path(__file__).resolve().parents[2] / "user_dictionary.json")
+BUILTIN_READINGS = BuiltinReadings()
+READING_DICTIONARY = ReadingDictionary(Path(__file__).resolve().parents[2] / "user_dictionary.json",
+                                       builtin=BUILTIN_READINGS)

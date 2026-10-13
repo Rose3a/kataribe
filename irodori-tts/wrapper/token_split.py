@@ -279,6 +279,8 @@ def describe_tokens(texts, text_tokenizer=None, threshold: float | None = None,
                 continue
             encoding = encoder.encode(part, add_special_tokens=False)
             for token_id, (start, end) in zip(encoding.ids, encoding.offsets):
+                if start == end:
+                    continue  # 読み込んだモデルのトークナイザは固定長にパディングすることがある
                 piece = part[start:end]
                 score = scores.get(token_id, 0.0)
                 tokens.append({"text": piece, "id": token_id, "score": round(score, 2),

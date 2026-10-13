@@ -95,9 +95,25 @@ class DictionaryTests(unittest.TestCase):
         d.put(make_word("hello", "トクシュ"))
         d.put(make_word("hello world", "ながい"))
         d.put(make_word("トクシュ", "ベツ"))
-        d.put(make_word("HELLO", "ユウセン", priority=10))
-        self.assertEqual(d.convert("Ｈｅｌｌｏ world! hello"), "ナガイ! ユウセン")
+        d.put(make_word("hello", "ユウセン", priority=10))
+        self.assertEqual(d.convert("ｈｅｌｌｏ world! hello"), "ナガイ! ユウセン")
         self.assertEqual(ReadingDictionary(self.path).convert("hello"), "ユウセン")
+
+    def test_english_entries_respect_case_and_word_boundaries(self):
+        d = self.dictionary
+        d.put(make_word("AI", "エーアイ"))
+        d.put(make_word("it", "イット"))
+        # 英字の語は前後が英数字なら当てない（MAIL の中の AI）
+        self.assertEqual(d.convert("MAILとAI", english="off"), "MAILとエーアイ")
+        # 大文字小文字を区別する。小文字の登録は文頭の大文字始まりにも当たる
+        self.assertEqual(d.convert("IT企業", english="off"), "IT企業")
+        self.assertEqual(d.convert("It is", english="off"), "イット is")
+
+    def test_entries_with_symbols_match_cleaned_text(self):
+        from text_cleanup import clean_pasted_text
+        d = self.dictionary
+        d.put(make_word("HUNTER×HUNTER", "ハンターハンター"))
+        self.assertEqual(d.convert(clean_pasted_text("HUNTER×HUNTERを見た")), "ハンターハンターを見た")
 
     def test_update_delete_and_atomic_import(self):
         d = self.dictionary
@@ -175,3 +191,57 @@ class DictionaryApiTests(DictionaryTests):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BuiltinReadingsTests(unittest.TestCase):
+    """同梱の読み辞書（別枠）。ユーザー辞書が優先し、英語の読みより先に当たる。"""
+
+    def setUp(self):
+        from reading_dictionary import BuiltinReadings
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        path = Path(self.tmp.name) / "builtin.json"
+        path.write_text(json.dumps({"entries": [
+            {"surface": "太秦", "reading": "ウズマサ"}, {"surface": "一期一会", "reading": "イチゴイチエ"},
+            {"surface": "IT", "reading": "アイティー"}, {"surface": "5G", "reading": "ファイブジー"},
+            {"surface": "Wi-Fi", "reading": "ワイファイ"}],
+            "units": [{"surface": "km", "reading": "キロメートル"}, {"surface": "m", "reading": "メートル"},
+                      {"surface": "℃", "reading": "ド"}]}, ensure_ascii=False), encoding="utf-8")
+        self.builtin = BuiltinReadings(path)
+        self.dictionary = ReadingDictionary(Path(self.tmp.name) / "user.json", builtin=self.builtin)
+
+    def test_entries_and_units(self):
+        convert = self.dictionary.convert
+        self.assertEqual(convert("京都の太秦で一期一会"), "京都のウズマサでイチゴイチエ")
+        self.assertEqual(convert("10kmと5m、35℃"), "10キロメートルと5メートル、35ド")
+        self.assertEqual(convert("5GとWi-Fi"), "ファイブジーとワイファイ")
+        self.assertEqual(convert("IT企業"), "アイティー企業")
+
+    def test_boundaries(self):
+        convert = self.dictionary.convert
+        # 英字は大文字小文字を区別し、前後が英数字なら当てない。単位は数字の直後だけ
+        self.assertEqual(convert("it", english="off"), "it")
+        self.assertEqual(convert("ITEM", english="off"), "ITEM")
+        self.assertEqual(convert("5GHz", english="off"), "5GHz")
+        self.assertEqual(convert("km と m", english="off"), "km と m")
+        # 漢字の語は前後が漢字なら当てない
+        self.assertEqual(convert("太秦駅"), "太秦駅")
+
+    def test_user_dictionary_wins(self):
+        self.dictionary.put(make_word("太秦", "タイシン"))
+        self.assertEqual(self.dictionary.convert("太秦"), "タイシン")
+
+    def test_reload_on_change_and_missing_file(self):
+        path = self.builtin.path
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["entries"].append({"surface": "山車", "reading": "ダシ"})
+        path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        import os
+        os.utime(path, (path.stat().st_atime, path.stat().st_mtime + 5))
+        self.assertEqual(self.dictionary.convert("山車"), "ダシ")
+        path.unlink()
+        self.assertEqual(self.dictionary.convert("山車"), "山車")
+
+    def test_shipped_file_loads(self):
+        from reading_dictionary import BUILTIN_READINGS
+        self.assertEqual(BUILTIN_READINGS.apply("10kmの一期一会と5G"), "10キロメートルのいちごいちえとファイブジー")
