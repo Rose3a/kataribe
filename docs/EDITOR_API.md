@@ -22,6 +22,7 @@ Editor 経由では、`http://127.0.0.1:50125` の API を使います。
 | トークンの分け方 | POST | `/irodori/tokenize` | `{"texts": [...]}`。読み込み中のモデルのトークナイザで分ける。結果の `original` は語彙分割なし、`tokens` は合成と同じ境目で語彙分割したとき（`docs/TOKEN_SPLIT.md`） |
 | 辞書一括取込 | POST | `/import_user_dict?override=...` | |
 | 共通設定・状態 | GET/POST | `/irodori/settings` | Irodori 独自 |
+| 声づくり | GET/POST | `/irodori/voices...` | 下の「声づくり」を参照 |
 
 エンジンはループバック (`127.0.0.1`) にだけ bind されます。
 
@@ -50,6 +51,7 @@ Editor 経由の `/synthesis` では、次のように設定が適用されま�
 | `token_split_threshold` | Editor の共通設定、`/irodori/settings` | 語彙分割の境目。`-10` / `-11` / `-12` / `-13`（既定）/ `none`。4文字以上で出現度がこれ以下のトークンを避けて分ける。v4 Small 系（modernbert-ja）のモデルにだけ当たる。変更はモデルの再読み込みなしで次の合成から有効。セリフごとの `irodori_token_split` が `off` なら常に当てない |
 | CFG / step / Schedule / 音声長 / caption / 話速など | 音声クエリの `irodori_*` / `speedScale` | その1行だけ |
 | ユーザー辞書 | プロジェクトルートの `user_dictionary.json` | `/audio_query` と合成時のテキスト変換 |
+| 同梱の読み辞書 | `irodori-tts/wrapper/data/builtin_readings.json` | ユーザー辞書に当たらなかった部分に、英語の読みより先に当てる。読みが1通りの語（英字略語・四字熟語・地名・人名・日常の難読語・作品名、約3,200語）と、数字の直後の単位（`10km` → 10キロメートル）。読みは英字と単位がカタカナ、漢字の語がひらがな。ユーザー辞書に同じ語を登録すればそちらが優先する。ファイルを書き換えると再起動なしで反映 |
 
 現在の backend・model・seed・`token_split_threshold` は `GET /irodori/settings` で確認できます。
 同じ応答の `tokenSplit`（`threshold` / `applies` / `modelTokenizer`）で、語彙分割が
@@ -151,6 +153,30 @@ Invoke-RestMethod "$Base/user_dict"
 辞書変更後は音声キャッシュを使い回さず、次の `/audio_query` と `/synthesis` を新しく
 実行してください。
 
+## 声づくり
+
+セリフで生成した声を、話者として保存する API です（トーク画面のセリフの設定パネル「声づくり」が使います。
+実装は `irodori-tts/wrapper/voice_design.py`）。保存した声は `speakers/声づくり/<ID>/` に置かれ、
+`/speakers` に通常の話者と同じように並びます。合成では保存した参照音声のエンコード結果を使い、
+透かしは入れません。
+
+| 用途 | メソッド | パス | body / 応答 |
+|---|---:|---|---|
+| 保存 | POST | `/irodori/voices/save` | `{"name", "speaker": style ID, "query": 合成に送ったのと同じ query, "icon"?: 画像の data URL}` → `{"id", "speakerUuid"}` |
+| 名前・アイコンの変更、声の差し替え | POST | `/irodori/voices/update` | `{"id", "name"?, "icon"?, "speaker"?, "query"?}`。query を付けるとそのセリフの声に差し替える。ID（話者 ID）は変わらない |
+| 削除 | POST | `/irodori/voices/delete` | `{"id"}` |
+| 一覧 | GET | `/irodori/voices` | 名前・キャプション・セリフ・シード・モデル・`speakerUuid` など |
+| 保存した音声・アイコン | GET | `/irodori/voices/audio?id=...`, `/irodori/voices/icon?id=...` | WAV / PNG |
+
+- 保存に使う音声は、このエンジンが合成した結果だけです。エンジンは参照音声を使わない合成の結果を、
+  合成条件（`query` と話者）をキーにして直近24本覚えておき、保存のときに照合します。外部の音声ファイルからは作れません。
+- 覚えていない条件でも、シードが決まっていればエンジンが同じ条件で作り直して保存します（合成は決定的）。
+  シードが空欄（ランダム）で覚えていなければ、もう一度生成してから保存してください。
+- 音声参照を使ったセリフの声は保存できません。声づくりの声は追加話者・話者マージには使えません。
+- 参照音声の latent は codec ごとに保存し、codec の違うモデルでは保存した音声から作り直します。
+- キャプションは「落ち着いた男性の声で、低めのトーンでゆっくり読み上げてください。」のような
+  「〜の声で、〜読み上げてください」の形が効きやすい（体言止めの説明文は効きにくい）。
+
 ## エラー
 
 | ステータス | 意味 | 本文 |
@@ -158,8 +184,9 @@ Invoke-RestMethod "$Base/user_dict"
 | 400 | 実行できない要求（未知の話者、文章が長すぎる、空の文章など） | `{"detail": "説明"}` |
 | 403 | 許可外の `Origin`、またはブラウザからの要求でトークンが無い・古い | `{"detail": "..."}` |
 | 422 | 入力エラー（必須パラメータなし、型・範囲違い、未知の `irodori_*` キー） | VOICEVOX（FastAPI）と同じ `{"detail": [{"type", "loc", "msg", "input"}]}` |
-| 429 | 同時合成数の上限 | `Retry-After` ヘッダーの秒数だけ待って再試行 |
+| 429 | 合成の待ち行列（32件）が一杯 | `Retry-After` ヘッダーの秒数だけ待って再試行 |
 
+- 同時に届いた合成（`/synthesis`・`/irodori/synthesis_stream`）は断らずに、届いた順に1件ずつ合成します。待っている間に接続を切った要求は合成せずに飛ばします。
 - 文章は現在最大256文字です。長文は句読点などで分割してください。
 - `/irodori/settings` の POST は Editor 共通設定を変更し、`irodori-tts/editor-settings.json`
   に保存します。通常はEditor画面の「設定を適用」を使い、外部APIから変更する場合は

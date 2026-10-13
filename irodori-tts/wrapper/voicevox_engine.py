@@ -44,8 +44,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tts_cli import IrodoriTTS, resolve_embed_dirs  # noqa: E402
 from reading_dictionary import (ENGLISH_READINGS, ENGLISH_SPACINGS, KANA_STYLES,
                                 READING_DICTIONARY, make_word)
+from process_job import tie_children_to_this_process  # noqa: E402
+from synthesis_queue import ClientGone, QueueFull, SynthesisQueue, connection_closed  # noqa: E402
 from token_split import (DEFAULT_TOKEN_SPLIT_THRESHOLD, TOKEN_SPLITS, active_threshold,
                          describe_tokens, threshold_value, token_split_applies)
+from text_cleanup import clean_pasted_text
 from third_party_licenses import dependency_licenses
 from speaker_catalog import blink_thumbnail_for, credit_for, display_name_for, policy_for, mouth_open_thumbnail_for, mouth_parts_for, portrait_for, speaker_catalog, _fallback_icon  # noqa: E402
 
@@ -530,7 +533,7 @@ def _openapi_document() -> dict:
                     "200": {"description": "WAV", "content": {"audio/wav": {}}},
                     "400": json_ok,
                     "422": invalid,
-                    "429": {"description": "合成の同時実行数の上限。Retry-After 秒後に再試行"},
+                    "429": {"description": "合成の待ち行列が一杯。Retry-After 秒後に再試行"},
                 }}},
         },
         "components": {"schemas": {
@@ -605,7 +608,8 @@ def _speaker_table(tts: IrodoriTTS, progress_callback=None) -> tuple[list[dict],
     for index, name in enumerate(styles, start=1):
         style_id = index
         id_to_name[style_id] = name
-        display_name = display_name_for(name)
+        display_name = (getattr(tts.cassette, "display_name", display_name_for)(name)
+                        if name != "話者なし" else display_name_for(name))
         speaker_uuid = str(uuid.uuid5(ENGINE_UUID_NAMESPACE, name))
         folder = (
             tts.cassette.folder_for(name)
@@ -689,7 +693,7 @@ def _query(text: str) -> dict:
         "outputSamplingRate": 48000,
         "outputStereo": False,
         # 語彙分割はセリフごとの設定（irodori_token_split）で合成時（エンコード時）に当てる。
-        "kana": READING_DICTIONARY.convert(text),
+        "kana": READING_DICTIONARY.convert(clean_pasted_text(text)),
         "irodori_text": text,
     }
 
@@ -711,7 +715,7 @@ class VoicevoxAdapter:
         self.speaker_index = _speaker_uuid_index(self.speakers_json)
         self.name_to_id = {name: sid for sid, name in self.id_to_name.items()}
         self.lock = threading.Lock()
-        self.synthesis_slots = threading.BoundedSemaphore(2)
+        self.synthesis_queue = SynthesisQueue()
         # サンプリング既定はモデル種別で決まる。MeanFlow 蒸留モデルなら4ステップ・
         # CFG/スケジュール無効、RF なら従来どおり8ステップ＋CFG＋sway。
         self.checkpoint = os.environ.get("IRODORI_CHECKPOINT", "")
@@ -752,7 +756,8 @@ class VoicevoxAdapter:
             return self._synthesize(query, speaker_id, options)
 
     def _synthesize(self, query: dict, speaker_id: int, options: dict) -> bytes:
-        text = str(query.get("irodori_text") or query.get("kana") or "").strip()
+        # コピーした文の改行・見えない文字・記号を整えてから読み辞書へ（text_cleanup.py）
+        text = clean_pasted_text(str(query.get("irodori_text") or query.get("kana") or ""))
         text = READING_DICTIONARY.convert(text, **options)
         if not text:
             raise ValueError("audio query does not contain text (irodori_text/kana)")
@@ -885,6 +890,20 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Cache-Control", cache_control)
         self.end_headers()
         self.wfile.write(body)
+
+    @contextlib.contextmanager
+    def _synthesis_turn(self):
+        """合成の順番を待つ。順番が来たら True。待ちが一杯なら 429 を返して False、
+        待っている間に接続が切れたら何も返さず False。"""
+        try:
+            with self.adapter.synthesis_queue.turn(lambda: connection_closed(self.connection)):
+                yield True
+        except QueueFull:
+            self._json(429, {"detail": "synthesis queue is full"}, retry_after=1)
+            yield False
+        except ClientGone:
+            self.close_connection = True
+            yield False
 
     def _json(self, status: int, value: object, retry_after: int | None = None):
         self._send(status, json.dumps(value, ensure_ascii=False).encode("utf-8"),
@@ -1184,27 +1203,20 @@ class Handler(BaseHTTPRequestHandler):
                 speaker = _int_query_param(params, "speaker")
                 query = self._body_json()
                 _validate_query(query)
-                if not self.adapter.synthesis_slots.acquire(timeout=0.1):
-                    self._json(429, {"detail": "synthesis queue is full"}, retry_after=1)
-                    return
-                try:
-                    data = self.adapter.synthesize(query, speaker)
-                finally:
-                    self.adapter.synthesis_slots.release()
-                self._send(200, data, "audio/wav")
+                with self._synthesis_turn() as ok:
+                    if ok:
+                        data = self.adapter.synthesize(query, speaker)
+                if ok:
+                    self._send(200, data, "audio/wav")
                 return
             if parsed.path == "/irodori/synthesis_stream":
                 params = parse_qs(parsed.query)
                 speaker = _int_query_param(params, "speaker")
                 query = self._body_json()
                 _validate_query(query)
-                if not self.adapter.synthesis_slots.acquire(timeout=0.1):
-                    self._json(429, {"detail": "synthesis queue is full"}, retry_after=1)
-                    return
-                try:
-                    self._stream_synthesis(query, speaker)
-                finally:
-                    self.adapter.synthesis_slots.release()
+                with self._synthesis_turn() as ok:
+                    if ok:
+                        self._stream_synthesis(query, speaker)
                 return
             if parsed.path == "/initialize_speaker":
                 self._send(204, b"")
@@ -1342,6 +1354,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--embed-dir", action="append", type=Path, default=[])
     parser.add_argument("--plan", type=Path, default=None)
     args = parser.parse_args(argv)
+    tie_children_to_this_process()
     # Make the adapter self-contained when launched from the official editor
     # (which does not inherit the project's batch-file environment).
     os.environ.setdefault("IRODORI_RUNTIME_DIR", str(ROOT / "runtime"))

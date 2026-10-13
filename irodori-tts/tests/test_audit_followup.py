@@ -22,12 +22,13 @@ except ModuleNotFoundError as exc:
     sys.modules["torch"] = torch_stub
     from editor_engine import EditorAdapter
 from voicevox_engine import Handler, SESSION_TOKEN, MAX_BODY_BYTES
+from synthesis_queue import SynthesisQueue
 
 
 class _FakeVoicevoxAdapter:
     backend_name = "test"
     speakers_json = []
-    synthesis_slots = threading.BoundedSemaphore(2)
+    synthesis_queue = SynthesisQueue()
 
     def synthesize(self, query, speaker):
         return b"RIFFtest"

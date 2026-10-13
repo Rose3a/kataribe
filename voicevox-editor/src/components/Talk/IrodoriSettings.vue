@@ -227,7 +227,7 @@
             autogrow
             type="textarea"
             label="キャプション（任意）"
-            hint="場面・話し方・感情など。空欄なら未指定"
+            hint="声の特徴・話し方など。例: 落ち着いた男性の声で、低めのトーンでゆっくり読み上げてください。空欄なら未指定"
             :maxlength="2000"
             counter
             :disable="locked"
@@ -251,6 +251,8 @@
               captionStrengthValue.toFixed(1)
             }}</span>
           </div>
+          <QSeparator spaced />
+          <IrodoriVoiceDesign :engineId :activeAudioKey />
           <QSeparator spaced />
           <div class="settings-label">読み方</div>
           <QSelect
@@ -527,6 +529,7 @@
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useStore } from "@/store";
 import CharacterButton from "@/components/CharacterButton.vue";
+import IrodoriVoiceDesign from "@/components/Talk/IrodoriVoiceDesign.vue";
 import { createEngineUrl } from "@/domain/url";
 import { fetchIrodoriModelInfo } from "@/helpers/irodoriEngine";
 import {
@@ -788,7 +791,6 @@ function saveSteps(input: string | number | null = stepsValue.value) {
   }
   error.value = "";
   stepsValue.value = value;
-  clearAudioCache();
   void store.actions.COMMAND_SET_IRODORI_SETTINGS({
     audioKey: props.activeAudioKey,
     irodori: { ...irodori.value, steps: value },
@@ -800,7 +802,6 @@ function adjustSteps(direction: 1 | -1) {
 function saveSchedule(value: "linear" | "sway" | null) {
   if (value !== "linear" && value !== "sway") return;
   scheduleValue.value = value;
-  clearAudioCache();
   void store.actions.COMMAND_SET_IRODORI_SETTINGS({
     audioKey: props.activeAudioKey,
     irodori: { ...irodori.value, schedule: value },
@@ -846,7 +847,6 @@ function saveSeconds(value: number | null) {
   }
   error.value = "";
   secondsValue.value = value;
-  clearAudioCache();
   void store.actions.COMMAND_SET_IRODORI_SETTINGS({
     audioKey: props.activeAudioKey,
     irodori: { ...irodori.value, seconds: value },
@@ -872,8 +872,6 @@ function saveLineCfg(key: LineCfgKey, input: string | number | null) {
     return;
   }
   error.value = "";
-  // CFG変更後に古い音声を再利用しない。
-  clearAudioCache();
   void store.actions.COMMAND_SET_IRODORI_SETTINGS({
     audioKey: props.activeAudioKey,
     irodori: { ...irodori.value, [key]: Number(value.toFixed(4)) },
@@ -903,7 +901,6 @@ function saveCaption() {
     audioKey: props.activeAudioKey,
     irodori: { ...irodori.value, caption: value || undefined },
   });
-  clearAudioCache();
 }
 type StrengthKey = "captionStrength" | "referenceStrength" | "speakerStrength";
 function saveAdditionalSpeakers(entries: AdditionalSpeaker[]) {
@@ -917,7 +914,6 @@ function saveAdditionalSpeakers(entries: AdditionalSpeaker[]) {
   }
   additionalSpeakersValue.value = entries;
   error.value = "";
-  clearAudioCache();
   void store.actions.COMMAND_SET_IRODORI_SETTINGS({
     audioKey: props.activeAudioKey,
     irodori: {
@@ -971,7 +967,6 @@ function saveStrength(key: StrengthKey, input: number | null) {
   else if (key === "referenceStrength")
     referenceStrengthValue.value = normalized;
   else speakerStrengthValue.value = normalized;
-  clearAudioCache();
   void store.actions.COMMAND_SET_IRODORI_SETTINGS({
     audioKey: props.activeAudioKey,
     irodori: { ...irodori.value, [key]: normalized },
@@ -1021,7 +1016,6 @@ async function handleReferenceFileChange(value: File | File[] | null) {
         },
       },
     });
-    clearAudioCache();
   } catch (cause) {
     referenceFile.value = null;
     error.value = cause instanceof Error ? cause.message : String(cause);
@@ -1034,7 +1028,6 @@ function clearReferenceAudio() {
     audioKey: props.activeAudioKey,
     irodori: { ...irodori.value, referenceAudio: undefined },
   });
-  clearAudioCache();
 }
 async function playReferenceAudio() {
   const dataUrl = irodori.value.referenceAudio?.dataUrl;

@@ -187,6 +187,9 @@ class SpeakerCassette:
                 continue
             for p in sorted(d.rglob("*.safetensors")):
                 self._variants.setdefault(speaker_stem(p), []).append((p, d))
+            # 声づくりで保存した声（参照音声＋エンコード結果。voice_design.py）
+            for p in sorted(d.rglob("*.voice.json")):
+                self._variants.setdefault(speaker_stem(p), []).append((p, d))
         # Without a known model width, the untagged file (the original
         # v4.1 Small embedding) stays the default, not ``name.1280``.
         for variants in self._variants.values():
@@ -246,7 +249,22 @@ class SpeakerCassette:
         # per-speaker asset directory must not split that series into tabs.
         return parent.parts[0] if parent.parts else None
 
+    def is_voice(self, name: str) -> bool:
+        """声づくりの声（埋め込みではなく参照音声で表す話者）か。"""
+        variants = self._variants.get(name)
+        return bool(variants) and variants[0][0].name.endswith(".voice.json")
+
+    def display_name(self, name: str) -> str:
+        from speaker_catalog import display_name_for
+        if self.is_voice(name):
+            import voice_design
+            return voice_design.display_name(self.path_for(name))
+        return display_name_for(name)
+
     def get(self, name: str, dim: Optional[int] = None) -> torch.Tensor:
+        if self.is_voice(name):
+            raise ValueError(
+                f"「{self.display_name(name)}」は声づくりの声なので、追加話者や話者マージには使えません")
         path = self.path_for(name, dim)
         cached = self._cache.get(path)
         if cached is not None:
@@ -267,6 +285,8 @@ class SpeakerCassette:
 
     def dim_for(self, name: str) -> Optional[int]:
         """Embedding width of the variant in use (768 for v4.1 Small speakers)."""
+        if self.is_voice(name):
+            return None  # 参照音声なので、どのモデルでも使える
         try:
             return _embedding_width(self.path_for(name))
         except FileNotFoundError:
@@ -291,6 +311,33 @@ def _embedding_width(path: Path) -> Optional[int]:
         return _SPEAKER_DIM_CACHE[key]
     except Exception:  # noqa: BLE001 - unreadable files are rejected at synthesis
         return None
+
+
+def _plan_max_ref_seconds(engine, runtime) -> Optional[float]:
+    """TensorRT plan が受け付ける参照の長さ（秒）。分からなければ None（切らない）。"""
+    try:
+        tokens = int(engine.engine.get_tensor_profile_shape("speaker_mask", 0)[2][1])
+        frames_per_token = (max(1, int(runtime.model_cfg.speaker_patch_size))
+                            * max(1, int(runtime.model_cfg.latent_patch_size)))
+        hop = int(runtime.codec.model.hop_length)
+        rate = float(runtime.codec.sample_rate)
+    except Exception as exc:  # noqa: BLE001 - 古い plan やモデルでは今までどおり
+        print(f"[trt] reference length limit unknown: {exc}", file=sys.stderr, flush=True)
+        return None
+    # 話者エンコーダは「フレーム数 / patch」に1トークン足した長さを作る（376フレーム → 95）。
+    # runtime は秒をフレーム数に切り上げて切るので、半フレーム手前にしてはみ出さないようにする。
+    return ((tokens - 1) * frames_per_token - 0.5) * hop / rate
+
+
+def _cap_reference_seconds(request, runtime, limit: Optional[float]) -> None:
+    """参照の長さの上限（request.max_ref_seconds）を limit 以下にする。"""
+    if limit is None:
+        return
+    current = request.max_ref_seconds
+    if current is None:
+        current = float(getattr(runtime, "default_max_ref_seconds", 0.0) or 0.0)
+    if current <= 0 or current > limit:
+        request.max_ref_seconds = limit
 
 
 # ---------------------------------------------------------------- engines
@@ -329,6 +376,34 @@ class TorchBackend:
                 "audio_s": result.audio.shape[-1] / result.sample_rate}
 
 
+class _ResidentWorker:
+    """関数を常駐の1スレッドで実行する。呼び出し側の contextvars（ストリーミングの sink など）は引き継ぐ。"""
+
+    def __init__(self):
+        import contextvars, queue
+        self._contextvars, self._queue = contextvars, queue
+        self._jobs = queue.Queue()
+        threading.Thread(target=self._loop, name="irodori-synth", daemon=True).start()
+
+    def _loop(self):
+        while True:
+            ctx, fn, args, box, done = self._jobs.get()
+            try:
+                box.append((True, ctx.run(fn, *args)))
+            except BaseException as exc:  # noqa: BLE001 - 呼び出し側スレッドへそのまま渡す
+                box.append((False, exc))
+            done.set()
+
+    def run(self, fn, *args):
+        box, done = [], threading.Event()
+        self._jobs.put((self._contextvars.copy_context(), fn, args, box, done))
+        done.wait()
+        ok, value = box[0]
+        if not ok:
+            raise value
+        return value
+
+
 class TrtBackend:
     """Resident bf16 TensorRT engine, single plan, batch1 only."""
 
@@ -363,6 +438,12 @@ class TrtBackend:
         self.original_forward = self.runtime.model.forward_with_encoded_conditions
         self.adapter = Adapter(self.runtime.model, self.engine, compact=True)
         self.runtime.model.forward_with_encoded_conditions = self.adapter
+        # plan の話者トークン数には上限がある（profile の speaker 軸。192 = 参照 約30秒。古い plan は 64 = 約10秒）。
+        # 長い参照（音声参照・声づくりの声）は、合成のときにこの長さまでで切る。
+        self.max_ref_seconds = _plan_max_ref_seconds(self.engine, self.runtime)
+        if self.max_ref_seconds is not None:
+            print(f"[trt] reference audio is cut to {self.max_ref_seconds:.2f} s for this plan",
+                  file=sys.stderr, flush=True)
         self.stream = torch.cuda.Stream()
         self.stream.wait_stream(torch.cuda.current_stream())
         self.trt_version = trt_version
@@ -395,6 +476,7 @@ class TrtBackend:
         # Weights only the plans use go to CPU RAM, and idle cache goes back
         # to the driver (IRODORI_TRT_LOW_VRAM=0 keeps everything resident).
         self.busy = threading.Lock()
+        self._worker = _ResidentWorker()
         self.idle_release = None
         if os.environ.get("IRODORI_TRT_LOW_VRAM", "1") != "0":
             import vram_trim
@@ -403,12 +485,23 @@ class TrtBackend:
             print(f"[trt] moved {moved / 2**20:.0f} MB of plan-duplicated weights to CPU RAM",
                   file=sys.stderr, flush=True)
 
-    def synthesize(self, request, speaker_tensor: torch.Tensor, out_wav, log_fn=None) -> dict:
-        with self.busy, torch.cuda.stream(self.stream):
+    def _synthesize_on_stream(self, request, log_fn):
+        with torch.cuda.stream(self.stream):
             result = self.runtime.synthesize(request, log_fn=log_fn)
             torch.cuda.synchronize()
-        if self.idle_release is not None:
-            self.idle_release.touch()
+        return result
+
+    def synthesize(self, request, speaker_tensor: torch.Tensor, out_wav, log_fn=None) -> dict:
+        _cap_reference_seconds(request, self.runtime, getattr(self, "max_ref_seconds", None))
+        try:
+            with self.busy:
+                # 合成は常駐ワーカー1本で動かす。HTTP のリクエストごとの新スレッドで走らせると、
+                # 参照ありの speaker_encoder などが毎回スレッドの初回コスト（約0.8秒）を払う。
+                result = self._worker.run(self._synthesize_on_stream, request, log_fn)
+        finally:
+            # 失敗（VRAM 不足など）で抜けたときも、待機中の VRAM を返すタイマーを掛け直す。
+            if self.idle_release is not None:
+                self.idle_release.touch()
         write_wav(out_wav, result.audio, result.sample_rate)
         return {"backend": self.name, "wall_s": result.total_to_decode,
                 "audio_s": result.audio.shape[-1] / result.sample_rate}
@@ -569,6 +662,11 @@ class IrodoriTTS:
         if tokenizer is not None:
             install_split_encoding(tokenizer)
             self.split_encoding = True
+        # 同じ参照音声を毎回エンコードし直さない
+        runtime = getattr(self.backend, "runtime", None)
+        if runtime is not None and hasattr(runtime, "_load_reference_latent"):
+            import reference_cache
+            reference_cache.install(runtime)
         # Pick each speaker's embedding made for this model's width.
         self.cassette.preferred_dim = self.speaker_dim()
         self.default_speaker = self._pick_default_speaker()
@@ -611,6 +709,12 @@ class IrodoriTTS:
     def search_dirs(self) -> list[str]:
         return [str(d) for d in self.cassette.dirs]
 
+    def voice_latent(self, name: str) -> Path:
+        """声づくりの声の latent（読み込み中のモデルの codec 用）。無ければ保存した音声から作る。"""
+        import voice_design
+        return voice_design.ensure_latent(self.cassette.path_for(name),
+                                          getattr(self.backend, "runtime", None))
+
     def refresh_cassette(self) -> None:
         self.cassette.refresh()
 
@@ -652,6 +756,13 @@ class IrodoriTTS:
             raise ValueError("追加話者は最大3人までです")
         if ref_wav is not None and additional_speakers:
             raise ValueError("音声リファレンスと追加話者は同時に使えません")
+        # 声づくりの声は、保存した参照音声のエンコード結果（latent）で表す。
+        # セリフに参照音声が付いていればそちらを優先する（埋め込みの話者と同じ扱い）。
+        voice_latent = None
+        voice = bool(ref_wav is None and speaker_tensor_override is None and speaker_name
+                     and getattr(self.cassette, "is_voice", lambda _name: False)(speaker_name))
+        if voice and additional_speakers:
+            raise ValueError("声づくりの声と追加話者は同時に使えません")
         speaker_strength = float(speaker_strength)
         if not math.isfinite(speaker_strength) or not 0 <= speaker_strength <= 1:
             raise ValueError("speaker strength must be between 0 and 1")
@@ -659,8 +770,10 @@ class IrodoriTTS:
         if model_dim is not None:
             # Use each speaker's embedding for this model's width.
             self.cassette.preferred_dim = model_dim
+        if voice and speaker_strength > 0:
+            voice_latent = self.voice_latent(speaker_name)
         speaker_tensor = (speaker_tensor_override if speaker_tensor_override is not None
-                          else None if ref_wav or speaker_strength == 0
+                          else None if ref_wav or speaker_strength == 0 or voice
                           else (self.cassette.get(speaker_name) if speaker_name else None))
         if speaker_tensor is not None:
             speaker_tensor = None if speaker_strength == 0 else speaker_tensor * speaker_strength
@@ -720,6 +833,11 @@ class IrodoriTTS:
             # Reference audio can clone anyone's voice, so mark that output even
             # when its strength is 0.  Registered speakers stay unmarked.
             request.watermark = True
+        elif voice_latent is not None:
+            # 声づくりの声は kataribe で生成した音声だけから作るので、登録話者と同じく透かしは入れない。
+            # 話者の強さのスライダーは、参照の強さ（話者条件の強さ）に当てる。
+            request.ref_latent = str(voice_latent)
+            request.reference_strength = speaker_strength
         elif speaker_tensor is not None:
             # Hand the tensor over directly instead of a .speaker.safetensors
             # round trip; the runtime receives identical values.

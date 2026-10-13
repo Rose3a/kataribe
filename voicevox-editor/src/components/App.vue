@@ -52,6 +52,7 @@ import SpeakerPolicyReviewDialog, {
   type SpeakerPolicyReview,
 } from "@/components/Dialog/SpeakerPolicyReviewDialog.vue";
 import { IRODORI_ETHICS_NOTICE_VERSION } from "@/domain/irodoriEthicsNotice";
+import { IRODORI_VOICE_DESIGN_FOLDER } from "@/domain/irodori";
 import MenuBar from "@/components/Menu/MenuBar/MenuBar.vue";
 import { useMenuBarData as useTalkMenuBarData } from "@/components/Talk/menuBarData";
 import { useMenuBarData as useSingMenuBarData } from "@/components/Sing/menuBarData";
@@ -104,6 +105,11 @@ const getIrodoriSpeakerPolicyReviews = (): SpeakerPolicyReview[] =>
           store.state.engineManifests[style.engineId]?.brandName ===
           "Irodori-TTS",
       ),
+    )
+    // 声づくりで作った声は利用者自身のもので、確認する利用条件（credit.txt）がない
+    .filter(
+      (characterInfo) =>
+        characterInfo.metas.irodoriFolder !== IRODORI_VOICE_DESIGN_FOLDER,
     )
     .map((characterInfo) => {
       // エンジンの既存 API は Markdown の改行として空白を補うため、

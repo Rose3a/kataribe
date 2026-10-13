@@ -1,6 +1,7 @@
 """Single VOICEVOX fork endpoint with lazy, exclusive Irodori backends."""
 import argparse
 import base64
+import copy
 import gc
 import hashlib
 import io
@@ -8,6 +9,7 @@ import json
 import math
 import os
 import re
+import secrets
 import struct
 import threading
 import time
@@ -36,6 +38,9 @@ from asr_timeline import (AsrTimeline, decode_wav, ensure_asr_model, asr_package
                           MODEL_DIR as ASR_MODEL_DIR)
 from tts_cli import SpeakerCassette, resolve_embed_dirs
 from speaker_mix import compose_speaker_mix
+from synthesis_queue import SynthesisQueue
+import voice_design
+from process_job import open_folder, tie_children_to_this_process
 from model_storage import ModelStorage
 from token_split import (DEFAULT_TOKEN_SPLIT_THRESHOLD, TOKEN_SPLIT_THRESHOLDS,
                          token_split_applies)
@@ -83,10 +88,15 @@ def _wav_seconds(data):
         return None
 
 
+# エディタが生成済みの音声をメモリに持っておく量（MB）。0 なら持たない。
+DEFAULT_AUDIO_CACHE_MB = 25
+
+
 class EditorAdapter:
     DEFAULT_SETTINGS = dict(backend="cpu", model="Aratako/Irodori-TTS-v4.1-Small", seed=4763674,
                             sway_coeff=-1.0, token_split_threshold=DEFAULT_TOKEN_SPLIT_THRESHOLD,
-                            stream_playback=False, default_steps=DEFAULT_STEPS_RF)
+                            stream_playback=False, default_steps=DEFAULT_STEPS_RF,
+                            audio_cache_mb=DEFAULT_AUDIO_CACHE_MB)
 
     def __init__(self):
         self.backend_name = "editor"
@@ -96,7 +106,10 @@ class EditorAdapter:
         self.speaker_lock = threading.Lock()
         self.state_lock = threading.RLock()
         self.progress_lock = threading.Lock()
-        self.synthesis_slots = threading.BoundedSemaphore(2)
+        self.synthesis_queue = SynthesisQueue()
+        # 声づくり: 試聴したテイクと、保存した声の一覧（speakers/声づくり/）
+        self.voice_takes = voice_design.TakeStore()
+        self.voices = voice_design.VoiceLibrary(SPEAKER_DIR)
         self.progress = dict(active=False, percent=0, stage="idle")
         self._progress_percent = 0
         self._prewarm_lock = threading.Lock()
@@ -116,7 +129,8 @@ class EditorAdapter:
         self.config_path = ROOT / "editor-settings.json"
         self.settings = dict(backend="cpu", model="Aratako/Irodori-TTS-v4.1-Small", seed=4763674,
                              sway_coeff=-1.0, token_split_threshold=DEFAULT_TOKEN_SPLIT_THRESHOLD,
-                            stream_playback=False, default_steps=DEFAULT_STEPS_RF)
+                            stream_playback=False, default_steps=DEFAULT_STEPS_RF,
+                            audio_cache_mb=DEFAULT_AUDIO_CACHE_MB)
         try:
             saved = json.loads(self.config_path.read_text(encoding="utf-8"))
             if isinstance(saved, dict):
@@ -385,6 +399,9 @@ class EditorAdapter:
             raise ValueError("default_steps は1〜80の整数で指定してください")
         if not isinstance(value.get("stream_playback", False), bool):
             raise ValueError("stream_playback は true か false を指定してください")
+        cache_mb = value.get("audio_cache_mb", DEFAULT_AUDIO_CACHE_MB)
+        if isinstance(cache_mb, bool) or not isinstance(cache_mb, int) or not 0 <= cache_mb <= 1024:
+            raise ValueError("audio_cache_mb は0〜1024の整数で指定してください")
         if not isinstance(value["seed"], int) or not 0 <= value["seed"] < 2**31:
             raise ValueError("seedは0〜2147483647です")
         try:
@@ -816,7 +833,8 @@ class EditorAdapter:
                 if sid in id_to_name and name:
                     raise ValueError("話者IDが衝突しました。話者ファイルの名前を変更してください")
                 id_to_name[sid] = name
-                label = display_name_for(name) if name else "話者なし"
+                label = (getattr(cassette, "display_name", display_name_for)(name)
+                         if name else "話者なし")
                 image = catalog.get(name)
                 encoded = image[1] if image else fallback_payload
                 source = cassette.path_for(name) if name else None
@@ -856,8 +874,10 @@ class EditorAdapter:
     def mix_speakers(self):
         speaker_dim = self._model_speaker_dim()
         cassette = SpeakerCassette(resolve_embed_dirs(), preferred_dim=speaker_dim)
+        # 声づくりの声は埋め込みを持たないので、マージには使えない
         return [dict(id=name, name=display_name_for(name))
-                for name in self._usable_speakers(cassette, speaker_dim)]
+                for name in self._usable_speakers(cassette, speaker_dim)
+                if not getattr(cassette, "is_voice", lambda _name: False)(name)]
 
     def mix_recipes(self):
         recipes = []
@@ -925,7 +945,90 @@ class EditorAdapter:
         self.refresh()
         return {"name": name}
 
+    # ---- 声づくり（voice_design.py）
+    def _remember_take(self, key, query, speaker_id, wav):
+        """参照音声を使わない合成の結果を、声として保存できるよう覚えておく。"""
+        if key is None or query.get("irodori_reference_audio") or not hasattr(self, "voice_takes"):
+            return
+        try:
+            with self.state_lock:
+                model = str(self.settings.get("model", ""))
+                speaker = self.id_to_name.get(speaker_id) or ""
+            self.voice_takes.put(wav, dict(
+                text=str(query.get("irodori_text") or query.get("kana") or ""),
+                caption=str(query.get("irodori_caption") or ""),
+                seed=query.get("irodori_seed"), steps=query.get("irodori_steps"),
+                model=model, speaker=speaker), key=key)
+        except Exception as exc:  # noqa: BLE001 - 覚えておけなくても合成は失敗させない
+            print(f"[irodori] voice take not kept: {exc}", flush=True)
+
+    def _line_take(self, payload):
+        """セリフの合成条件（エディタが合成に送るのと同じ query と話者）から、そのセリフの音声を取る。
+
+        直近に合成したものがあればそれを使う。無くてもシードが決まっていれば、同じ条件で
+        作り直す（合成は決定的なので同じ音になる）。どちらも、このエンジンが合成した音声だけ。
+        """
+        query, speaker_id = payload.get("query"), payload.get("speaker")
+        if not isinstance(query, dict) or isinstance(speaker_id, bool) or not isinstance(speaker_id, int):
+            raise ValueError("セリフの合成条件（query と speaker）を指定してください")
+        if query.get("irodori_reference_audio"):
+            raise ValueError("音声参照を使ったセリフの声は保存できません")
+        key = voice_design.take_key(query, speaker_id)
+        try:
+            return self.voice_takes.get(key)
+        except ValueError:
+            if query.get("irodori_seed") is None:
+                raise ValueError("このセリフで生成した音声が見つかりません。もう一度生成してから保存してください"
+                                 "（シードを固定しておくと、エンジンを再起動した後でも保存できます）") from None
+        self.synthesize(copy.deepcopy(query), speaker_id)
+        return self.voice_takes.get(key)
+
+    def _encode_voice(self, voice_file):
+        """保存した声の latent を、読み込み中のモデルの codec で作る（GPU を使う）。"""
+        with self.operation_lock:
+            if self.delegate is None:
+                self.delegate = self._build_delegate()
+            with self.delegate.lock:
+                voice_design.ensure_latent(
+                    voice_file, getattr(self.delegate.tts.backend, "runtime", None))
+
+    def voice_list(self):
+        """保存した声の一覧。speakerUuid でエディタの話者と結び付ける。"""
+        return [{**voice, "speakerUuid": str(uuid.uuid5(ENGINE_UUID_NAMESPACE, voice["id"]))}
+                for voice in self.voices.list()]
+
+    def voice_save(self, payload):
+        if not isinstance(payload, dict):
+            raise ValueError("request must be an object")
+        take = self._line_take(payload)
+        voice_id = self.voices.create(take, payload.get("name"), payload.get("icon"),
+                                      encode=self._encode_voice)
+        self.refresh()
+        return {"id": voice_id, "speakerUuid": str(uuid.uuid5(ENGINE_UUID_NAMESPACE, voice_id))}
+
+    def voice_update(self, payload):
+        """名前・アイコンの変更。query を付ければ、そのセリフの音声で声を差し替える。"""
+        if not isinstance(payload, dict):
+            raise ValueError("request must be an object")
+        take = self._line_take(payload) if payload.get("query") is not None else None
+        voice_id = self.voices.update(payload.get("id"), name=payload.get("name"), take=take,
+                                      icon=payload.get("icon"), encode=self._encode_voice)
+        self.refresh()
+        return {"id": voice_id}
+
+    def voice_delete(self, payload):
+        if not isinstance(payload, dict):
+            raise ValueError("request must be an object")
+        self.voices.delete(payload.get("id"))
+        self.refresh()
+        return {"deleted": True}
+
     def synthesize(self, query, speaker_id):
+        # 声づくりで「このセリフの声」を保存するときの照合キー（合成で書き換わる前の条件から作る）
+        try:
+            take_key = voice_design.take_key(query, speaker_id) if isinstance(query, dict) else None
+        except (TypeError, ValueError):
+            take_key = None
         try:
             with self.operation_lock:
                 with self.progress_lock:
@@ -934,7 +1037,9 @@ class EditorAdapter:
                     self.logs.clear()
                     self._phase_marks = []
                 self._set_progress("validating synthesis", 0)
-                return self._synthesize(query, speaker_id)
+                wav = self._synthesize(query, speaker_id)
+                self._remember_take(take_key, query, speaker_id, wav)
+                return wav
         except Exception as exc:
             # DirectML\u30ef\u30fc\u30ab\u30fc\u304c\u843d\u3061\u305f\u3068\u304d\u306f\u30c7\u30ea\u30b2\u30fc\u30c8\u3092\u6368\u3066\u3066\u3001\u6b21\u306e\u751f\u6210\u3067
             # \u4f5c\u308a\u76f4\u3059\u3002\u6368\u3066\u306a\u3044\u3068\u518d\u8d77\u52d5\u3059\u308b\u307e\u3067\u5168\u8a71\u8005\u304c500\u306e\u307e\u307e\u306b\u306a\u308b\u3002
@@ -1099,6 +1204,21 @@ class EditorHandler(Handler):
             if not self._authorized():
                 return self._json(403, {"detail": "invalid local origin/session"})
             return self._json(200, self.adapter.mix_recipes())
+        if path in ("/irodori/voices", "/irodori/voices/audio", "/irodori/voices/icon"):
+            if not self._authorized():
+                return self._json(403, {"detail": "invalid local origin/session"})
+            try:
+                if path == "/irodori/voices":
+                    return self._json(200, self.adapter.voice_list())
+                voice_id = parse_qs(urlparse(self.path).query).get("id", [""])[0]
+                if path.endswith("/audio"):
+                    return self._send(200, self.adapter.voices.audio(voice_id), "audio/wav")
+                icon = self.adapter.voices.icon(voice_id)
+                if icon is None:
+                    return self._json(404, {"detail": "icon not found"})
+                return self._send(200, icon, "image/png")
+            except (ValueError, FileNotFoundError) as exc:
+                return self._json(404, {"detail": str(exc)})
         if path == "/irodori/settings":
             if not self._authorized():
                 return self._json(403, {"detail": "invalid local origin/session"})
@@ -1128,6 +1248,17 @@ class EditorHandler(Handler):
     def do_POST(self):
         if not self._authorized():
             return self._json(403, {"detail": "invalid local origin/session"})
+        voice_actions = {"/irodori/voices/save": self.adapter.voice_save,
+                         "/irodori/voices/update": self.adapter.voice_update,
+                         "/irodori/voices/delete": self.adapter.voice_delete}
+        action = voice_actions.get(urlparse(self.path).path)
+        if action is not None:
+            try:
+                return self._json(200, action(self._body_json()))
+            except (ValueError, KeyError, TypeError, FileNotFoundError) as exc:
+                return self._json(400, {"detail": str(exc)})
+            except Exception as exc:
+                return self._json(500, {"detail": str(exc)})
         if urlparse(self.path).path in ("/irodori/mix/preview", "/irodori/mix/save"):
             try:
                 payload = self._body_json()
@@ -1168,7 +1299,7 @@ class EditorHandler(Handler):
             folder = MODEL_DIR if self.path.endswith("open-models") else SPEAKER_DIR
             try:
                 folder.mkdir(exist_ok=True)
-                os.startfile(str(folder))
+                open_folder(folder)
                 return self._json(200, {"opened": str(folder)})
             except OSError as exc:
                 return self._json(500, {"detail": str(exc)})
@@ -1188,6 +1319,8 @@ if __name__ == "__main__":
     parser.add_argument("--port", default=50125, type=int)
     parser.add_argument("--use_gpu", action="store_true")
     args = parser.parse_args()
+    # TensorRT 変換や Radeon の作業プロセスを、エンジンの終了（強制終了も含む）と一緒に止める。
+    tie_children_to_this_process()
     for key, folder in dict(IRODORI_RUNTIME_DIR="runtime", IRODORI_HF_HOME=".cache/huggingface",
                             IRODORI_CACHE_DIR=".cache/irodori-tts-cache").items():
         os.environ.setdefault(key, str(REPO_ROOT / folder))

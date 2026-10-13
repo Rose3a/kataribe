@@ -122,6 +122,19 @@
         長いセリフで再生が始まるまでの待ちが短くなります（トグルを切り替えるとすぐ保存されます）。
         参照音声を使うセリフは、透かしを入れるため生成後にまとめて再生します。ストリーミング中はクリック位置からの再生や口パクは使えず、再生し終えると通常の再生になります。
       </div>
+      <QInput
+        v-model.number="audioCacheMb"
+        outlined
+        dense
+        type="number"
+        :min="0"
+        :max="1024"
+        label="生成済み音声を覚えておく量（MB・0〜1024）"
+        hint="再生・書き出しで同じセリフを作り直さないよう、メモリに持っておきます。超えると使っていない順に捨てます。0 で持ちません。変えるとすぐ保存されます。25MB で約4分ぶん。"
+        :disable="locked"
+        class="q-mb-md"
+        @change="saveAudioCacheMb"
+      />
       <div v-if="hasUnappliedChanges" class="text-caption text-warning q-mb-sm">
         未適用の変更があります。「設定を適用」を押すと反映されます。
       </div>
@@ -220,8 +233,9 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import IrodoriStorageManager from "./IrodoriStorageManager.vue";
 import { useStore } from "@/store";
 import { createEngineUrl } from "@/domain/url";
-import { clearAudioCache } from "@/store/audioGenerate";
+import { clearAudioCache, setAudioCacheLimitMb } from "@/store/audioGenerate";
 import {
+  IRODORI_DEFAULT_AUDIO_CACHE_MB,
   IRODORI_DEFAULT_STEPS,
   IRODORI_DEFAULT_TOKEN_SPLIT_THRESHOLD,
   IRODORI_MAX_STEPS,
@@ -296,6 +310,35 @@ const streamPlayback = computed<boolean>({
       });
   },
 });
+// 生成済み音声のキャッシュ量（MB）。変えるとすぐエンジンへ保存する（モデルの再読み込みは起きない）。
+const audioCacheMb = ref<number>(IRODORI_DEFAULT_AUDIO_CACHE_MB);
+function applyAudioCacheMb(value: number | undefined) {
+  const megabytes = value ?? IRODORI_DEFAULT_AUDIO_CACHE_MB;
+  audioCacheMb.value = megabytes;
+  setAudioCacheLimitMb(megabytes);
+}
+function saveAudioCacheMb() {
+  const value = Number(audioCacheMb.value);
+  if (!Number.isInteger(value) || value < 0 || value > 1024) {
+    error.value = "覚えておく量は0〜1024の整数で入力してください";
+    applyAudioCacheMb(settings.value?.audio_cache_mb);
+    return;
+  }
+  error.value = "";
+  applyAudioCacheMb(value);
+  if (settings.value) settings.value.audio_cache_mb = value;
+  if (appliedSettings.value) appliedSettings.value.audio_cache_mb = value;
+  irodoriRequest(endpoint.value, "/irodori/settings", {
+    method: "POST",
+    body: { audio_cache_mb: value },
+  })
+    .then(async (response) => {
+      if (!response.ok) throw new Error(await response.text());
+    })
+    .catch((cause: unknown) => {
+      error.value = cause instanceof Error ? cause.message : String(cause);
+    });
+}
 // 全行共通の既定ステップ数。範囲外や空欄は 1〜80 に丸める（適用で保存）。
 const defaultStepsSetting = computed<number>({
   get: () => settings.value?.default_steps ?? IRODORI_DEFAULT_STEPS,
@@ -518,6 +561,7 @@ async function run(save: boolean, refreshSpeakers = false) {
     settings.value = result.settings;
     appliedSettings.value = { ...result.settings };
     irodoriStreamPlayback.value = result.settings.stream_playback === true;
+    applyAudioCacheMb(result.settings.audio_cache_mb);
     ensureModelOption(result.settings.model);
     progress.value = result.progress;
     modelInfo.value = result.modelInfo ?? modelInfo.value;

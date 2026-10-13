@@ -55,6 +55,12 @@ export const irodoriMeanflow = ref(false);
  */
 export const irodoriStreamPlayback = ref(false);
 
+/** 生成済み音声をメモリに持っておく量の既定（MB）。エンジンの DEFAULT_AUDIO_CACHE_MB と同じ。 */
+export const IRODORI_DEFAULT_AUDIO_CACHE_MB = 25;
+
+/** 声づくりで保存した声のフォルダ（エンジンの voice_design.VOICE_FOLDER と同じ）。 */
+export const IRODORI_VOICE_DESIGN_FOLDER = "声づくり";
+
 /**
  * ここから下はエンジン（ローカルの HTTP サーバ）とのやり取りの型。
  *
@@ -102,6 +108,8 @@ export type IrodoriSettings = {
   stream_playback?: boolean;
   /** 全行共通の既定ステップ数（1〜80）。MeanFlow も含めて既定は8。古いエンジンは返さない。 */
   default_steps?: number;
+  /** 生成済み音声をメモリに持っておく量（0〜1024MB、0 で持たない）。古いエンジンは返さない。 */
+  audio_cache_mb?: number;
 };
 
 /** 選択中モデルの情報。 */

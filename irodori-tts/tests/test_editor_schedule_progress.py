@@ -105,12 +105,12 @@ class EditorScheduleProgressTests(unittest.TestCase):
         self.assertNotIn("backendProgress.logs", PROGRESS_VIEW)
         self.assertIn("backendProgress.stage", PROGRESS_VIEW)
 
-    def test_editor_adapter_has_bounded_synthesis_slots(self):
+    def test_editor_adapter_has_synthesis_queue(self):
         init = EDITOR_ENGINE[EDITOR_ENGINE.index("def __init__(self):") :]
         self.assertRegex(
             init[:700],
-            r"self\.synthesis_slots\s*=\s*threading\.BoundedSemaphore\(2\)",
-            "editor adapter must expose the bounded synthesis semaphore used by Handler",
+            r"self\.synthesis_queue\s*=\s*SynthesisQueue\(\)",
+            "editor adapter must expose the synthesis queue used by Handler",
         )
 
     def test_set_progress_resets_percent_when_new_work_starts(self):

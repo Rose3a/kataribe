@@ -34,6 +34,9 @@ def speaker_stem(path: Path) -> str:
     ID, images (``tsukuyomi.png`` ...) and credits.
     """
     name = path.name
+    if name.endswith(".voice.json"):
+        # 声づくりの声（voice_design.py）。ID がそのまま話者名になる
+        return name[: -len(".voice.json")]
     if not name.endswith(".speaker.safetensors"):
         return path.stem
     return _DIM_TAG.sub("", name[: -len(".speaker.safetensors")])

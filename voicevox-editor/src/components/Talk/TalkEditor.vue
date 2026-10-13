@@ -249,6 +249,26 @@ registerHotkeyWithCleanup({
     }
   },
 });
+// 本家では調整欄（AudioDetail）が登録するが、Irodori では調整欄を出さないのでここで登録する。
+// テキスト欄の入力中は効かない（Space は文字の入力に使う）。
+registerHotkeyWithCleanup({
+  editor: "talk",
+  name: "再生/停止",
+  callback: () => {
+    if (store.getters.NOW_PLAYING) {
+      void store.actions.STOP_AUDIO();
+      return;
+    }
+    const audioKey = activeAudioKey.value;
+    if (
+      !uiLocked.value &&
+      audioKey != undefined &&
+      !store.state.audioStates[audioKey]?.nowGenerating
+    ) {
+      void generateAndPlayActiveAudio();
+    }
+  },
+});
 
 registerHotkeyWithCleanup({
   editor: "talk",

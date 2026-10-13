@@ -235,9 +235,9 @@ def build(label: str) -> Path:
     opt_batch = 1 if "delta_t" in shapes else 3
     opt_frames, opt_text = 200, 48
     ranges = {
-        "text_mask": (1, opt_text, 256), "speaker_mask": (1, 16, 64),
+        "text_mask": (1, opt_text, 256), "speaker_mask": (1, 16, 192),
         "caption_mask": (1, 1, 512), "kv_0": (1, opt_text, 256),
-        "kv_1": (1, opt_text, 256), "kv_2": (1, 16, 64), "kv_3": (1, 16, 64),
+        "kv_1": (1, opt_text, 256), "kv_2": (1, 16, 192), "kv_3": (1, 16, 192),
         "kv_4": (1, 1, 512), "kv_5": (1, 1, 512),
     }
     for i in range(network.num_inputs):

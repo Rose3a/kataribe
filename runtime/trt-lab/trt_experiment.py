@@ -189,8 +189,8 @@ def build(compact=False):
         if inp.name.startswith('rope_'):
             low[0], high[0] = 1, 750
         if compact:
-            for name, axis, maximum in [('text_mask', 1, 256), ('speaker_mask', 1, 64), ('caption_mask', 1, 512),
-                                         ('kv_0', 2, 256), ('kv_1', 2, 256), ('kv_2', 2, 64), ('kv_3', 2, 64),
+            for name, axis, maximum in [('text_mask', 1, 256), ('speaker_mask', 1, 192), ('caption_mask', 1, 512),
+                                         ('kv_0', 2, 256), ('kv_1', 2, 256), ('kv_2', 2, 192), ('kv_3', 2, 192),
                                          ('kv_4', 2, 512), ('kv_5', 2, 512)]:
                 if inp.name == name:
                     low[axis], high[axis] = 1, maximum

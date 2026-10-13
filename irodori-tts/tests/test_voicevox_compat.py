@@ -35,7 +35,7 @@ class _FakeAdapter:
     speakers_json = []
 
     def __init__(self):
-        self.synthesis_slots = threading.BoundedSemaphore(2)
+        self.synthesis_queue = engine.SynthesisQueue()
         self.queries = []
 
     def synthesize(self, query, speaker):
@@ -201,15 +201,43 @@ class VoicevoxCompatTests(unittest.TestCase):
         self.assertEqual((status, wav), (200, b"RIFFtest"))
 
     def test_queue_full_tells_client_when_to_retry(self):
-        slots = self.adapter.synthesis_slots
-        self.adapter.synthesis_slots = threading.BoundedSemaphore(1)
-        self.adapter.synthesis_slots.acquire()
+        queue = self.adapter.synthesis_queue
+        self.adapter.synthesis_queue = engine.SynthesisQueue(limit=0)
         try:
             status, _, response = self.synth({"irodori_text": "a"})
         finally:
-            self.adapter.synthesis_slots = slots
+            self.adapter.synthesis_queue = queue
         self.assertEqual(status, 429)
         self.assertEqual(response.getheader("Retry-After"), "1")
+
+    def test_concurrent_requests_wait_instead_of_429(self):
+        # 3件以上を同時に送っても、断らずに1件ずつ順番に合成する。
+        gate = threading.Event()
+        running = []
+        peak = []
+        synthesize = self.adapter.synthesize
+
+        def slow(query, speaker):
+            running.append(1)
+            peak.append(len(running))
+            gate.wait(5)
+            running.pop()
+            return b"RIFFtest"
+
+        self.adapter.synthesize = slow
+        results = []
+        try:
+            threads = [threading.Thread(target=lambda: results.append(self.synth({"irodori_text": "a"})[0]))
+                       for _ in range(5)]
+            for thread in threads:
+                thread.start()
+            threading.Timer(0.3, gate.set).start()
+            for thread in threads:
+                thread.join(10)
+        finally:
+            self.adapter.synthesize = synthesize
+        self.assertEqual(results, [200] * 5)
+        self.assertEqual(max(peak), 1)
 
     # --- 仕様の取得 -------------------------------------------------------
 

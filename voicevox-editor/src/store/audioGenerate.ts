@@ -21,18 +21,64 @@ import {
   IRODORI_DEFAULT_KANA_STYLE,
   IRODORI_DEFAULT_TOKEN_SPLIT,
   IRODORI_DEFAULT_ENGLISH_SPACING,
+  IRODORI_DEFAULT_AUDIO_CACHE_MB,
   irodoriDefaultSteps,
 } from "@/domain/irodori";
 import { AudioQueryToJSON } from "@/openapi/models";
 import { irodoriRequest } from "@/helpers/irodoriEngine";
 import { pcm16ToWav, readIrodoriPcmStream } from "@/helpers/irodoriStream";
 
-const audioBlobCache: Record<string, Blob> = {};
+/**
+ * 生成済み音声のキャッシュ。キーにセリフの文・話者・Irodori の設定が入っているので、
+ * 設定を変えたセリフは別のキーになる。合計が上限（設定の audio_cache_mb、既定 25MB）を
+ * 超えたら、最後に使ってから一番時間のたったものから捨てる。
+ */
+const audioBlobCache = new Map<string, Blob>();
+let audioBlobCacheBytes = 0;
+let audioCacheLimitBytes = IRODORI_DEFAULT_AUDIO_CACHE_MB * 1024 * 1024;
 let audioCacheRevision = 0;
 
+/** モデル・辞書など、キーに入らない条件が変わったときに全部捨てる。 */
 export function clearAudioCache() {
   audioCacheRevision++;
-  for (const key of Object.keys(audioBlobCache)) delete audioBlobCache[key];
+  audioBlobCache.clear();
+  audioBlobCacheBytes = 0;
+}
+
+/** キャッシュの上限（MB）。0 なら持たない。 */
+export function setAudioCacheLimitMb(megabytes: number) {
+  audioCacheLimitBytes = Math.max(0, megabytes) * 1024 * 1024;
+  trimAudioCache();
+}
+
+function trimAudioCache() {
+  for (const [key, blob] of audioBlobCache) {
+    if (audioBlobCacheBytes <= audioCacheLimitBytes) break;
+    audioBlobCache.delete(key);
+    audioBlobCacheBytes -= blob.size;
+  }
+}
+
+function getCachedAudio(id: string): Blob | undefined {
+  const blob = audioBlobCache.get(id);
+  if (blob != undefined) {
+    // 使った順に並べ直す（Map は入れた順に回る）
+    audioBlobCache.delete(id);
+    audioBlobCache.set(id, blob);
+  }
+  return blob;
+}
+
+function putCachedAudio(id: string, blob: Blob) {
+  const previous = audioBlobCache.get(id);
+  if (previous != undefined) {
+    audioBlobCache.delete(id);
+    audioBlobCacheBytes -= previous.size;
+  }
+  if (blob.size > audioCacheLimitBytes) return;
+  audioBlobCache.set(id, blob);
+  audioBlobCacheBytes += blob.size;
+  trimAudioCache();
 }
 
 type Instance = {
@@ -112,10 +158,8 @@ export async function fetchAudioFromAudioItem(
   if (audioQuery == undefined)
     throw new Error("audioQuery is not defined for audioItem");
 
-  if (Object.prototype.hasOwnProperty.call(audioBlobCache, id)) {
-    const blob = audioBlobCache[id];
-    return { audioQuery, blob };
-  }
+  const cached = getCachedAudio(id);
+  if (cached != undefined) return { audioQuery, blob: cached };
 
   const speaker = audioItem.voice.styleId;
 
@@ -139,7 +183,7 @@ export async function fetchAudioFromAudioItem(
       synthesisParams(state, audioItem, engineAudioQuery),
     );
   }
-  audioBlobCache[id] = blob;
+  putCachedAudio(id, blob);
   return { audioQuery, blob };
 }
 
@@ -169,8 +213,8 @@ export async function streamAudioFromAudioItem(
   const [id, audioQuery] = await generateUniqueIdAndQuery(state, audioItem);
   if (audioQuery == undefined)
     throw new Error("audioQuery is not defined for audioItem");
-  if (Object.prototype.hasOwnProperty.call(audioBlobCache, id))
-    return { blob: audioBlobCache[id], streamed: false };
+  const cached = getCachedAudio(id);
+  if (cached != undefined) return { blob: cached, streamed: false };
   if (audioItem.morphingInfo != undefined) return undefined;
 
   const params = synthesisParams(
@@ -208,8 +252,33 @@ export async function streamAudioFromAudioItem(
     },
   });
   const blob = pcm16ToWav(parts, sampleRate);
-  if (revision === audioCacheRevision) audioBlobCache[id] = blob;
+  if (revision === audioCacheRevision) putCachedAudio(id, blob);
   return { blob, streamed: true };
+}
+
+/**
+ * セリフの合成条件（合成に送るのと同じ query と話者）。声づくりで「このセリフの声」を
+ * 保存するとき、エンジンはこれで直近の合成結果を照合する（voice_design.take_key）。
+ */
+export async function lineSynthesisRequest(
+  state: AudioStoreState & SettingStoreState,
+  audioItem: AudioItem,
+): Promise<{ speaker: number; query: unknown }> {
+  const [, audioQuery] = await generateUniqueIdAndQuery(state, audioItem);
+  if (audioQuery == undefined)
+    throw new Error("先にこのセリフを生成してください");
+  const params = synthesisParams(
+    state,
+    audioItem,
+    convertAudioQueryFromEditorToEngine(
+      audioQuery,
+      state.engineManifests[audioItem.voice.engineId].defaultSamplingRate,
+    ),
+  );
+  return {
+    speaker: params.speaker,
+    query: AudioQueryToJSON(params.audioQuery),
+  };
 }
 
 export async function generateLabFromAudioQuery(
