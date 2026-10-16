@@ -125,6 +125,17 @@ class RealTokenizerTests(unittest.TestCase):
         # パディングは写しに持ち込まない
         self.assertNotIn("<pad>", pieces(low, "浦和レッズ"))
 
+    def test_keep_tokens_stay_whole(self):
+        from tokenizers import Tokenizer
+        tok = Tokenizer.from_file(str(find_tokenizer_json(SMALL_TOKENIZER)))
+        low = low_score_tokenizer(tok, -13.0)
+        for word in token_split.KEEP_TOKENS:
+            self.assertEqual(pieces(tok, word), [word])  # 元のトークナイザで1トークンの語だけ
+            self.assertEqual(pieces(low, word), [word])
+        self.assertEqual(pieces(low, "瀬戸内海と浦和レッズ"), ["瀬戸内海", "と", "浦和", "レッ", "ズ"])
+        view = describe_tokens(["瀬戸内海"], threshold=-13.0)["results"][0]
+        self.assertFalse(view["original"][0]["low"])
+
 
 class SplitEncodingTests(unittest.TestCase):
     def setUp(self):

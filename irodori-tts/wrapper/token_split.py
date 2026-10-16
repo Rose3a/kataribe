@@ -37,6 +37,14 @@ DEFAULT_TOKEN_SPLIT_THRESHOLD = "-13"
 MIN_SPLIT_CHARS = 4
 # 境目の尺度を決めたトークナイザ。これを使うモデル（v4 Small 系）にだけ当てる。
 DEFAULT_TOKENIZER_REPO = "sbintuitions/modernbert-ja-310m"
+# 境目以下でも分けないトークン。分けると読めなくなり、まとまりのままなら読める語
+# （work/vocab_single: 語だけで 4回中ほぼ毎回言い間違え、分割なしでは言えた。耳でも確認）。
+# 4字熟語が1字ずつに割れる・分け方で読みが変わる（瀬戸内|海 → せとうちうみ）など。
+KEEP_TOKENS = frozenset({
+    "心筋梗塞", "日常茶飯事", "瀬戸内海", "老若男女", "興味津々", "高田馬場", "アクリル板", "年モデル",
+    "オフショア", "モスクワ", "テラス席", "缶バッジ", "ジュリー", "ッチャー", "ティーン", "トゥルー",
+    "マリッジ", "リフィル", "リベット",
+})
 _LOWERED_SCORE = -1e9
 
 
@@ -74,6 +82,12 @@ def _piece_chars(piece: str) -> int:
     return len(piece.replace("▁", ""))
 
 
+def _splits(piece: str, score: float, threshold: float) -> bool:
+    """このトークンを語彙分割で避けるか。"""
+    return (score <= threshold and _piece_chars(piece) >= MIN_SPLIT_CHARS
+            and piece.replace("▁", "") not in KEEP_TOKENS)
+
+
 # ---------------------------------------------------------------- 写しのトークナイザ
 _LOW_LOCK = threading.Lock()
 # id(元のトークナイザ) -> (元のトークナイザ, {境目: 写し or None})。元を持っておき id の再利用を防ぐ。
@@ -106,7 +120,7 @@ def _build_low(tokenizer, threshold: float):
         return None
     for item in model["vocab"]:
         piece, score = item[0], float(item[1])
-        if score <= threshold and _piece_chars(piece) >= MIN_SPLIT_CHARS:
+        if _splits(piece, score, threshold):
             item[1] = _LOWERED_SCORE
     low = Tokenizer.from_str(json.dumps(data, ensure_ascii=False))
     # 写しは本文のトークン列だけを作る（固定長パディングや BOS は呼び出し側で付ける）
@@ -284,8 +298,7 @@ def describe_tokens(texts, text_tokenizer=None, threshold: float | None = None,
                 piece = part[start:end]
                 score = scores.get(token_id, 0.0)
                 tokens.append({"text": piece, "id": token_id, "score": round(score, 2),
-                               "low": (low is not None and score <= threshold
-                                       and _piece_chars(piece) >= MIN_SPLIT_CHARS)})
+                               "low": low is not None and _splits(piece, score, threshold)})
         return tokens
 
     results = []
