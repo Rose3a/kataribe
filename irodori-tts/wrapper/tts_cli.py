@@ -341,6 +341,89 @@ def _cap_reference_seconds(request, runtime, limit: Optional[float]) -> None:
 
 
 # ---------------------------------------------------------------- engines
+class _PrefixToCaption:
+    """blockwise の prefix を TensorRT の plan に渡す（plan の作り直しは要らない）。
+
+    plan に prefix 用の入力は無いが、DiT の attention は条件の K/V をつないだ列を
+    マスク付きで見るだけで、並び順にはよらない。prefix の K/V（RoPE をかけた後のもの、
+    context_kv_cache の末尾）とマスクを caption の K/V・マスクの後ろにつなげば、
+    PyTorch の prefix 付き forward と同じ計算になる。caption 枠の長さの上限（plan の
+    profile、通常 512）を超える分は、prefix の古い側から捨てる。
+    """
+
+    def __init__(self, adapter, model, max_caption: Optional[int]):
+        self.adapter = adapter
+        self.model = model
+        self.max_caption = max_caption
+        # Adapter は context_kv_cache の id で入力を使い回すので、同じ cache には同じ
+        # つないだ cache を返す（元の cache も持ち、id の再利用で取り違えないようにする）。
+        # rf.py は prefix のマスクをステップごとに作り直すが、中身は1回の合成で変わらない。
+        self._merged = None
+
+    def __getattr__(self, name):
+        return getattr(self.adapter, name)
+
+    def _merge(self, cache, caption_mask, prefix_mask):
+        held = self._merged
+        if (held is not None and held[0] is cache and held[1] == tuple(prefix_mask.shape)
+                and held[4] == tuple(caption_mask.shape)):
+            return held[2], held[3]
+        base = int(self.model.blocks[0].attention.num_static_context_kv)
+        if base != 6:
+            raise ValueError("prefix on TensorRT needs a model with caption conditioning")
+        # caption はトークナイザの最大長（512）まで詰め物付きで来る。有効な位置まで
+        # （どの行にも無ければ1つ）に詰めてから prefix をつなぐ。
+        valid = caption_mask.any(dim=0).nonzero()
+        cap_len = int(valid[-1].item()) + 1 if valid.numel() else 1
+        keep = prefix_mask.shape[1]
+        if self.max_caption is not None:
+            keep = min(keep, max(0, self.max_caption - cap_len))
+        start = prefix_mask.shape[1] - keep
+        merged = [tuple(layer[:4]) + (torch.cat([layer[4][:, :cap_len], layer[6][:, start:]], dim=1),
+                                      torch.cat([layer[5][:, :cap_len], layer[7][:, start:]], dim=1))
+                  for layer in cache]
+        mask = torch.cat([caption_mask[:, :cap_len], prefix_mask[:, start:]], dim=1)
+        self._merged = (cache, tuple(prefix_mask.shape), merged, mask, tuple(caption_mask.shape))
+        return merged, mask
+
+    def __call__(self, **kw):
+        prefix_mask = kw.pop("prefix_mask", None)
+        kw.pop("prefix_freqs", None)
+        kw.pop("prefix_state", None)
+        if prefix_mask is not None:
+            if kw.get("context_kv_cache") is None or kw.get("caption_mask") is None:
+                raise ValueError("prefix on TensorRT needs the context KV cache and a caption mask")
+            kw["context_kv_cache"], kw["caption_mask"] = self._merge(
+                kw["context_kv_cache"], kw["caption_mask"], prefix_mask)
+        return self.adapter(**kw)
+
+
+def _avoid_cudnn_attention() -> None:
+    """PyTorch 側の attention（irodori_tts.attention）で cuDNN の SDPA を使わない。
+
+    cuDNN は形が変わるたびに実行計画を作り直し、そのたびに約0.8秒かかる（RTX 3060・Windows）。
+    セリフの長さ・前のセリフ（prefix）の長さは毎回違うので、ほぼ毎回これを払っていた:
+    CUDA の 16 ステップで sample_rf が 2.4〜3.0秒 → 約0.9秒、prefix のエンコードが
+    約0.8秒 → 約25ms（同じ長さの2回目の速さは cuDNN と変わらない）。
+    IRODORI_CUDNN_ATTENTION=1 で元の優先順（cuDNN → efficient → math）に戻す。
+    """
+    if os.environ.get("IRODORI_CUDNN_ATTENTION") == "1":
+        return
+    from torch.nn.attention import SDPBackend
+    from irodori_tts import attention
+    attention._SDPA_PRIORITY[:] = [SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]
+
+
+def _plan_max_caption(engine) -> Optional[int]:
+    """plan の caption 枠の長さの上限。caption の入力が無い plan（v3 など）は None。"""
+    if "caption_mask" not in getattr(engine, "names", ()):
+        return None
+    try:
+        return int(engine.engine.get_tensor_profile_shape("caption_mask", 0)[2][1])
+    except Exception:  # noqa: BLE001 - 分からなければ上限なしで渡し、plan 側の検証に任せる
+        return None
+
+
 class TorchBackend:
     """CPU/GPU PyTorch reference backend. Always available."""
 
@@ -355,6 +438,8 @@ class TorchBackend:
         if device == "cuda" and not torch.cuda.is_available():
             raise RuntimeError("CUDA backend requested, but torch.cuda.is_available() is False")
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        if self.device == "cuda":
+            _avoid_cudnn_attention()
         self.runtime = InferenceRuntime.from_key(RuntimeKey(
             checkpoint=str(checkpoint),
             model_device=self.device,
@@ -367,13 +452,16 @@ class TorchBackend:
             compile_dynamic=False,
         ))
         self.stream_decoder = StreamingDecode.install(self.runtime)
+        # TrtBackend と同じく常駐の1スレッドで合成する（cuDNN などはスレッドごとに初回コストがある）。
+        self._worker = _ResidentWorker()
 
     def synthesize(self, request, speaker_tensor: torch.Tensor, out_wav, log_fn=None) -> dict:
         # IrodoriTTS.synthesize has already put the speaker tensor on the request.
-        result = self.runtime.synthesize(request, log_fn=log_fn)
+        result = self._worker.run(lambda: self.runtime.synthesize(request, log_fn=log_fn))
         write_wav(out_wav, result.audio, result.sample_rate)
         return {"backend": self.name, "wall_s": result.total_to_decode,
-                "audio_s": result.audio.shape[-1] / result.sample_rate}
+                "audio_s": result.audio.shape[-1] / result.sample_rate,
+                "latent": result.latents[0] if result.latents else None}
 
 
 class _ResidentWorker:
@@ -425,6 +513,8 @@ class TrtBackend:
         Engine, Adapter = _import_engine()
 
         self.plan_path = plan_path
+        # DiT は plan だが、参照・prefix のエンコーダは PyTorch の attention を通る
+        _avoid_cudnn_attention()
         self.engine = Engine(plan_path)
         self.runtime = InferenceRuntime.from_key(RuntimeKey(
             checkpoint=str(env_path("IRODORI_CHECKPOINT", DEFAULT_CHECKPOINT)),
@@ -437,6 +527,12 @@ class TrtBackend:
         ))
         self.original_forward = self.runtime.model.forward_with_encoded_conditions
         self.adapter = Adapter(self.runtime.model, self.engine, compact=True)
+        # blockwise 対応モデルは、prefix を caption 枠に足して同じ plan で動かす
+        self.prefix_capable = (bool(getattr(self.runtime, "supports_prefix", False))
+                               and _plan_max_caption(self.engine) is not None)
+        if self.prefix_capable:
+            self.adapter = _PrefixToCaption(self.adapter, self.runtime.model,
+                                            _plan_max_caption(self.engine))
         self.runtime.model.forward_with_encoded_conditions = self.adapter
         # plan の話者トークン数には上限がある（profile の speaker 軸。192 = 参照 約30秒。古い plan は 64 = 約10秒）。
         # 長い参照（音声参照・声づくりの声）は、合成のときにこの長さまでで切る。
@@ -504,7 +600,8 @@ class TrtBackend:
                 self.idle_release.touch()
         write_wav(out_wav, result.audio, result.sample_rate)
         return {"backend": self.name, "wall_s": result.total_to_decode,
-                "audio_s": result.audio.shape[-1] / result.sample_rate}
+                "audio_s": result.audio.shape[-1] / result.sample_rate,
+                "latent": result.latents[0] if result.latents else None}
 
 
 class RadeonBackend:
@@ -700,6 +797,19 @@ class IrodoriTTS:
     def speakers(self) -> list[str]:
         return self.cassette.speakers
 
+    @property
+    def supports_prefix(self) -> bool:
+        """前のセリフから続けて生成（blockwise）できるか。対応モデルを PyTorch か TensorRT で動かすときだけ。
+
+        TensorRT は prefix を caption 枠に足して渡す（_PrefixToCaption）。Radeon の DirectML 側の
+        DiT は prefix の入力を持たない。
+        """
+        runtime = getattr(self.backend, "runtime", None)
+        name = getattr(self.backend, "name", "")
+        if name == "trt":
+            return getattr(self.backend, "prefix_capable", False) is True
+        return name == "torch" and bool(getattr(runtime, "supports_prefix", False))
+
     def speaker_dim(self) -> Optional[int]:
         """Speaker embedding width of the loaded model (768 for v4.1 Small)."""
         runtime = getattr(self.backend, "runtime", None)
@@ -740,7 +850,11 @@ class IrodoriTTS:
                    t_schedule_mode: str = "sway",
                    sway_coeff: float = -1.0,
                    log_fn=None,
-                   speaker_tensor_override: Optional[torch.Tensor] = None) -> dict:
+                   speaker_tensor_override: Optional[torch.Tensor] = None,
+                   prefix_latent: Optional[torch.Tensor] = None,
+                   watermark: bool = False) -> dict:
+        """prefix_latent: 前のセリフの latent（blockwise 対応モデルのときだけ使う）。
+        watermark: 出力に透かしを入れる（参照音声を使うときは指定が無くても入れる）。"""
         if not text.strip():
             raise ValueError("text must not be empty")
         if not getattr(self, "split_encoding", False):
@@ -844,6 +958,14 @@ class IrodoriTTS:
             request.ref_embed = speaker_tensor.detach().contiguous()
         else:
             request.no_ref = True
+        if watermark:
+            request.watermark = True
+        if prefix_latent is not None:
+            if self.supports_prefix:
+                request.prefix_latent = prefix_latent
+            else:
+                print("[irodori] this model/backend cannot continue from the previous line; "
+                      "generating it on its own", file=sys.stderr, flush=True)
         if os.environ.get("IRODORI_SHOW_TOKENS", "1") != "0":
             # 読めない語の確認用に、モデルに渡るトークンの分け方をコンソールに出す
             try:
@@ -875,6 +997,9 @@ class IrodoriTTS:
             "speaker": speaker_name,
             "seed": seed,
             "out_wav": str(out_wav) if isinstance(out_wav, Path) else None,
+            # 返した音声の latent（PyTorch・TensorRT のバックエンド）。次のセリフの prefix に使う。
+            "latent": result.get("latent"),
+            "watermarked": bool(request.watermark),
         }
 
     def close(self) -> None:

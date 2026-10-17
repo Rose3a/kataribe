@@ -256,6 +256,12 @@ class SamplingRequest:
     # requests (reference audio); if it cannot be applied, synthesis fails
     # instead of returning unmarked audio.
     watermark: bool = False
+    # blockwise（use_latent_prefix のモデルだけ）: 直前に生成した音声の latent（フレーム数, latent_dim）。
+    # 末尾の prefix_seconds 秒を prefix にして、その続きとして生成する。続きの先頭には無音が入るので
+    # （学習では分け目＝無音の真ん中から始まる）、長さに prefix_lead_frames を足す。
+    prefix_latent: torch.Tensor | None = None
+    prefix_seconds: float = 10.0
+    prefix_lead_frames: int = 6
 
 
 @dataclass
@@ -267,6 +273,8 @@ class SamplingResult:
     total_to_decode: float
     used_seed: int
     messages: list[str]
+    # 返した音声ぶんの latent（候補ごと、(フレーム数, latent_dim)、CPU の float32）。次の文の prefix に使う。
+    latents: list[torch.Tensor] | None = None
 
 
 def _maybe_compile_inference_model(
@@ -1124,6 +1132,54 @@ class InferenceRuntime:
         )
         return state, mask
 
+    @property
+    def supports_prefix(self) -> bool:
+        """blockwise（前の文の続きとして生成）に対応したモデルか。"""
+        return bool(getattr(self.model_cfg, "use_latent_prefix", False))
+
+    def _prepare_prefix(
+        self,
+        req: SamplingRequest,
+        *,
+        batch_size: int,
+        messages: list[str],
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None:
+        """req.prefix_latent の末尾を encode_prefix に通す。使えなければ None。"""
+        latent = req.prefix_latent
+        if latent is None:
+            return None
+        if not self.supports_prefix:
+            messages.append("info: this checkpoint has no latent prefix branch; ignoring prefix_latent.")
+            return None
+        if latent.ndim == 3 and latent.shape[0] == 1:
+            latent = latent[0]
+        if latent.ndim != 2 or int(latent.shape[1]) != int(self.model_cfg.latent_dim):
+            raise ValueError(
+                f"prefix_latent must have shape (frames, {self.model_cfg.latent_dim}), "
+                f"got {tuple(latent.shape)}"
+            )
+        hop = int(self.codec.model.hop_length)
+        limit = max(0, int(float(req.prefix_seconds) * self.codec.sample_rate / hop))
+        unit = max(1, int(self.model_cfg.speaker_patch_size)) * max(
+            1, int(self.model_cfg.latent_patch_size)
+        )
+        frames = (min(int(latent.shape[0]), limit) // unit) * unit
+        if frames <= 0:
+            return None
+        prefix = patchify_latent(latent[-frames:][None], self.model_cfg.latent_patch_size).to(
+            device=self.model_device, dtype=self._model_dtype
+        )
+        mask = torch.ones(prefix.shape[:2], dtype=torch.bool, device=self.model_device)
+        state, mask, freqs = self.model.encode_prefix(prefix, mask)
+        if batch_size > 1:
+            state = state.expand(batch_size, -1, -1)
+            mask = mask.expand(batch_size, -1)
+        messages.append(
+            f"info: continuing from the previous audio "
+            f"({frames * hop / float(self.codec.sample_rate):.2f}s prefix)."
+        )
+        return state, mask, freqs
+
     def synthesize(
         self,
         req: SamplingRequest,
@@ -1473,6 +1529,24 @@ class InferenceRuntime:
                 msg = "info: checkpoint has no duration predictor; falling back to 30.000s."
                 messages.append(msg)
                 _log(msg)
+
+            prefix = None
+            if req.prefix_latent is not None:
+                msg_count_before_prefix = len(messages)
+                if self.model_cfg.flow_parameterization == "meanflow":
+                    messages.append("info: MeanFlow sampling has no prefix support; ignoring prefix_latent.")
+                else:
+                    t0 = _measure_start(self.model_device)
+                    prefix = self._prepare_prefix(req, batch_size=num_candidates, messages=messages)
+                    stage_sec = _measure_end(self.model_device, t0)
+                    stage_timings.append(("encode_prefix", stage_sec))
+                    _log(f"[runtime] encode_prefix: {stage_sec * 1000.0:.1f} ms")
+                for msg in messages[msg_count_before_prefix:]:
+                    _log(msg)
+                if prefix is not None:
+                    # 続きの先頭の無音ぶん（その文だけの長さ予測には入っていない）
+                    latent_steps += max(0, int(req.prefix_lead_frames))
+                    target_samples = int(latent_steps * hop_length)
             patched_steps = math.ceil(latent_steps / self.model_cfg.latent_patch_size)
 
             if isinstance(self.train_cfg, dict):
@@ -1546,6 +1620,11 @@ class InferenceRuntime:
                     # Re-encode only when caption or reference input requires it.
                     encoded_conditions=encoded_conditions if reuse_encoded_conditions else None,
                     skip_caption_encoding=not has_caption_text,
+                    **(
+                        dict(prefix_state=prefix[0], prefix_mask=prefix[1], prefix_freqs=prefix[2])
+                        if prefix is not None
+                        else {}
+                    ),
                 )
             stage_sec = _measure_end(self.model_device, t0)
             sample_stage = (
@@ -1607,6 +1686,11 @@ class InferenceRuntime:
             stage_sec = _measure_end(self.model_device, t0, self.codec_device)
             stage_timings.append(("decode_latent", stage_sec))
             _log(f"[runtime] decode_latent ({decode_mode}): {stage_sec * 1000.0:.1f} ms")
+            # 返す音声（末尾を切った後）に対応する latent。次の文の prefix に使う。
+            kept_latents = [
+                z[i, : math.ceil(trimmed_audios[i].shape[-1] / hop_length)].float().cpu()
+                for i in range(num_candidates)
+            ]
 
             if req.watermark:
                 watermarker = self._ensure_watermarker()
@@ -1636,6 +1720,7 @@ class InferenceRuntime:
             total_to_decode=total_to_decode,
             used_seed=used_seed,
             messages=messages,
+            latents=kept_latents,
         )
 
     def unload(self) -> None:

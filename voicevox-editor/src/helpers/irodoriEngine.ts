@@ -7,7 +7,6 @@
  */
 import type {
   AsrTimelineResponse,
-  IrodoriModelInfo,
   IrodoriSession,
   IrodoriSettings,
   IrodoriStatus,
@@ -217,13 +216,15 @@ export async function fetchAsrTimeline(
   }
 }
 
-/** 行設定の既定値（ステップ数・MeanFlowか）を、現在選ばれているモデルに合わせる。 */
-export async function fetchIrodoriModelInfo(
+/**
+ * 行設定の既定値（ステップ数・MeanFlowか）や、前のセリフから続けて生成するかを、
+ * 現在選ばれているモデルに合わせるための状態。取れなければ undefined。
+ */
+export async function fetchIrodoriStatusQuietly(
   endpoint: string,
-): Promise<IrodoriModelInfo | undefined> {
+): Promise<IrodoriStatus | undefined> {
   try {
-    const result = await fetchIrodoriStatus(endpoint, SESSION_TIMEOUT_MS);
-    return result.modelInfo;
+    return await fetchIrodoriStatus(endpoint, SESSION_TIMEOUT_MS);
   } catch {
     return undefined;
   }

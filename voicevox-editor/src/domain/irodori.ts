@@ -55,6 +55,24 @@ export const irodoriMeanflow = ref(false);
  */
 export const irodoriStreamPlayback = ref(false);
 
+/**
+ * 前のセリフから続けて生成するか（設定の blockwise が有効で、対応モデルを PyTorch か TensorRT で動かしているとき）。
+ * IrodoriGlobalSettings.vue が反映し、生成側（FETCH_AUDIO・ストリーミング再生）が参照する。
+ */
+export const irodoriBlockwise = ref(false);
+
+/** 前のセリフから続けて生成できるエンジン。TensorRT は prefix を caption 枠に足して渡す。DirectML の DiT は prefix の入力を持たない。 */
+export const IRODORI_BLOCKWISE_BACKENDS = ["cpu", "cuda", "trt"];
+
+/** エンジンの状態から、前のセリフから続けて生成するか（irodoriBlockwise）を決める。 */
+export function irodoriBlockwiseFromStatus(status: IrodoriStatus): boolean {
+  return (
+    status.settings.blockwise === true &&
+    status.modelInfo?.blockwise === true &&
+    IRODORI_BLOCKWISE_BACKENDS.includes(status.settings.backend)
+  );
+}
+
 /** 生成済み音声をメモリに持っておく量の既定（MB）。エンジンの DEFAULT_AUDIO_CACHE_MB と同じ。 */
 export const IRODORI_DEFAULT_AUDIO_CACHE_MB = 25;
 
@@ -106,6 +124,11 @@ export type IrodoriSettings = {
   token_split_threshold?: IrodoriTokenSplitThreshold;
   /** 生成の完了を待たずに鳴らし始める（ストリーミング再生）。古いエンジンは返さない。 */
   stream_playback?: boolean;
+  /**
+   * 前のセリフから続けて生成する（blockwise 対応モデルだけ）。直前のセリフが同じ話者で生成済みなら、
+   * その音声の末尾を聞かせてから作る。古いエンジンは返さない。
+   */
+  blockwise?: boolean;
   /** 全行共通の既定ステップ数（1〜80）。MeanFlow も含めて既定は8。古いエンジンは返さない。 */
   default_steps?: number;
   /** 生成済み音声をメモリに持っておく量（0〜1024MB、0 で持たない）。古いエンジンは返さない。 */
@@ -129,6 +152,8 @@ export type IrodoriModelInfo = {
   quantization?: string | null;
   /** モデルが使うテキストのトークナイザ。語彙分割を当てるかの判定に使う。 */
   textTokenizerRepo?: string | null;
+  /** 前のセリフから続けて生成できるモデルか（use_latent_prefix）。古いエンジンは返さない。 */
+  blockwise?: boolean;
   license?: string;
   licenseUrl?: string;
 };

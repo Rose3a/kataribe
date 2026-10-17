@@ -11,6 +11,7 @@ import {
   transformCommandStore,
   type FetchAudioResult,
   type EditorAudioQuery,
+  type IrodoriLineContext,
 } from "./type";
 import {
   buildAudioFileNameFromRawData,
@@ -32,6 +33,7 @@ import {
   generateLabFromAudioQuery,
   handlePossiblyNotMorphableError,
   isMorphable,
+  previousLineContext,
   streamAudioFromAudioItem,
 } from "./audioGenerate";
 import {
@@ -1482,6 +1484,9 @@ export const audioStore = createPartialStore<AudioStoreTypes>({
       );
       return actions.FETCH_AUDIO_FROM_AUDIO_ITEM({
         audioItem,
+        audioKey,
+        // 前のセリフから続けて生成する（設定がオンで、直前のセリフが生成済みのとき）
+        context: previousLineContext(state, audioKey),
         ...options,
       });
     },
@@ -1491,7 +1496,12 @@ export const audioStore = createPartialStore<AudioStoreTypes>({
     action: createUILockAction(
       async (
         { actions, state },
-        options: { audioItem: AudioItem; cacheOnly?: boolean },
+        options: {
+          audioItem: AudioItem;
+          audioKey?: AudioKey;
+          context?: IrodoriLineContext;
+          cacheOnly?: boolean;
+        },
       ) => {
         const instance = await actions.INSTANTIATE_ENGINE_CONNECTOR({
           engineId: options.audioItem.voice.engineId,
@@ -1979,6 +1989,8 @@ export const audioStore = createPartialStore<AudioStoreTypes>({
         });
         const result = streamAudioFromAudioItem(state, {
           audioItem,
+          audioKey,
+          context: previousLineContext(state, audioKey),
           endpoint,
           signal: abort.signal,
           onPcm: async (samples, sampleRate) => {

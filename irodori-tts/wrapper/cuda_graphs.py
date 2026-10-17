@@ -203,7 +203,16 @@ def install(model, log=None):
         wrapper = GraphedCall(module.forward, attr, log=log)
         module.forward = wrapper
         wrappers[attr] = wrapper
-    build_kv = GraphedCall(model.build_context_kv_cache, 'context_kv', log=log)
-    model.build_context_kv_cache = build_kv
+    eager_kv = model.build_context_kv_cache
+    build_kv = GraphedCall(eager_kv, 'context_kv', log=log)
+
+    def build_context_kv_cache(*args, **kwargs):
+        # blockwise の prefix 付きは長さが毎回違い、撮り直し（約140ms）が replay の得を上回る。
+        # 撮ると prefix なしの graph も押し出すので、eager で計算する。
+        if kwargs.get('prefix_state') is not None:
+            return eager_kv(*args, **kwargs)
+        return build_kv(*args, **kwargs)
+
+    model.build_context_kv_cache = build_context_kv_cache
     wrappers['context_kv'] = build_kv
     return wrappers

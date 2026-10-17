@@ -135,6 +135,15 @@ export type FetchAudioResult = {
   blob: Blob;
 };
 
+/**
+ * 前のセリフから続けて生成する（blockwise）ときの、直前のセリフの音声。
+ * id はその音声のキャッシュキーで、続けて作ったセリフのキャッシュキーに入る。
+ */
+export type IrodoriLineContext = {
+  id: string;
+  blob: Blob;
+};
+
 export type Command = {
   id: CommandId;
   undoPatches: Patch[];
@@ -466,7 +475,13 @@ export type AudioStoreTypes = {
   };
 
   FETCH_AUDIO_FROM_AUDIO_ITEM: {
-    action(payload: { audioItem: AudioItem }): Promise<FetchAudioResult>;
+    action(payload: {
+      audioItem: AudioItem;
+      /** セリフの音声として覚えておくキー（前のセリフから続けて生成するときに引く）。 */
+      audioKey?: AudioKey;
+      /** 前のセリフから続けて生成するときの、直前のセリフの音声。 */
+      context?: IrodoriLineContext;
+    }): Promise<FetchAudioResult>;
   };
 
   CONNECT_AUDIO: {

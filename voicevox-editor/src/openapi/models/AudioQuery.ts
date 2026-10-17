@@ -71,6 +71,8 @@ export interface AudioQuery {
     irodoriAdditionalSpeakers?: Array<{ styleId: number; strength: number }>;
     /** Optional Irodori-TTS reference audio data URL. */
     irodoriReferenceAudio?: IrodoriReferenceAudio;
+    /** Previous line's audio (WAV data URL) for blockwise models: this line continues from it. */
+    irodoriContextAudio?: { dataUrl: string };
     /**
      * アクセント句のリスト
      * @type {Array<AccentPhrase>}
@@ -194,6 +196,7 @@ export function AudioQueryFromJSONTyped(json: any, ignoreDiscriminator: boolean)
         'irodoriSecondarySpeakerStrength': !exists(json, 'irodori_secondary_speaker_strength') ? undefined : json['irodori_secondary_speaker_strength'],
         'irodoriAdditionalSpeakers': !exists(json, 'irodori_additional_speakers') ? undefined : json['irodori_additional_speakers'].map((entry: any) => ({ styleId: entry['style_id'], strength: entry['strength'] })),
         'irodoriReferenceAudio': !exists(json, 'irodori_reference_audio') ? undefined : json['irodori_reference_audio'],
+        'irodoriContextAudio': !exists(json, 'irodori_context_audio') ? undefined : json['irodori_context_audio'],
         'accentPhrases': ((json['accent_phrases'] as Array<any>).map(AccentPhraseFromJSON)),
         'speedScale': json['speedScale'],
         'pitchScale': json['pitchScale'],
@@ -237,6 +240,7 @@ export function AudioQueryToJSON(value?: AudioQuery | null): any {
         'irodori_secondary_speaker_strength': value.irodoriSecondarySpeakerStrength,
         'irodori_additional_speakers': value.irodoriAdditionalSpeakers?.map((entry) => ({ style_id: entry.styleId, strength: entry.strength })),
         'irodori_reference_audio': value.irodoriReferenceAudio,
+        'irodori_context_audio': value.irodoriContextAudio,
         'accent_phrases': ((value.accentPhrases as Array<any>).map(AccentPhraseToJSON)),
         'speedScale': value.speedScale,
         'pitchScale': value.pitchScale,

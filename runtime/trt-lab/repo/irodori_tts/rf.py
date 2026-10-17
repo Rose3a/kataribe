@@ -155,9 +155,15 @@ def sample_euler_rf_cfg(
     ]
     | None = None,
     skip_caption_encoding: bool = False,
+    prefix_state: torch.Tensor | None = None,
+    prefix_mask: torch.Tensor | None = None,
+    prefix_freqs: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """
     Euler sampling over RF ODE with text/reference/caption conditioning CFG.
+
+    blockwise: prefix_* は model.encode_prefix の出力（前の文の末尾、バッチ1）。CFG のどの枝にも
+    同じ prefix を見せる（無条件側から外すと、続きの効果が CFG で増幅されるため）。
 
     Returns:
       latent sequence in patched space, shape (B, sequence_length, patched_latent_dim)
@@ -420,7 +426,28 @@ def sample_euler_rf_cfg(
         )
 
     # Force-speaker scaling operates on projected speaker K/V, so it requires context KV caches.
-    effective_use_context_kv_cache = bool(use_context_kv_cache or (speaker_kv_scale is not None))
+    # blockwise の prefix も K/V をキャッシュに入れて渡すので、キャッシュを必ず使う。
+    effective_use_context_kv_cache = bool(
+        use_context_kv_cache or (speaker_kv_scale is not None) or (prefix_state is not None)
+    )
+    if prefix_state is not None:
+        if prefix_mask is None or prefix_freqs is None:
+            raise ValueError("prefix_mask and prefix_freqs are required with prefix_state.")
+        if prefix_state.shape[0] != batch_size:
+            prefix_state = prefix_state.expand(batch_size, -1, -1)
+            prefix_mask = prefix_mask.expand(batch_size, -1)
+
+    def _prefix_kv(times: int) -> dict:
+        """build_context_kv_cache に足す prefix（CFG の枝の数だけ並べる）。"""
+        if prefix_state is None:
+            return {}
+        return dict(prefix_state=torch.cat([prefix_state] * times, dim=0), prefix_freqs=prefix_freqs)
+
+    def _prefix_mask(times: int) -> dict:
+        """forward_with_encoded_conditions に渡す prefix のマスク。prefix が無ければ何も足さない。"""
+        if prefix_state is None:
+            return {}
+        return dict(prefix_mask=torch.cat([prefix_mask] * times, dim=0))
 
     context_kv_cond = None
     context_kv_cfg = None
@@ -431,12 +458,14 @@ def sample_euler_rf_cfg(
             text_state=text_state_cond,
             speaker_state=speaker_state_cond,
             caption_state=caption_state_cond,
+            **_prefix_kv(1),
         )
         if use_independent_cfg and cfg_batch_mult > 1:
             context_kv_cfg = model.build_context_kv_cache(
                 text_state=independent_text_state,
                 speaker_state=independent_speaker_state,
                 caption_state=independent_caption_state,
+                **_prefix_kv(cfg_batch_mult),
             )
         elif use_joint_cfg:
             if enabled_cfg_names:
@@ -444,6 +473,7 @@ def sample_euler_rf_cfg(
                     text_state=joint_uncond_bundle[0],
                     speaker_state=joint_uncond_bundle[2],
                     caption_state=joint_uncond_bundle[4],
+                    **_prefix_kv(1),
                 )
         elif use_alternating_cfg:
             for name in enabled_cfg_names:
@@ -452,6 +482,7 @@ def sample_euler_rf_cfg(
                     text_state=bundle[0],
                     speaker_state=bundle[2],
                     caption_state=bundle[4],
+                    **_prefix_kv(1),
                 )
     if speaker_kv_scale is not None:
         scale_speaker_kv_cache(
@@ -493,6 +524,7 @@ def sample_euler_rf_cfg(
                     caption_state=independent_caption_state,
                     caption_mask=independent_caption_mask,
                     context_kv_cache=context_kv_cfg,
+                    **_prefix_mask(cfg_batch_mult),
                 )
                 chunks = v_out.chunk(cfg_batch_mult, dim=0)
                 v = chunks[0]
@@ -509,6 +541,7 @@ def sample_euler_rf_cfg(
                     caption_state=caption_state_cond,
                     caption_mask=caption_mask_cond,
                     context_kv_cache=context_kv_cond,
+                    **_prefix_mask(1),
                 )
                 if use_joint_cfg:
                     if len(enabled_cfg_names) > 1:
@@ -529,6 +562,7 @@ def sample_euler_rf_cfg(
                         caption_state=joint_uncond_bundle[4],
                         caption_mask=joint_uncond_bundle[5],
                         context_kv_cache=context_kv_joint_uncond,
+                        **_prefix_mask(1),
                     )
                     v = v_cond + joint_scale * (v_cond - v_uncond_joint)
                 elif use_alternating_cfg:
@@ -544,6 +578,7 @@ def sample_euler_rf_cfg(
                         caption_state=alt_bundle[4],
                         caption_mask=alt_bundle[5],
                         context_kv_cache=context_kv_alternating.get(alt_name),
+                        **_prefix_mask(1),
                     )
                     v = v_cond + cfg_scales[alt_name] * (v_cond - v_uncond_alt)
                 else:
@@ -559,6 +594,7 @@ def sample_euler_rf_cfg(
                 caption_state=caption_state_cond,
                 caption_mask=caption_mask_cond,
                 context_kv_cache=context_kv_cond,
+                **_prefix_mask(1),
             )
 
         if rescale_k is not None and rescale_sigma is not None:

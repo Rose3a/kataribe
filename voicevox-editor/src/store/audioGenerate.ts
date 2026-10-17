@@ -1,9 +1,11 @@
+import { toBase64 } from "fast-base64";
 import type {
   AudioItem,
   AudioStoreState,
   EditorAudioQuery,
   FetchAudioResult,
   IEngineConnectorFactoryActionsMapper,
+  IrodoriLineContext,
   SettingStoreState,
 } from "./type";
 import { convertAudioQueryFromEditorToEngine } from "./proxy";
@@ -22,8 +24,10 @@ import {
   IRODORI_DEFAULT_TOKEN_SPLIT,
   IRODORI_DEFAULT_ENGLISH_SPACING,
   IRODORI_DEFAULT_AUDIO_CACHE_MB,
+  irodoriBlockwise,
   irodoriDefaultSteps,
 } from "@/domain/irodori";
+import type { AudioKey } from "@/type/preload";
 import { AudioQueryToJSON } from "@/openapi/models";
 import { irodoriRequest } from "@/helpers/irodoriEngine";
 import { pcm16ToWav, readIrodoriPcmStream } from "@/helpers/irodoriStream";
@@ -81,6 +85,53 @@ function putCachedAudio(id: string, blob: Blob) {
   trimAudioCache();
 }
 
+/**
+ * セリフごとに、最後に使った音声のキャッシュキー。前のセリフから続けて生成する（blockwise）とき、
+ * 直前のセリフの音声をキャッシュから引くのに使う。
+ */
+const lastAudioIds = new Map<AudioKey, string>();
+
+function rememberLineAudio(audioKey: AudioKey | undefined, id: string) {
+  if (audioKey != undefined) lastAudioIds.set(audioKey, id);
+}
+
+/**
+ * 前のセリフから続けて生成するときに聞かせる、直前のセリフの音声。
+ *
+ * 設定がオン（対応モデルを PyTorch か TensorRT で動かしている）で、直前のセリフが同じ話者で、その音声が
+ * キャッシュに残っているときだけ返す。直前のセリフをまだ作っていなければ、ふつうの1行生成になる
+ * （前のセリフまでさかのぼって作り直すことはしない）。話者が変わる続きは学習していないので続けない。
+ */
+export function previousLineContext(
+  state: AudioStoreState,
+  audioKey: AudioKey,
+): IrodoriLineContext | undefined {
+  if (!irodoriBlockwise.value) return undefined;
+  const index = state.audioKeys.indexOf(audioKey);
+  if (index <= 0) return undefined;
+  const previousKey = state.audioKeys[index - 1];
+  const current = state.audioItems[audioKey];
+  const previous = state.audioItems[previousKey];
+  if (
+    current == undefined ||
+    previous == undefined ||
+    previous.morphingInfo != undefined ||
+    previous.voice.engineId !== current.voice.engineId ||
+    previous.voice.styleId !== current.voice.styleId
+  )
+    return undefined;
+  const id = lastAudioIds.get(previousKey);
+  if (id == undefined) return undefined;
+  const blob = getCachedAudio(id);
+  return blob == undefined ? undefined : { id, blob };
+}
+
+async function contextAudio(context: IrodoriLineContext | undefined) {
+  if (context == undefined) return undefined;
+  const bytes = new Uint8Array(await context.blob.arrayBuffer());
+  return { dataUrl: `data:audio/wav;base64,${await toBase64(bytes)}` };
+}
+
 type Instance = {
   invoke: IEngineConnectorFactoryActionsMapper;
 };
@@ -90,6 +141,7 @@ function synthesisParams(
   state: AudioStoreState & SettingStoreState,
   audioItem: AudioItem,
   engineAudioQuery: ReturnType<typeof convertAudioQueryFromEditorToEngine>,
+  irodoriContextAudio?: { dataUrl: string },
 ) {
   const speaker = audioItem.voice.styleId;
   const effectiveSeed =
@@ -133,6 +185,7 @@ function synthesisParams(
         audioItem.irodori?.secondarySpeakerStrength ?? 0.5,
       irodoriAdditionalSpeakers: audioItem.irodori?.additionalSpeakers,
       irodoriReferenceAudio: audioItem.irodori?.referenceAudio,
+      irodoriContextAudio,
     },
     speaker,
     enableInterrogativeUpspeak:
@@ -148,18 +201,31 @@ export async function fetchAudioFromAudioItem(
   instance: Instance,
   {
     audioItem,
+    audioKey,
+    context,
   }: {
     audioItem: AudioItem;
+    audioKey?: AudioKey;
+    context?: IrodoriLineContext;
   },
 ): Promise<FetchAudioResult> {
   const engineId = audioItem.voice.engineId;
+  // モーフィングは前のセリフから続けて生成できない
+  if (audioItem.morphingInfo != undefined) context = undefined;
 
-  const [id, audioQuery] = await generateUniqueIdAndQuery(state, audioItem);
+  const [id, audioQuery] = await generateUniqueIdAndQuery(
+    state,
+    audioItem,
+    context?.id,
+  );
   if (audioQuery == undefined)
     throw new Error("audioQuery is not defined for audioItem");
 
   const cached = getCachedAudio(id);
-  if (cached != undefined) return { audioQuery, blob: cached };
+  if (cached != undefined) {
+    rememberLineAudio(audioKey, id);
+    return { audioQuery, blob: cached };
+  }
 
   const speaker = audioItem.voice.styleId;
 
@@ -180,10 +246,16 @@ export async function fetchAudioFromAudioItem(
     });
   } else {
     blob = await instance.invoke("synthesis")(
-      synthesisParams(state, audioItem, engineAudioQuery),
+      synthesisParams(
+        state,
+        audioItem,
+        engineAudioQuery,
+        await contextAudio(context),
+      ),
     );
   }
   putCachedAudio(id, blob);
+  rememberLineAudio(audioKey, id);
   return { audioQuery, blob };
 }
 
@@ -199,23 +271,34 @@ export async function streamAudioFromAudioItem(
   state: AudioStoreState & SettingStoreState,
   {
     audioItem,
+    audioKey,
+    context,
     endpoint,
     signal,
     onPcm,
   }: {
     audioItem: AudioItem;
+    audioKey?: AudioKey;
+    context?: IrodoriLineContext;
     endpoint: string;
     signal: AbortSignal;
     onPcm: (samples: Int16Array, sampleRate: number) => void | Promise<void>;
   },
 ): Promise<{ blob: Blob; streamed: boolean } | undefined> {
   const engineId = audioItem.voice.engineId;
-  const [id, audioQuery] = await generateUniqueIdAndQuery(state, audioItem);
+  if (audioItem.morphingInfo != undefined) return undefined;
+  const [id, audioQuery] = await generateUniqueIdAndQuery(
+    state,
+    audioItem,
+    context?.id,
+  );
   if (audioQuery == undefined)
     throw new Error("audioQuery is not defined for audioItem");
   const cached = getCachedAudio(id);
-  if (cached != undefined) return { blob: cached, streamed: false };
-  if (audioItem.morphingInfo != undefined) return undefined;
+  if (cached != undefined) {
+    rememberLineAudio(audioKey, id);
+    return { blob: cached, streamed: false };
+  }
 
   const params = synthesisParams(
     state,
@@ -224,6 +307,7 @@ export async function streamAudioFromAudioItem(
       audioQuery,
       state.engineManifests[engineId].defaultSamplingRate,
     ),
+    await contextAudio(context),
   );
   const revision = audioCacheRevision;
   const response = await irodoriRequest(
@@ -252,7 +336,10 @@ export async function streamAudioFromAudioItem(
     },
   });
   const blob = pcm16ToWav(parts, sampleRate);
-  if (revision === audioCacheRevision) putCachedAudio(id, blob);
+  if (revision === audioCacheRevision) {
+    putCachedAudio(id, blob);
+    rememberLineAudio(audioKey, id);
+  }
   return { blob, streamed: true };
 }
 
@@ -335,6 +422,8 @@ export async function generateLabFromAudioQuery(
 async function generateUniqueIdAndQuery(
   state: SettingStoreState,
   audioItem: AudioItem,
+  /** 前のセリフから続けて生成するときの、直前のセリフの音声のキャッシュキー。 */
+  contextId?: string,
 ): Promise<[string, EditorAudioQuery | undefined]> {
   audioItem = JSON.parse(JSON.stringify(audioItem)) as AudioItem;
   const audioQuery = audioItem.query;
@@ -358,6 +447,8 @@ async function generateUniqueIdAndQuery(
     audioItem.irodori,
     cacheNonce,
     state.experimentalSetting.enableInterrogativeUpspeak, // このフラグが違うと、同じAudioQueryで違う音声が生成されるので追加
+    // 続けて生成したセリフは、前のセリフの音声が変われば別の音声になる
+    ...(contextId != undefined ? [contextId] : []),
   ]);
   return [id, audioQuery];
 }

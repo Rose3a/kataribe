@@ -49,6 +49,7 @@ from synthesis_queue import ClientGone, QueueFull, SynthesisQueue, connection_cl
 from token_split import (DEFAULT_TOKEN_SPLIT_THRESHOLD, TOKEN_SPLITS, active_threshold,
                          describe_tokens, threshold_value, token_split_applies)
 from text_cleanup import clean_pasted_text
+from context_latents import ContextLatentStore, context_latent, decode_data_url, pcm_digest  # noqa: E402
 from third_party_licenses import dependency_licenses
 from speaker_catalog import blink_thumbnail_for, credit_for, display_name_for, policy_for, mouth_open_thumbnail_for, mouth_parts_for, portrait_for, speaker_catalog, _fallback_icon  # noqa: E402
 
@@ -224,6 +225,15 @@ IRODORI_QUERY_FIELDS: dict[str, dict] = {
             "name": {"type": "string"},
         },
         "description": "話者・声質の参考音声",
+    },
+    "irodori_context_audio": {
+        "type": "object", "nullable": True, "required": ["dataUrl"],
+        "properties": {
+            "dataUrl": {"type": "string", "description": "data:audio/wav;base64,...（最大10MB）"},
+        },
+        "description": "前のセリフの音声（このエンジンが返した WAV）。blockwise 対応モデル"
+                       "（use_latent_prefix）を PyTorch か TensorRT で動かしているときだけ、その続きとして生成する。"
+                       "それ以外のモデル・エンジンでは無視する",
     },
     "irodori_sway_coeff": {
         "type": "number",
@@ -729,6 +739,40 @@ class VoicevoxAdapter:
         self.token_split_threshold = DEFAULT_TOKEN_SPLIT_THRESHOLD
         model_cfg = getattr(getattr(self.tts.backend, "runtime", None), "model_cfg", None)
         self.text_tokenizer_repo = getattr(model_cfg, "text_tokenizer_repo", None)
+        # 前のセリフから続けて生成（blockwise）するための、返した音声の latent（context_latents.py）
+        self.context_latents = ContextLatentStore()
+
+    @property
+    def supports_prefix(self) -> bool:
+        return getattr(self.tts, "supports_prefix", False) is True
+
+    def _context_store(self) -> ContextLatentStore:
+        # 古い経路で組まれたアダプタ（__init__ を通らないもの）にも後から持たせる
+        store = getattr(self, "context_latents", None)
+        if store is None:
+            store = self.context_latents = ContextLatentStore()
+        return store
+
+    def _context_prefix(self, value):
+        """irodori_context_audio から prefix の latent を得る。返り値: (latent か None, 透かしが要るか)。"""
+        if not value:
+            return None, False
+        if not self.supports_prefix:
+            print("[voicevox] irodori_context_audio is ignored (model/backend has no prefix support)",
+                  file=sys.stderr, flush=True)
+            return None, False
+        raw = decode_data_url(value, "irodori context audio")
+        found = context_latent(self._context_store(), raw, self.tts.backend.runtime,
+                               log=lambda message: print(f"[voicevox] {message}", file=sys.stderr,
+                                                         flush=True))
+        return found if found is not None else (None, False)
+
+    def remember_stream_alias(self, wav: bytes, sent_digest: str) -> None:
+        """ストリーミングで送った PCM（エディタはそれで WAV を組み直す）の SHA-256 でも latent を引けるようにする。"""
+        if self.supports_prefix:
+            digest = pcm_digest(wav)
+            if digest is not None:
+                self._context_store().alias(digest, sent_digest)
 
     def split_threshold(self) -> float | None:
         """いまのモデルに当てる語彙分割の境目。当てないなら None。"""
@@ -821,6 +865,7 @@ class VoicevoxAdapter:
         )
         reference = query.get("irodori_reference_audio")
         with self.lock:
+            prefix_latent, context_watermark = self._context_prefix(query.get("irodori_context_audio"))
             # The runtime reads reference audio from a file, so only that case
             # needs a temporary folder; the output WAV stays in memory.
             with (tempfile.TemporaryDirectory(prefix="irodori-vv-", dir=str(ROOT / "wrapper"))
@@ -843,7 +888,7 @@ class VoicevoxAdapter:
                     ref_wav = str(Path(tmp) / f"reference-audio{_reference_audio_extension(reference)}")
                     Path(ref_wav).write_bytes(raw)
                 seed_value = query.get("irodori_seed", 4763674)
-                self.tts.synthesize(
+                info = self.tts.synthesize(
                     text=text,
                     speaker=speaker_name,
                     out_wav=wav,
@@ -863,8 +908,15 @@ class VoicevoxAdapter:
                     sway_coeff=sampling["sway_coeff"],
                     ref_wav=ref_wav,
                     log_fn=self.progress_callback,
+                    prefix_latent=prefix_latent,
+                    watermark=context_watermark,
                 )
-                return wav.getvalue()
+                data = wav.getvalue()
+                if self.supports_prefix:
+                    # 次のセリフがこの音声の続きとして作れるよう、latent を覚えておく
+                    self._context_store().put(pcm_digest(data), (info or {}).get("latent"),
+                                             (info or {}).get("watermarked", bool(ref_wav)))
+                return data
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1264,6 +1316,8 @@ class Handler(BaseHTTPRequestHandler):
         from stream_decode import stream_to
 
         state = {"started": False, "samples": 0}
+        # 送った PCM。エディタはこれで WAV を組み直すので、前のセリフの latent を引くときの鍵になる。
+        sent = hashlib.sha256()
 
         def frame(payload: bytes, flag: int = 0) -> bytes:
             return struct.pack("<I", len(payload) | flag) + payload
@@ -1288,6 +1342,7 @@ class Handler(BaseHTTPRequestHandler):
             start(rate)
             self.wfile.write(frame(data))
             self.wfile.flush()
+            sent.update(data)
             state["samples"] += len(data) // 2
 
         self.close_connection = True
@@ -1301,8 +1356,12 @@ class Handler(BaseHTTPRequestHandler):
             rest = np.ascontiguousarray(audio[:, 0][state["samples"]:])
             if rest.size:
                 self.wfile.write(frame(rest.tobytes()))
+                sent.update(rest.tobytes())
             self.wfile.write(frame(b""))
             self.wfile.flush()
+            alias = getattr(self.adapter, "remember_stream_alias", None)
+            if alias is not None:
+                alias(wav, sent.hexdigest())
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             self.log_message("stream client went away; synthesis cancelled")
         except Exception as exc:

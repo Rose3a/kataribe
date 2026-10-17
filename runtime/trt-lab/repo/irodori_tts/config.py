@@ -54,6 +54,9 @@ class ModelConfig:
     duration_speaker_fusion: str = "adarn_zero"
     duration_caption_fusion: str = "adarn_zero"
     duration_caption_pooling: str = "masked_mean"
+    # blockwise（Irodori-TTS-v4.1-Small-Blockwise など）: 生成済みの latent（前の文の末尾）を
+    # prefix として attention に足す。prefix エンコーダは話者参照エンコーダと同じ構造。
+    use_latent_prefix: bool = False
 
     @property
     def patched_latent_dim(self) -> int:

@@ -95,7 +95,7 @@ DEFAULT_AUDIO_CACHE_MB = 25
 class EditorAdapter:
     DEFAULT_SETTINGS = dict(backend="cpu", model="Aratako/Irodori-TTS-v4.1-Small", seed=4763674,
                             sway_coeff=-1.0, token_split_threshold=DEFAULT_TOKEN_SPLIT_THRESHOLD,
-                            stream_playback=False, default_steps=DEFAULT_STEPS_RF,
+                            stream_playback=False, blockwise=False, default_steps=DEFAULT_STEPS_RF,
                             audio_cache_mb=DEFAULT_AUDIO_CACHE_MB)
 
     def __init__(self):
@@ -129,7 +129,7 @@ class EditorAdapter:
         self.config_path = ROOT / "editor-settings.json"
         self.settings = dict(backend="cpu", model="Aratako/Irodori-TTS-v4.1-Small", seed=4763674,
                              sway_coeff=-1.0, token_split_threshold=DEFAULT_TOKEN_SPLIT_THRESHOLD,
-                            stream_playback=False, default_steps=DEFAULT_STEPS_RF,
+                            stream_playback=False, blockwise=False, default_steps=DEFAULT_STEPS_RF,
                             audio_cache_mb=DEFAULT_AUDIO_CACHE_MB)
         try:
             saved = json.loads(self.config_path.read_text(encoding="utf-8"))
@@ -347,6 +347,8 @@ class EditorAdapter:
             speakerDim=int(config["speaker_dim"]) if config.get("speaker_dim") else None,
             quantization=config.get("_quantization"),
             textTokenizerRepo=config.get("text_tokenizer_repo"),
+            # 前のセリフから続けて生成（blockwise）できるモデルか（Irodori-TTS-v4.1-Small-Blockwise など）
+            blockwise=bool(config.get("use_latent_prefix")),
         )
         known = {
             "Aratako/Irodori-TTS-v4.1-Small": ("MIT", "https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small"),
@@ -354,6 +356,7 @@ class EditorAdapter:
             # 重み・コードは MIT。埋め込みの読み辞書は JMdict 由来で CC BY-SA 4.0（© EDRDG）。
             "j-llm/Irodori-TTS-v4.1-Small-Yomi-Tech-tuned": ("MIT（重み・コード）/ CC BY-SA 4.0（読み辞書: JMdict © EDRDG）", "https://huggingface.co/j-llm/Irodori-TTS-v4.1-Small-Yomi-Tech-tuned"),
             "phasefield-audio/Irodori-TTS-v4.1-Anime": ("MIT", "https://huggingface.co/phasefield-audio/Irodori-TTS-v4.1-Anime"),
+            "rose3/Irodori-TTS-v4.1-Small-Blockwise": ("MIT", "https://huggingface.co/rose3/Irodori-TTS-v4.1-Small-Blockwise"),
             "Aratako/Irodori-TTS-500M-v3": ("MIT", "https://huggingface.co/Aratako/Irodori-TTS-500M-v3"),
             # テキストエンコーダが T5Gemma 2 由来のため Gemma の規約が掛かる。
             "Aratako/Irodori-TTS-v4-Large": ("Gemma Terms of Use", "https://huggingface.co/Aratako/Irodori-TTS-v4-Large/blob/main/GEMMA_TERMS_OF_USE.md"),
@@ -399,6 +402,8 @@ class EditorAdapter:
             raise ValueError("default_steps は1〜80の整数で指定してください")
         if not isinstance(value.get("stream_playback", False), bool):
             raise ValueError("stream_playback は true か false を指定してください")
+        if not isinstance(value.get("blockwise", False), bool):
+            raise ValueError("blockwise は true か false を指定してください")
         cache_mb = value.get("audio_cache_mb", DEFAULT_AUDIO_CACHE_MB)
         if isinstance(cache_mb, bool) or not isinstance(cache_mb, int) or not 0 <= cache_mb <= 1024:
             raise ValueError("audio_cache_mb は0〜1024の整数で指定してください")
@@ -480,6 +485,7 @@ class EditorAdapter:
             "tokenize_text": 80,
             "prepare_reference": 82,
             "predict_duration": 85,
+            "encode_prefix": 87,
             "sample_rf": 90,
             "unpatchify_latent": 93,
             "decode_latent": 96,
@@ -1023,6 +1029,14 @@ class EditorAdapter:
         self.refresh()
         return {"deleted": True}
 
+    def remember_stream_alias(self, wav, sent_digest):
+        """ストリーミングで送った PCM でも前のセリフの latent を引けるようにする（voicevox_engine 側）。"""
+        with self.state_lock:
+            delegate = self.delegate
+        alias = getattr(delegate, "remember_stream_alias", None)
+        if alias is not None:
+            alias(wav, sent_digest)
+
     def synthesize(self, query, speaker_id):
         # 声づくりで「このセリフの声」を保存するときの照合キー（合成で書き換わる前の条件から作る）
         try:
@@ -1117,6 +1131,9 @@ class EditorAdapter:
                          irodori_sway_coeff=float(self.settings["sway_coeff"]))
             if "irodori_seed" not in query:
                 query["irodori_seed"] = self.settings["seed"]
+            if not self.settings.get("blockwise", False):
+                # 「前のセリフから続けて生成」がオフなら、前のセリフの音声は使わない
+                query.pop("irodori_context_audio", None)
             self.delegate.token_split_threshold = self.settings.get(
                 "token_split_threshold", DEFAULT_TOKEN_SPLIT_THRESHOLD)
             started = time.perf_counter()

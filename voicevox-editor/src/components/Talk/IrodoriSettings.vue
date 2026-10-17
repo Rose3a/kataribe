@@ -531,7 +531,7 @@ import { useStore } from "@/store";
 import CharacterButton from "@/components/CharacterButton.vue";
 import IrodoriVoiceDesign from "@/components/Talk/IrodoriVoiceDesign.vue";
 import { createEngineUrl } from "@/domain/url";
-import { fetchIrodoriModelInfo } from "@/helpers/irodoriEngine";
+import { fetchIrodoriStatusQuietly } from "@/helpers/irodoriEngine";
 import {
   clearAudioCache,
   handlePossiblyNotMorphableError,
@@ -556,6 +556,8 @@ import {
   irodoriDefaultSteps,
   irodoriMeanflow,
   IRODORI_DEFAULT_STEPS,
+  irodoriBlockwise,
+  irodoriBlockwiseFromStatus,
 } from "@/domain/irodori";
 import {
   previewSliderHelper,
@@ -615,13 +617,17 @@ watch(
     });
     const info = store.state.engineInfos[engineId];
     if (!info) return;
-    const modelInfo = await fetchIrodoriModelInfo(
+    const status = await fetchIrodoriStatusQuietly(
       createEngineUrl({
         ...info,
         port: store.state.altPortInfos[engineId] ?? info.defaultPort,
       }),
     );
-    if (cancelled || modelInfo == undefined) return;
+    if (cancelled || status == undefined) return;
+    // 設定画面を開かなくても、前のセリフから続けて生成する設定を反映する
+    irodoriBlockwise.value = irodoriBlockwiseFromStatus(status);
+    const modelInfo = status.modelInfo;
+    if (modelInfo == undefined) return;
     irodoriDefaultSteps.value = modelInfo.defaultSteps;
     irodoriMeanflow.value = modelInfo.meanflow;
   },

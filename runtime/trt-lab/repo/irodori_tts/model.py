@@ -60,6 +60,15 @@ def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0) -> torch.Te
     return torch.complex(torch.cos(freqs), torch.sin(freqs))
 
 
+def freqs_cis_at(positions: torch.Tensor, dim: int, theta: float = 10000.0) -> torch.Tensor:
+    """precompute_freqs_cis と同じ周波数を、任意の位置（小数・負も可）で作る（blockwise の prefix 用）。"""
+    freqs = 1.0 / (
+        theta ** (torch.arange(0, dim, 2, dtype=torch.float32, device=positions.device) / dim)
+    )
+    angles = torch.outer(positions.float(), freqs)
+    return torch.complex(torch.cos(angles), torch.sin(angles))
+
+
 def apply_rotary_emb(x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
     # x: (B, S, H, Dh), Dh must be even.
     x_ = torch.view_as_complex(x.float().reshape(*x.shape[:3], -1, 2))
@@ -231,6 +240,7 @@ class JointAttention(nn.Module):
         speaker_ctx_dim: int | None,
         caption_ctx_dim: int | None,
         norm_eps: float,
+        prefix_ctx_dim: int | None = None,
     ):
         super().__init__()
         if dim % heads != 0:
@@ -254,6 +264,11 @@ class JointAttention(nn.Module):
         if self.has_caption_condition:
             self.wk_caption = nn.Linear(int(caption_ctx_dim), dim, bias=False)
             self.wv_caption = nn.Linear(int(caption_ctx_dim), dim, bias=False)
+        # blockwise: prefix（前の文の末尾のきれいな latent）の K/V。話者と違い、K には位置（RoPE）が付く。
+        self.has_prefix_condition = prefix_ctx_dim is not None
+        if self.has_prefix_condition:
+            self.wk_prefix = nn.Linear(int(prefix_ctx_dim), dim, bias=False)
+            self.wv_prefix = nn.Linear(int(prefix_ctx_dim), dim, bias=False)
         self.gate = nn.Linear(dim, dim, bias=False)
         self.wo = nn.Linear(dim, dim, bias=False)
 
@@ -265,15 +280,50 @@ class JointAttention(nn.Module):
         x_rot = apply_rotary_emb(x_rot, freqs_cis)
         return torch.cat([x_rot, x_passthrough], dim=-2)
 
+    @property
+    def num_static_context_kv(self) -> int:
+        """prefix を除いた、条件 K/V の数（text, [speaker], [caption] × K/V）。"""
+        return 2 + 2 * int(self.has_speaker_condition) + 2 * int(self.has_caption_condition)
+
+    def project_prefix_kv(
+        self,
+        prefix_context: torch.Tensor,
+        prefix_freqs: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """prefix の K/V。K は k_norm の後に、ノイズ側の self K と同じく前半の head に RoPE をかける。"""
+        if not self.has_prefix_condition:
+            raise ValueError("prefix_context was provided but the model has no prefix branch.")
+        bsz, length, _ = prefix_context.shape
+        k_prefix = self.wk_prefix(prefix_context).reshape(bsz, length, self.heads, self.head_dim)
+        v_prefix = self.wv_prefix(prefix_context).reshape(bsz, length, self.heads, self.head_dim)
+        k_prefix = self._apply_rotary_half(self.k_norm(k_prefix), prefix_freqs)
+        return k_prefix, v_prefix
+
     def project_context_kv(
         self,
         text_context: torch.Tensor,
         speaker_context: torch.Tensor | None,
         caption_context: torch.Tensor | None = None,
+        prefix_context: torch.Tensor | None = None,
+        prefix_freqs: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, ...]:
         """
         Precompute conditioning KV projections for static conditioning.
+        prefix があれば、その K/V を末尾に足す。
         """
+        projected = self._project_static_context_kv(text_context, speaker_context, caption_context)
+        if prefix_context is None:
+            return projected
+        if prefix_freqs is None:
+            raise ValueError("prefix_freqs is required with prefix_context.")
+        return projected + self.project_prefix_kv(prefix_context, prefix_freqs)
+
+    def _project_static_context_kv(
+        self,
+        text_context: torch.Tensor,
+        speaker_context: torch.Tensor | None,
+        caption_context: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, ...]:
         bsz = text_context.shape[0]
         k_text = self.wk_text(text_context).reshape(
             bsz, text_context.shape[1], self.heads, self.head_dim
@@ -338,10 +388,12 @@ class JointAttention(nn.Module):
         speaker_mask: torch.Tensor | None = None,
         caption_len: int | None = None,
         caption_mask: torch.Tensor | None = None,
+        prefix_len: int | None = None,
+        prefix_mask: torch.Tensor | None = None,
     ) -> list[torch.Tensor]:
         """
         Normalize the per-segment key masks in kv concatenation order
-        (self, text[, speaker][, caption]). Missing masks mean fully valid.
+        (self, text[, speaker][, caption][, prefix]). Missing masks mean fully valid.
         """
 
         def _default(mask: torch.Tensor | None, length: int) -> torch.Tensor:
@@ -354,6 +406,8 @@ class JointAttention(nn.Module):
             masks.append(_default(speaker_mask, speaker_len))
         if caption_len is not None:
             masks.append(_default(caption_mask, caption_len))
+        if prefix_len is not None:
+            masks.append(_default(prefix_mask, prefix_len))
         return masks
 
     def forward(
@@ -369,6 +423,9 @@ class JointAttention(nn.Module):
         self_mask: torch.Tensor | None = None,
         context_kv: tuple[torch.Tensor, ...] | None = None,
         context_plan: ContextAttentionPlan | None = None,
+        prefix_context: torch.Tensor | None = None,
+        prefix_mask: torch.Tensor | None = None,
+        prefix_freqs: torch.Tensor | None = None,
     ) -> torch.Tensor:
         bsz, seq_len, _ = x.shape
         q = self.wq(x).reshape(bsz, seq_len, self.heads, self.head_dim)
@@ -379,6 +436,8 @@ class JointAttention(nn.Module):
                 text_context=text_context,
                 speaker_context=speaker_context,
                 caption_context=caption_context,
+                prefix_context=prefix_context,
+                prefix_freqs=prefix_freqs,
             )
         else:
             projected = context_kv
@@ -418,6 +477,13 @@ class JointAttention(nn.Module):
                 )
             context_k.append(k_caption)
             context_v.append(v_caption)
+        # blockwise: prefix の K/V は条件 K/V の後ろに付いている（context_kv_cache にも含まれる）。
+        k_prefix = None
+        base = self.num_static_context_kv
+        if len(projected) > base:
+            k_prefix, v_prefix = projected[base], projected[base + 1]
+            context_k.append(k_prefix)
+            context_v.append(v_prefix)
 
         k = torch.cat(context_k, dim=1)
         v = torch.cat(context_v, dim=1)
@@ -434,6 +500,8 @@ class JointAttention(nn.Module):
                     speaker_mask=speaker_mask if self.has_speaker_condition else None,
                     caption_len=k_caption.shape[1] if k_caption is not None else None,
                     caption_mask=caption_mask if self.has_caption_condition else None,
+                    prefix_len=k_prefix.shape[1] if k_prefix is not None else None,
+                    prefix_mask=prefix_mask,
                 ),
                 query_len=seq_len,
                 attention_dtype=q.dtype,
@@ -953,6 +1021,7 @@ class DiffusionBlock(nn.Module):
             cfg.speaker_dim if cfg.use_speaker_condition_resolved else None,
             cfg.caption_dim_resolved if cfg.use_caption_condition else None,
             norm_eps=cfg.norm_eps,
+            prefix_ctx_dim=cfg.speaker_dim if cfg.use_latent_prefix else None,
         )
         self.mlp = SwiGLU(cfg.model_dim, int(cfg.model_dim * cfg.mlp_ratio))
         adaln_rank = max(1, min(int(cfg.adaln_rank), int(cfg.model_dim)))
@@ -982,6 +1051,9 @@ class DiffusionBlock(nn.Module):
         self_mask: torch.Tensor | None = None,
         context_kv: tuple[torch.Tensor, ...] | None = None,
         context_plan: ContextAttentionPlan | None = None,
+        prefix_state: torch.Tensor | None = None,
+        prefix_mask: torch.Tensor | None = None,
+        prefix_freqs: torch.Tensor | None = None,
     ) -> torch.Tensor:
         h, attention_gate = self.attention_adaln(x, cond_embed)
         x = x + self.dropout(
@@ -998,6 +1070,9 @@ class DiffusionBlock(nn.Module):
                 self_mask=self_mask,
                 context_kv=context_kv,
                 context_plan=context_plan,
+                prefix_context=prefix_state,
+                prefix_mask=prefix_mask,
+                prefix_freqs=prefix_freqs,
             )
         )
 
@@ -1551,6 +1626,14 @@ class TextToLatentRFDiT(nn.Module):
         self.speaker_norm = None
         if cfg.use_speaker_condition_resolved:
             self.speaker_norm = RMSNorm(cfg.speaker_dim, eps=cfg.norm_eps)
+        # blockwise: 前の文の末尾の latent（prefix）を読むエンコーダ。話者参照エンコーダと同じ構造。
+        self.latent_prefix_encoder = None
+        self.prefix_norm = None
+        if cfg.use_latent_prefix:
+            if not cfg.use_speaker_condition_resolved:
+                raise ValueError("use_latent_prefix requires speaker conditioning (shares its design).")
+            self.latent_prefix_encoder = ReferenceLatentEncoder(cfg)
+            self.prefix_norm = RMSNorm(cfg.speaker_dim, eps=cfg.norm_eps)
         self.duration_predictor = None
         if cfg.use_duration_predictor:
             duration_speaker_dim = None
@@ -1666,6 +1749,32 @@ class TextToLatentRFDiT(nn.Module):
         )
         self.speaker_inversion = module
         return module
+
+    def encode_prefix(
+        self,
+        prefix_latent: torch.Tensor,
+        prefix_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        blockwise の prefix（前の文の末尾）を encode する。prefix_latent は (B, P, D) の latent-patched 列で、
+        生成対象の直前で終わるよう右詰めにしておく。P は speaker_patch_size の倍数。
+        返り値: (state (B, N, speaker_dim), mask (B, N), freqs (N, head_dim/2))。
+        freqs はパッチの中心の位置で、生成対象の先頭を 0 とした負の値。
+        """
+        if self.latent_prefix_encoder is None or self.prefix_norm is None:
+            raise RuntimeError("Model has no latent prefix branch.")
+        patch = int(self.cfg.speaker_patch_size)
+        if prefix_latent.shape[1] % patch != 0:
+            raise ValueError(
+                f"prefix length {prefix_latent.shape[1]} must be a multiple of speaker_patch_size={patch}"
+            )
+        seq, mask = patch_sequence_with_mask(prefix_latent, prefix_mask, patch)
+        state = self.prefix_norm(self.latent_prefix_encoder(seq, mask))
+        n = state.shape[1]
+        positions = (
+            torch.arange(n, device=state.device, dtype=torch.float32) - n
+        ) * patch + (patch - 1) / 2.0
+        return state, mask, freqs_cis_at(positions, self.head_dim)
 
     def _rope_freqs(self, seq_len: int, device: torch.device) -> torch.Tensor:
         cache = self._freqs_cis_cache
@@ -1923,7 +2032,14 @@ class TextToLatentRFDiT(nn.Module):
         latent_mask: torch.Tensor | None = None,
         context_kv_cache: list[tuple[torch.Tensor, ...]] | None = None,
         delta_t: torch.Tensor | None = None,
+        prefix_state: torch.Tensor | None = None,
+        prefix_mask: torch.Tensor | None = None,
+        prefix_freqs: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        """
+        prefix_* は encode_prefix の出力（blockwise）。context_kv_cache を使うときは、その中に prefix の
+        K/V を含めておき（build_context_kv_cache に prefix_state を渡す）、ここには prefix_mask だけ渡す。
+        """
         t_embed = get_timestep_embedding(t, self.cfg.timestep_embed_dim).to(dtype=x_t.dtype)
         cond_embed = self.cond_module(t_embed)
         if self.delta_cond_module is not None:
@@ -1969,10 +2085,17 @@ class TextToLatentRFDiT(nn.Module):
                         else None
                     ),
                     caption_mask=caption_mask if attn0.has_caption_condition else None,
+                    prefix_len=prefix_mask.shape[1] if prefix_mask is not None else None,
+                    prefix_mask=prefix_mask,
                 ),
                 query_len=x.shape[1],
                 attention_dtype=x.dtype,
             )
+        prefix_kwargs = {}
+        if prefix_mask is not None:
+            prefix_kwargs = dict(prefix_mask=prefix_mask, prefix_freqs=prefix_freqs)
+            if context_kv_cache is None:
+                prefix_kwargs["prefix_state"] = prefix_state
         use_checkpoint = self.gradient_checkpointing and self.training and context_kv_cache is None
         store_every = max(0, int(self.gradient_checkpointing_store_every))
         for i, block in enumerate(self.blocks):
@@ -1993,6 +2116,7 @@ class TextToLatentRFDiT(nn.Module):
                     latent_mask,
                     use_reentrant=False,
                     context_plan=context_plan,
+                    **prefix_kwargs,
                 )
             else:
                 x = block(
@@ -2008,6 +2132,7 @@ class TextToLatentRFDiT(nn.Module):
                     self_mask=latent_mask,
                     context_kv=context_kv,
                     context_plan=context_plan,
+                    **prefix_kwargs,
                 )
 
         x = self.out_norm(x)
@@ -2190,15 +2315,29 @@ class TextToLatentRFDiT(nn.Module):
         text_state: torch.Tensor,
         speaker_state: torch.Tensor | None,
         caption_state: torch.Tensor | None = None,
+        prefix_state: torch.Tensor | None = None,
+        prefix_freqs: torch.Tensor | None = None,
     ) -> list[tuple[torch.Tensor, ...]]:
         """
         Build per-layer projected conditioning KV tensors for faster repeated sampling steps.
+        prefix を渡すと、その（回転済みの）K/V も末尾に含める。
         """
+        if prefix_state is None:
+            return [
+                block.attention.project_context_kv(
+                    text_context=text_state,
+                    speaker_context=speaker_state,
+                    caption_context=caption_state,
+                )
+                for block in self.blocks
+            ]
         return [
             block.attention.project_context_kv(
                 text_context=text_state,
                 speaker_context=speaker_state,
                 caption_context=caption_state,
+                prefix_context=prefix_state,
+                prefix_freqs=prefix_freqs,
             )
             for block in self.blocks
         ]

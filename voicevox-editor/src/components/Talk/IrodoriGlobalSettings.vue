@@ -122,6 +122,17 @@
         長いセリフで再生が始まるまでの待ちが短くなります（トグルを切り替えるとすぐ保存されます）。
         参照音声を使うセリフは、透かしを入れるため生成後にまとめて再生します。ストリーミング中はクリック位置からの再生や口パクは使えず、再生し終えると通常の再生になります。
       </div>
+      <QToggle
+        v-model="blockwise"
+        dense
+        label="前のセリフから続けて生成（Blockwise 対応モデルのみ）"
+        :disable="locked || !blockwiseAvailable"
+      />
+      <div class="text-caption q-mb-sm">
+        直前のセリフが同じ話者で生成済みなら、その音声の最後（最大10秒）を聞かせてから作るので、セリフの間や調子が自然につながります。連続再生や書き出しのように上から順に作ると、全体が続きになります。直前のセリフを作り直すと、続くセリフも作り直しになります（トグルを切り替えるとすぐ保存されます）。{{
+          blockwiseNote
+        }}
+      </div>
       <QInput
         v-model.number="audioCacheMb"
         outlined
@@ -235,12 +246,14 @@ import { useStore } from "@/store";
 import { createEngineUrl } from "@/domain/url";
 import { clearAudioCache, setAudioCacheLimitMb } from "@/store/audioGenerate";
 import {
+  IRODORI_BLOCKWISE_BACKENDS,
   IRODORI_DEFAULT_AUDIO_CACHE_MB,
   IRODORI_DEFAULT_STEPS,
   IRODORI_DEFAULT_TOKEN_SPLIT_THRESHOLD,
   IRODORI_MAX_STEPS,
   IRODORI_MIN_STEPS,
   irodoriDefaultSteps,
+  irodoriBlockwise,
   irodoriMeanflow,
   irodoriStreamPlayback,
 } from "@/domain/irodori";
@@ -310,6 +323,48 @@ const streamPlayback = computed<boolean>({
       });
   },
 });
+// 前のセリフから続けて生成（blockwise）。切り替えるとすぐエンジンへ保存する（モデルの再読み込みは起きない）。
+// 使えるのは対応モデル（use_latent_prefix）を PyTorch（CPU / CUDA）か TensorRT で動かしているときだけ。
+const blockwiseModel = computed(() => modelInfo.value?.blockwise === true);
+const blockwiseBackend = computed(() =>
+  IRODORI_BLOCKWISE_BACKENDS.includes(appliedSettings.value?.backend ?? ""),
+);
+const blockwiseAvailable = computed(
+  () => blockwiseModel.value && blockwiseBackend.value,
+);
+const blockwiseNote = computed(() => {
+  if (!blockwiseModel.value)
+    return "いまのモデルは対応していません（Irodori-TTS-v4.1-Small-Blockwise などの対応モデルで使えます）。";
+  if (!blockwiseBackend.value)
+    return "DirectML では使えません。NVIDIA / TensorRT・CUDA か CPU を選んで「設定を適用」してください。";
+  return "";
+});
+const blockwise = computed<boolean>({
+  get: () => settings.value?.blockwise === true,
+  set: (value) => {
+    if (!settings.value) return;
+    settings.value.blockwise = value;
+    if (appliedSettings.value) appliedSettings.value.blockwise = value;
+    irodoriRequest(endpoint.value, "/irodori/settings", {
+      method: "POST",
+      body: { blockwise: value },
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await response.text());
+      })
+      .catch((cause: unknown) => {
+        error.value = cause instanceof Error ? cause.message : String(cause);
+      });
+  },
+});
+// 生成側が見るのは「設定がオン」かつ「いまのモデル・エンジンで使える」とき。
+watch(
+  () => blockwise.value && blockwiseAvailable.value,
+  (value) => {
+    irodoriBlockwise.value = value;
+  },
+  { immediate: true },
+);
 // 生成済み音声のキャッシュ量（MB）。変えるとすぐエンジンへ保存する（モデルの再読み込みは起きない）。
 const audioCacheMb = ref<number>(IRODORI_DEFAULT_AUDIO_CACHE_MB);
 function applyAudioCacheMb(value: number | undefined) {
@@ -446,6 +501,15 @@ const modelOptions = ref<ModelOption[]>([
     group: "Small 系（軽量・おすすめ）",
     description: "Anime fine-tune / MIT",
     license: "MIT",
+  },
+  {
+    label: "Irodori-TTS v4.1 Small Blockwise（前のセリフから続けて生成）",
+    value: "rose3/Irodori-TTS-v4.1-Small-Blockwise",
+    group: "Small 系（軽量・おすすめ）",
+    description: "RFモデル・前のセリフの続きとして生成 / TensorRT・CUDA・CPU / MIT",
+    license: "MIT",
+    note: "約3.4GBをダウンロードします。v4.1 Small に、前のセリフの音声の最後（最大10秒）を聞かせてから次のセリフを作る仕組み（blockwise）を学習させた試作モデルです。下の「前のセリフから続けて生成」をオンにすると、同じ話者のセリフの間や調子が自然につながります。オフなら v4.1 Small とほぼ同じ1行生成です。NVIDIA（TensorRT・CUDA）か CPU で使えます（DirectML は不可）。TensorRT では初回だけ plan を作ります（数分）。話者ファイルは v4.1 Small 用がそのまま使えます。",
+    unsupportedBackends: ["radeon"],
   },
   {
     label: "Irodori-TTS v4 Large INT4（TensorRT 対応・省VRAM）",

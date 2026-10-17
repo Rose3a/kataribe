@@ -26,7 +26,9 @@ import torch
 
 # Used by build_context_kv_cache (JointAttention.project_context_kv).
 KV_PROJECTION = frozenset({"wk_text", "wv_text", "wk_speaker", "wv_speaker",
-                           "wk_caption", "wv_caption", "k_norm"})
+                           "wk_caption", "wv_caption", "k_norm",
+                           # blockwise の prefix の K/V（tts_cli._PrefixToCaption で plan に渡す）
+                           "wk_prefix", "wv_prefix"})
 # Top-level DiT modules that only the TensorRT plan runs.
 PLAN_ONLY = ("cond_module", "delta_cond_module", "in_proj", "out_norm", "out_proj")
 
