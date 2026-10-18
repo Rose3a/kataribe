@@ -29,6 +29,8 @@ export const IRODORI_DEFAULT_TOKEN_SPLIT: IrodoriTokenSplit = "on";
 export const IRODORI_DEFAULT_CFG_TEXT = 3;
 export const IRODORI_DEFAULT_CFG_CAPTION = 3;
 export const IRODORI_DEFAULT_CFG_SPEAKER = 5;
+// CFG をかけるステップの範囲。1 で従来どおり、0 で CFG なし（エンジンが cfg_min_t に換算する）。
+export const IRODORI_DEFAULT_CFG_RANGE = 1;
 export const IRODORI_DEFAULT_CAPTION_STRENGTH = 1;
 export const IRODORI_DEFAULT_REFERENCE_STRENGTH = 1;
 export const IRODORI_DEFAULT_SPEAKER_STRENGTH = 1;

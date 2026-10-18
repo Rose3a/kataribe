@@ -13,6 +13,7 @@ import { generateTempUniqueId } from "./utility";
 import {
   IRODORI_DEFAULT_CFG_CAPTION,
   IRODORI_DEFAULT_CFG_SPEAKER,
+  IRODORI_DEFAULT_CFG_RANGE,
   IRODORI_DEFAULT_CFG_TEXT,
   IRODORI_DEFAULT_CAPTION_STRENGTH,
   IRODORI_DEFAULT_REFERENCE_STRENGTH,
@@ -174,6 +175,7 @@ function synthesisParams(
         audioItem.irodori?.cfgCaption ?? IRODORI_DEFAULT_CFG_CAPTION,
       irodoriCfgSpeaker:
         audioItem.irodori?.cfgSpeaker ?? IRODORI_DEFAULT_CFG_SPEAKER,
+      irodoriCfgRange: audioItem.irodori?.cfgRange ?? IRODORI_DEFAULT_CFG_RANGE,
       irodoriReferenceStrength:
         audioItem.irodori?.referenceStrength ??
         IRODORI_DEFAULT_REFERENCE_STRENGTH,

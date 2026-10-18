@@ -59,6 +59,8 @@ export interface AudioQuery {
     irodoriCfgCaption?: number;
     /** Per-item Irodori speaker CFG. */
     irodoriCfgSpeaker?: number;
+    /** Per-item Irodori CFG step range (0..1, 1 = default). */
+    irodoriCfgRange?: number;
     /** Per-item Irodori reference-audio condition strength. */
     irodoriReferenceStrength?: number;
     /** Per-item Irodori speaker cassette condition strength. */
@@ -190,6 +192,7 @@ export function AudioQueryFromJSONTyped(json: any, ignoreDiscriminator: boolean)
         'irodoriCfgText': !exists(json, 'irodori_cfg_text') ? undefined : json['irodori_cfg_text'],
         'irodoriCfgCaption': !exists(json, 'irodori_cfg_caption') ? undefined : json['irodori_cfg_caption'],
         'irodoriCfgSpeaker': !exists(json, 'irodori_cfg_speaker') ? undefined : json['irodori_cfg_speaker'],
+        'irodoriCfgRange': !exists(json, 'irodori_cfg_range') ? undefined : json['irodori_cfg_range'],
         'irodoriReferenceStrength': !exists(json, 'irodori_reference_strength') ? undefined : json['irodori_reference_strength'],
         'irodoriSpeakerStrength': !exists(json, 'irodori_speaker_strength') ? undefined : json['irodori_speaker_strength'],
         'irodoriSecondarySpeakerStyleId': !exists(json, 'irodori_secondary_speaker_style_id') ? undefined : json['irodori_secondary_speaker_style_id'],
@@ -234,6 +237,7 @@ export function AudioQueryToJSON(value?: AudioQuery | null): any {
         'irodori_cfg_text': value.irodoriCfgText,
         'irodori_cfg_caption': value.irodoriCfgCaption,
         'irodori_cfg_speaker': value.irodoriCfgSpeaker,
+        'irodori_cfg_range': value.irodoriCfgRange,
         'irodori_reference_strength': value.irodoriReferenceStrength,
         'irodori_speaker_strength': value.irodoriSpeakerStrength,
         'irodori_secondary_speaker_style_id': value.irodoriSecondarySpeakerStyleId,

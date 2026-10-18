@@ -68,6 +68,17 @@ class SamplingSettingsTests(unittest.TestCase):
         self.assertEqual(settings["t_schedule_mode"], "linear")
         self.assertEqual(settings["sway_coeff"], -2.0)
 
+    def test_cfg_range_maps_to_cfg_min_t(self):
+        # 既定 1 は従来の cfg_min_t 0.5、0.5 は試験で使った 0.75、0 はどの t（最大 1.0）にもかからない
+        for value, expected in ((None, 0.5), (1.0, 0.5), (0.5, 0.75)):
+            query = {} if value is None else {"irodori_cfg_range": value}
+            self.assertAlmostEqual(_sampling_settings("rf_velocity", 8, query)["cfg_min_t"], expected)
+        self.assertGreater(
+            _sampling_settings("rf_velocity", 8, {"irodori_cfg_range": 0})["cfg_min_t"], 1.0)
+        for value in (-0.1, 1.5, "abc"):
+            with self.assertRaises(ValueError):
+                _sampling_settings("rf_velocity", 8, {"irodori_cfg_range": value})
+
     def test_invalid_steps_are_rejected(self):
         for value in (0, -1, "abc"):
             with self.assertRaises(ValueError):

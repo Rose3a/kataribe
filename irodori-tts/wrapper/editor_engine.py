@@ -428,6 +428,18 @@ class EditorAdapter:
             raise ValueError(f"{key} must be between 0 and 20")
         return value
 
+    @staticmethod
+    def _line_cfg_range(query):
+        """CFG をかける範囲（0〜1、既定 1）。cfg_min_t への換算は voicevox_engine._cfg_min_t。"""
+        raw = query.get("irodori_cfg_range", 1.0)
+        try:
+            value = float(1.0 if raw is None else raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("irodori_cfg_range must be a number") from exc
+        if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+            raise ValueError("irodori_cfg_range must be between 0 and 1")
+        return value
+
     def _line_steps(self, query):
         """セリフごとのステップ数。未指定なら全行共通の既定（設定の default_steps）。"""
         raw = query.get("irodori_steps", self._default_steps())
@@ -539,6 +551,7 @@ class EditorAdapter:
             f"seconds={query.get('irodori_seconds')}",
             f"seed={query.get('irodori_seed')}",
             f"cfg={query.get('irodori_cfg_text')}/{query.get('irodori_cfg_caption')}/{query.get('irodori_cfg_speaker')}",
+            f"cfg_range={query.get('irodori_cfg_range')}",
             f"backend={backend}",
             f"model={model}",
         ]
@@ -1132,6 +1145,7 @@ class EditorAdapter:
                          irodori_cfg_text=self._line_cfg(query, "irodori_cfg_text", 3.0),
                          irodori_cfg_speaker=self._line_cfg(query, "irodori_cfg_speaker", 5.0),
                          irodori_cfg_caption=self._line_cfg(query, "irodori_cfg_caption", 3.0),
+                         irodori_cfg_range=self._line_cfg_range(query),
                          irodori_schedule=line_schedule,
                          irodori_sway_coeff=float(self.settings["sway_coeff"]))
             if "irodori_seed" not in query:

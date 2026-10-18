@@ -71,6 +71,7 @@ export const audioItemSchema = z.object({
     cfgText: z.number().min(0).max(20).optional(),
     cfgCaption: z.number().min(0).max(20).optional(),
     cfgSpeaker: z.number().min(0).max(20).optional(),
+    cfgRange: z.number().min(0).max(1).optional(),
     referenceStrength: z.number().min(0).max(1).optional(),
     speakerStrength: z.number().min(0).max(1).optional(),
     // Previous projects may still contain one additional speaker.

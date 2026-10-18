@@ -110,6 +110,7 @@ JSON のキーは snake_case で指定します。`irodoriSteps` のような ca
 | `irodori_caption_strength` | number | 0〜1、既定 1 | |
 | `irodori_speaker_strength` | number | 0〜1、既定 1 | 基本話者の強さ |
 | `irodori_cfg_text` / `irodori_cfg_caption` / `irodori_cfg_speaker` | number | 0〜20、既定 3 / 3 / 5 | MeanFlow では無視 |
+| `irodori_cfg_range` | number | 0〜1、既定 1 | CFG をかけるステップの範囲。cfg_min_t = 1 − 0.5×値（1 で 0.5、0.5 で 0.75）、0 で CFG なし。MeanFlow では無視 |
 | `irodori_additional_speakers` | array | 最大3件 | `[{"style_id": 123, "strength": 0.5}]`。音声参照と同時には使えない |
 | `irodori_reference_audio` | object / null | 最大10MB | `{"dataUrl": "data:audio/...;base64,...", "mime": "...", "name": "..."}` |
 | `irodori_reference_strength` | number | 0〜1、既定 1 | 参照音声の強さ |

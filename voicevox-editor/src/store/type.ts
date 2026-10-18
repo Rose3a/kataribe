@@ -113,6 +113,7 @@ export type AudioItem = {
     cfgText?: number;
     cfgCaption?: number;
     cfgSpeaker?: number;
+    cfgRange?: number;
     referenceStrength?: number;
     speakerStrength?: number;
     secondarySpeakerStyleId?: number | null;

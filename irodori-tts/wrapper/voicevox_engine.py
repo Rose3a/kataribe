@@ -207,6 +207,10 @@ IRODORI_QUERY_FIELDS: dict[str, dict] = {
         "type": "number", "minimum": 0.0, "maximum": 20.0, "default": 5.0,
         "description": "MeanFlow モデルでは無視される",
     },
+    "irodori_cfg_range": {
+        "type": "number", "minimum": 0.0, "maximum": 1.0, "default": 1.0,
+        "description": "CFG をかけるステップの範囲。1 で従来どおり、下げるとノイズ側の数ステップだけになり、0 で CFG なし。MeanFlow モデルでは無視される",
+    },
     "irodori_additional_speakers": {
         "type": "array", "nullable": True, "maxItems": 3,
         "items": {
@@ -382,6 +386,22 @@ def _cfg_value(query: dict, key: str, default: float) -> float:
     return value
 
 
+def _cfg_min_t(query: dict) -> float:
+    """CFG の範囲（0〜1）を rf.sample の cfg_min_t に直す。
+
+    t は 1（ノイズ）→0 へ進み、cfg_min_t 以上の t だけ CFG がかかる。範囲 1 を従来の 0.5、
+    0.5 を 0.75 に当てる。0 は CFG なしにするため、どのステップの t（最大 1.0）よりも大きくする。
+    """
+    raw = query.get("irodori_cfg_range", 1.0)
+    try:
+        value = float(1.0 if raw is None else raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("irodori_cfg_range must be a number") from exc
+    if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+        raise ValueError("irodori_cfg_range must be between 0 and 1")
+    return 1.0 - 0.5 * value if value > 0.0 else 2.0
+
+
 def _strength_value(query: dict, key: str, default: float = 1.0) -> float:
     """Read one per-line condition strength in the inclusive 0..1 range."""
     raw = query.get(key, default)
@@ -467,6 +487,7 @@ def _sampling_settings(flow_parameterization: str, default_steps: int, query: di
         "cfg_scale_text": _cfg_value(query, "irodori_cfg_text", 3.0),
         "cfg_scale_speaker": _cfg_value(query, "irodori_cfg_speaker", 5.0),
         "cfg_scale_caption": _cfg_value(query, "irodori_cfg_caption", 3.0),
+        "cfg_min_t": _cfg_min_t(query),
         "t_schedule_mode": str(query.get("irodori_schedule", "sway")),
         "sway_coeff": float(query.get("irodori_sway_coeff", -1.0)),
     }
@@ -859,7 +880,7 @@ class VoicevoxAdapter:
         print(
             f"[voicevox] synth: flow={flow} steps={sampling['num_steps']} "
             f"cfg={sampling['cfg_scale_text']}/{sampling['cfg_scale_caption']}"
-            f"/{sampling['cfg_scale_speaker']} schedule={sampling['t_schedule_mode']} "
+            f"/{sampling['cfg_scale_speaker']} cfg_min_t={sampling.get('cfg_min_t', 0.5)} schedule={sampling['t_schedule_mode']} "
             f"speaker={speaker_name or '(none)'}",
             file=sys.stderr, flush=True,
         )
@@ -904,6 +925,7 @@ class VoicevoxAdapter:
                     cfg_scale_text=sampling["cfg_scale_text"],
                     cfg_scale_speaker=sampling["cfg_scale_speaker"],
                     cfg_scale_caption=sampling["cfg_scale_caption"],
+                    cfg_min_t=sampling.get("cfg_min_t", 0.5),
                     t_schedule_mode=sampling["t_schedule_mode"],
                     sway_coeff=sampling["sway_coeff"],
                     ref_wav=ref_wav,

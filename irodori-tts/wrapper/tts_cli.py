@@ -838,6 +838,7 @@ class IrodoriTTS:
                    cfg_scale_text: float = 3.0,
                    cfg_scale_speaker: float = 5.0,
                    cfg_scale_caption: float = 3.0,
+                   cfg_min_t: float = 0.5,
                    caption: Optional[str] = None,
                    caption_strength: float = 1.0,
                    reference_strength: float = 1.0,
@@ -940,6 +941,7 @@ class IrodoriTTS:
             num_steps=num_steps, t_schedule_mode=t_schedule_mode, sway_coeff=float(sway_coeff),
             cfg_scale_text=float(cfg_scale_text),
             cfg_scale_speaker=float(cfg_scale_speaker), cfg_scale_caption=float(cfg_scale_caption),
+            cfg_min_t=float(cfg_min_t),
             seed=seed,
         )
         if ref_wav is not None:

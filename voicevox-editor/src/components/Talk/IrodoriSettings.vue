@@ -486,6 +486,22 @@
               @change="saveLineCfg('cfgSpeaker', cfgSpeakerText)"
             />
           </div>
+          <div class="strength-row">
+            <label>CFGの範囲</label>
+            <QSlider
+              v-model="cfgRangeValue"
+              dense
+              snap
+              color="primary"
+              :min="0"
+              :max="1"
+              :step="0.05"
+              :disable="locked || meanflow"
+              aria-label="CFGの範囲"
+              @change="saveCfgRange(cfgRangeValue)"
+            />
+            <span class="strength-value">{{ cfgRangeValue.toFixed(2) }}</span>
+          </div>
           <p class="settings-hint">
             <template v-if="meanflow">
               MeanFlowモデルではCFGは使われません。
@@ -493,6 +509,8 @@
             <template v-else>
               CFGは、テキスト・キャプション・話者にどれだけ忠実に従うかの強さです。
               上げるほど指定に沿いますが、上げすぎると不自然になることがあります。
+              CFGの範囲は、CFGをかけるステップの多さです（既定 1）。
+              下げると生成の序盤だけにかかって速くなり、0 で CFG を使いません。
             </template>
           </p>
         </div>
@@ -539,6 +557,7 @@ import {
 import {
   IRODORI_DEFAULT_CFG_CAPTION,
   IRODORI_DEFAULT_CFG_SPEAKER,
+  IRODORI_DEFAULT_CFG_RANGE,
   IRODORI_DEFAULT_CFG_TEXT,
   IRODORI_DEFAULT_CAPTION_STRENGTH,
   IRODORI_DEFAULT_REFERENCE_STRENGTH,
@@ -647,6 +666,7 @@ const irodori = computed(() => {
     cfgText: value?.cfgText ?? IRODORI_DEFAULT_CFG_TEXT,
     cfgCaption: value?.cfgCaption ?? IRODORI_DEFAULT_CFG_CAPTION,
     cfgSpeaker: value?.cfgSpeaker ?? IRODORI_DEFAULT_CFG_SPEAKER,
+    cfgRange: value?.cfgRange ?? IRODORI_DEFAULT_CFG_RANGE,
     captionStrength: value?.captionStrength ?? IRODORI_DEFAULT_CAPTION_STRENGTH,
     referenceStrength:
       value?.referenceStrength ?? IRODORI_DEFAULT_REFERENCE_STRENGTH,
@@ -734,6 +754,7 @@ const captionText = ref("");
 const cfgTextText = ref("");
 const cfgCaptionText = ref("");
 const cfgSpeakerText = ref("");
+const cfgRangeValue = ref(IRODORI_DEFAULT_CFG_RANGE);
 const captionStrengthValue = ref(IRODORI_DEFAULT_CAPTION_STRENGTH);
 const referenceStrengthValue = ref(IRODORI_DEFAULT_REFERENCE_STRENGTH);
 const speakerStrengthValue = ref(IRODORI_DEFAULT_SPEAKER_STRENGTH);
@@ -753,6 +774,7 @@ watch(
     cfgTextText.value = String(value.cfgText);
     cfgCaptionText.value = String(value.cfgCaption);
     cfgSpeakerText.value = String(value.cfgSpeaker);
+    cfgRangeValue.value = value.cfgRange;
     captionStrengthValue.value = value.captionStrength;
     referenceStrengthValue.value = value.referenceStrength;
     speakerStrengthValue.value = value.speakerStrength;
@@ -881,6 +903,21 @@ function saveLineCfg(key: LineCfgKey, input: string | number | null) {
   void store.actions.COMMAND_SET_IRODORI_SETTINGS({
     audioKey: props.activeAudioKey,
     irodori: { ...irodori.value, [key]: Number(value.toFixed(4)) },
+  });
+}
+function saveCfgRange(input: number | null) {
+  const value = Number(input);
+  if (!Number.isFinite(value) || value < 0 || value > 1) {
+    error.value = "CFGの範囲は0〜1の数値だけ指定できます";
+    cfgRangeValue.value = irodori.value.cfgRange;
+    return;
+  }
+  error.value = "";
+  const normalized = Number(value.toFixed(2));
+  cfgRangeValue.value = normalized;
+  void store.actions.COMMAND_SET_IRODORI_SETTINGS({
+    audioKey: props.activeAudioKey,
+    irodori: { ...irodori.value, cfgRange: normalized },
   });
 }
 // 入力確定時（@change）にだけ保存し、1文字ごとに元に戻す履歴を積まない。
