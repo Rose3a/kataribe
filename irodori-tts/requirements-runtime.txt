@@ -6,6 +6,8 @@ torchcodec>=0.10,<0.11
 sentencepiece>=0.1.99,<0.2
 soundfile>=0.12
 pyyaml>=6.0
+# コンソール表示（wrapper/console_ui.py）。端末に直接出すときだけ使い、無くても動く。
+rich>=13
 descript-audiotools==0.7.2
 # Keep this compatible with descript-audiotools during the bulk install.
 # setup_venv.bat upgrades protobuf after the audio stack so ONNX 1.22 can

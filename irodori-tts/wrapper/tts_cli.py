@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 import torch
+import console_ui
 from stream_decode import StreamingDecode, current_sink
 
 # ---------------------------------------------------------------- defaults
@@ -726,6 +727,13 @@ def _speaker_dim_message(name: Optional[str], dim: int, model_dim: int) -> str:
             "このモデルでは「話者なし」か参照音声を使うか、このモデル用の話者ファイルを用意してください")
 
 
+def _pick_default_speaker(cassette: "SpeakerCassette") -> Optional[str]:
+    for preferred in ("tsukuyomi", "ureshun", "unleashguang", "fairy", "kugimiya"):
+        if cassette.has(preferred):
+            return preferred
+    return cassette.speakers[0] if cassette.speakers else None
+
+
 class IrodoriTTS:
     """Top-level wrapper. Resolves backend at construction time."""
 
@@ -783,16 +791,7 @@ class IrodoriTTS:
         return "trt"
 
     def _pick_default_speaker(self) -> Optional[str]:
-        for preferred in (
-            "tsukuyomi",
-            "ureshun",
-            "unleashguang",
-            "fairy",
-            "kugimiya",
-        ):
-            if self.cassette.has(preferred):
-                return preferred
-        return self.cassette.speakers[0] if self.cassette.speakers else None
+        return _pick_default_speaker(self.cassette)
 
     def speakers(self) -> list[str]:
         return self.cassette.speakers
@@ -973,7 +972,7 @@ class IrodoriTTS:
             except Exception as exc:  # noqa: BLE001 - 表示の失敗で合成を止めない
                 view = f"tokens: 表示できませんでした（{exc}）"
             if view:
-                print(f"[irodori] {view}", file=sys.stderr, flush=True)
+                console_ui.notice("irodori", view, stderr=True, style="dim")
         start = time.perf_counter()
         # A sink set by the HTTP layer (stream_decode.stream_to) receives the first windows
         # of the audio while the rest is still being decoded.  Reference audio is
@@ -1009,29 +1008,112 @@ class IrodoriTTS:
 
 
 # ---------------------------------------------------------------- CLI / serve
+_DESCRIPTION = "Irodori-TTS をコマンドラインから使います（1 回生成して終了／HTTP サーバー）。"
+
+_EXAMPLES = [
+    ("話者の一覧", 'tts_cli --list-speakers'),
+    ("1 行生成して、そのまま再生", 'tts_cli --speaker tsukuyomi --text "こんにちは" --play'),
+    ("ファイルの各行をまとめて生成", 'tts_cli --speaker tsukuyomi --text-file lines.txt --out-dir out'),
+    ("AI・スクリプトから（結果は 1 行 1 件の JSON）", 'tts_cli --json --speaker tsukuyomi --text-file lines.txt'),
+    ("ステップ数・シード・音声の長さを指定", 'tts_cli --speaker tsukuyomi --text "ありがとう" --num-steps 16 --seed 7 --seconds 3'),
+    ("HTTP サーバーとして起動", 'tts_cli --mode serve --port 8765'),
+]
+
+_ENVIRONMENT = [
+    ("IRODORI_BACKEND", "--backend auto のときの選び方（trt か torch）"),
+    ("IRODORI_EMBED_DIR / IRODORI_EMBED_DIRS", "話者ファイル（*.speaker.safetensors）の探し先"),
+    ("IRODORI_CHECKPOINT", "モデルの重み（.safetensors）"),
+    ("IRODORI_HF_HOME", "Hugging Face のキャッシュ先"),
+    ("NO_COLOR / IRODORI_PLAIN_CONSOLE", "1 にすると色・枠・スピナーを使わず、従来の 1 行表示にする"),
+]
+
+
+class _HelpFormatter(argparse.RawDescriptionHelpFormatter):
+    """既定値を日本語で help の末尾に足す（既定が無い・フラグのものは足さない）。"""
+
+    def _get_help_string(self, action):
+        text = action.help or ""
+        if action.default not in (None, False, [], argparse.SUPPRESS) and action.option_strings:
+            text += f"（既定: {action.default}）"
+        return text
+
+
+class _HelpAction(argparse.Action):
+    """-h / --help。端末では rich の見やすいページ、パイプ・ファイルでは通常の argparse のヘルプ。"""
+
+    def __init__(self, option_strings, dest=argparse.SUPPRESS, default=argparse.SUPPRESS, help=None):
+        super().__init__(option_strings, dest=dest, default=default, nargs=0, help=help)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        if console_ui.fancy():
+            groups = []
+            for group in parser._action_groups:  # noqa: SLF001 - argparse に公開 API が無い
+                rows = []
+                for action in group._group_actions:  # noqa: SLF001
+                    if not action.option_strings:
+                        continue
+                    flags = ", ".join(action.option_strings)
+                    if action.nargs != 0:
+                        flags += f" {action.metavar or action.dest.upper()}"
+                    text = action.help or ""
+                    if (action.default not in (None, False, [], argparse.SUPPRESS)
+                            and action.option_strings and action.nargs != 0):
+                        text += f"  [既定: {action.default}]"
+                    rows.append((flags, text))
+                if rows:
+                    groups.append((group.title, rows))
+            console_ui.help_page(parser.prog, _DESCRIPTION, groups, _EXAMPLES, _ENVIRONMENT)
+        else:
+            parser.print_help()
+        parser.exit()
+
+
 def _build_argparser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(description="Irodori bf16 trt + speaker cassette")
-    ap.add_argument("--mode", choices=("cli", "serve"), default="cli")
-    ap.add_argument("--speaker", help="speaker name; required in cli mode")
-    ap.add_argument("--text", help="text to synthesise; required in cli mode")
-    ap.add_argument("--text-file", type=Path,
-                    help="UTF-8 file with one utterance per non-empty line")
-    ap.add_argument("--out", type=Path, help="output wav path; default outputs/<name>_<seed>.wav")
-    ap.add_argument("--out-dir", type=Path, default=Path("outputs"))
-    ap.add_argument("--seed", type=int, default=1001)
-    ap.add_argument("--num-steps", type=int, default=8)
-    ap.add_argument("--seconds", type=float, default=None)
-    ap.add_argument("--backend", choices=("auto", "trt", "torch", "cpu", "cuda", "radeon"), default="auto")
-    ap.add_argument("--embed-dir", action="append", type=Path, default=[],
-                    help="additional search root for *.speaker.safetensors "
-                         "(relative paths resolve against cwd); repeat to add more")
-    ap.add_argument("--list-speakers", action="store_true")
-    ap.add_argument("--list-search-dirs", action="store_true",
-                    help="print resolved search roots and exit")
-    ap.add_argument("--refresh-cassette", action="store_true",
-                    help="re-scan the search paths and drop the GPU cache before listing")
-    ap.add_argument("--port", type=int, default=8765, help="port for serve mode")
+    epilog = "使用例:\n" + "\n".join(f"  # {text}\n  {cmd}" for text, cmd in _EXAMPLES)
+    epilog += "\n\n環境変数:\n" + "\n".join(f"  {name:<36}  {text}" for name, text in _ENVIRONMENT)
+    ap = argparse.ArgumentParser(prog="tts_cli", description=_DESCRIPTION, epilog=epilog,
+                                 formatter_class=_HelpFormatter, add_help=False)
+    gen = ap.add_argument_group("生成")
+    gen.add_argument("--speaker", help="話者の名前（--list-speakers で確認）。cli モードでは必須")
+    gen.add_argument("--text", help="生成するセリフ。cli モードでは --text か --text-file のどちらかが必須")
+    gen.add_argument("--text-file", type=Path, help="セリフのファイル（UTF-8、空でない 1 行が 1 セリフ）")
+    gen.add_argument("--seed", type=int, default=1001, help="乱数のシード。同じ値なら同じ声になる")
+    gen.add_argument("--num-steps", type=int, default=8,
+                     help="サンプリングのステップ数。多いほど高品質で遅い")
+    gen.add_argument("--seconds", type=float, default=None, help="音声の長さ（秒）。指定しないと自動")
+    out = ap.add_argument_group("出力")
+    out.add_argument("--out", type=Path, help="出力 WAV のパス（指定しないと <out-dir>/<話者>_<seed>.wav）")
+    out.add_argument("--out-dir", type=Path, default=Path("outputs"), help="出力 WAV を置くフォルダ")
+    out.add_argument("--play", action="store_true", help="生成するたびにその WAV を再生する（Windows）")
+    out.add_argument("--json", action="store_true",
+                     help="[AI・スクリプト向け] 結果を 1 行 1 件の JSON で stdout に出す。色やスピナーは使わず、"
+                          "エラーも JSON。終了コード: 0 成功 / 2 引数の誤り / 3 話者なし / 4 モデル・環境 / 5 生成失敗")
+    eng = ap.add_argument_group("エンジン")
+    eng.add_argument("--backend", choices=("auto", "trt", "torch", "cpu", "cuda", "radeon"), default="auto",
+                     help="推論方式。auto=TensorRT の plan があれば trt、なければ torch / trt=TensorRT（NVIDIA）"
+                          " / torch=PyTorch（CUDA があれば GPU）/ cuda=CUDA の PyTorch / cpu=CPU の PyTorch"
+                          " / radeon=DirectML（AMD）")
+    eng.add_argument("--mode", choices=("cli", "serve"), default="cli",
+                     help="cli=生成して終了 / serve=HTTP サーバーとして待ち受ける")
+    eng.add_argument("--port", type=int, default=8765, help="serve モードの待ち受けポート")
+    spk = ap.add_argument_group("話者")
+    spk.add_argument("--list-speakers", action="store_true", help="使える話者を表示して終了")
+    spk.add_argument("--list-search-dirs", action="store_true", help="話者ファイルの探し先を表示して終了")
+    spk.add_argument("--embed-dir", action="append", type=Path, default=[],
+                     help="話者ファイル（*.speaker.safetensors）の探し先を足す。相対パスは今のフォルダ基準。複数回指定できる")
+    spk.add_argument("--refresh-cassette", action="store_true",
+                     help="話者フォルダを読み直し、GPU のキャッシュを捨ててから始める")
+    other = ap.add_argument_group("その他")
+    other.add_argument("-h", "--help", action=_HelpAction, help="このヘルプを表示して終了")
     return ap
+
+
+# 終了コード（スクリプト・AI が結果を判断できるように）
+EXIT_OK = 0
+EXIT_USAGE = 2      # 引数の誤り（話者・セリフの指定漏れ、ファイルが無いなど）
+EXIT_SPEAKER = 3    # 指定した話者が見つからない
+EXIT_ENVIRONMENT = 4  # モデル・環境が使えない（読み込みの失敗）
+EXIT_FAILED = 5     # 生成に失敗した
 
 
 def _build_tts(args: argparse.Namespace) -> IrodoriTTS:
@@ -1042,51 +1124,112 @@ def _build_tts(args: argparse.Namespace) -> IrodoriTTS:
     return tts
 
 
-def _print_speaker_index(tts: IrodoriTTS) -> None:
-    print("search roots:")
-    for d in tts.search_dirs():
-        print(f"  - {d}")
-    print("available speakers:")
-    for name in tts.speakers():
-        mark = " (default)" if name == tts.default_speaker else ""
-        print(f"  - {name}{mark}")
+def _fail(as_json: bool, code: int, kind: str, message: str, *,
+          suggestions: Optional[list[str]] = None, hint: Optional[str] = None,
+          **extra) -> int:
+    """エラーを出して終了コードを返す。JSON のときは stdout に 1 行、端末では顔文字つきのカード（stderr）。"""
+    if as_json:
+        error = {"code": kind, "message": message, **extra}
+        if suggestions:
+            error["suggestions"] = suggestions
+        if hint:
+            error["hint"] = hint
+        print(json.dumps({"ok": False, "error": error}, ensure_ascii=False), flush=True)
+    else:
+        console_ui.error_card(message, suggestions, hint)
+    return code
 
 
-def _run_cli(args: argparse.Namespace) -> int:
-    tts = _build_tts(args)
+def _run_cli(args: argparse.Namespace, as_json: bool) -> int:
+    # 話者の一覧・検索先・指定の確認はモデルを読み込まずにできる（速い）
+    embed_dirs = resolve_embed_dirs(args.embed_dir)
+    cassette = SpeakerCassette(embed_dirs)
+    speakers = cassette.speakers
+    search_dirs = [str(d) for d in cassette.dirs]
     if args.list_search_dirs:
-        print("search roots:")
-        for d in tts.search_dirs():
-            print(f"  - {d}")
-        return 0
+        if as_json:
+            print(json.dumps({"search_dirs": search_dirs}, ensure_ascii=False), flush=True)
+        else:
+            console_ui.speaker_table(search_dirs, [], None)
+        return EXIT_OK
     if args.list_speakers or (not args.speaker and not args.text and not args.text_file):
-        _print_speaker_index(tts)
-        return 0
+        default = _pick_default_speaker(cassette)
+        if as_json:
+            print(json.dumps({"speakers": speakers, "default": default, "search_dirs": search_dirs},
+                             ensure_ascii=False), flush=True)
+        else:
+            console_ui.speaker_table(search_dirs, speakers, default)
+        return EXIT_OK
     if not args.speaker:
-        print("error: --speaker is required (use --list-speakers to see options)",
-              file=sys.stderr)
-        return 2
+        return _fail(as_json, EXIT_USAGE, "missing_speaker", "--speaker を指定してください",
+                     hint="話者の一覧: tts_cli --list-speakers")
     if not args.text and not args.text_file:
-        print("error: --text or --text-file is required", file=sys.stderr)
-        return 2
+        return _fail(as_json, EXIT_USAGE, "missing_text", "--text か --text-file を指定してください")
+    if not cassette.has(args.speaker):
+        import difflib
+        near = difflib.get_close_matches(args.speaker, speakers, n=3, cutoff=0.5)
+        return _fail(as_json, EXIT_SPEAKER, "speaker_not_found",
+                     f"話者「{args.speaker}」が見つかりません", suggestions=near,
+                     hint="話者の一覧: tts_cli --list-speakers")
     if args.text_file:
-        texts = [t for t in args.text_file.read_text(encoding="utf-8-sig").splitlines()
-                 if t.strip()]
+        try:
+            texts = [t for t in args.text_file.read_text(encoding="utf-8-sig").splitlines()
+                     if t.strip()]
+        except OSError as exc:
+            return _fail(as_json, EXIT_USAGE, "text_file_unreadable",
+                         f"--text-file を読めません: {exc}")
+        if not texts:
+            return _fail(as_json, EXIT_USAGE, "text_file_empty", "--text-file にセリフがありません")
     else:
         texts = [args.text]
-    for index, text in enumerate(texts):
-        if args.out is not None:
-            out_wav = args.out
-        elif len(texts) > 1:
-            out_wav = args.out_dir / f"{args.speaker}_{args.seed}_{index:03}.wav"
-        else:
-            out_wav = args.out_dir / f"{args.speaker}_{args.seed}.wav"
-        result = tts.synthesize(
-            text=text, speaker=args.speaker, out_wav=out_wav,
-            seed=args.seed, num_steps=args.num_steps, seconds=args.seconds,
-        )
-        print(json.dumps(result, ensure_ascii=False), flush=True)
-    return 0
+
+    try:
+        with console_ui.working("モデルを読み込み中..."):
+            tts = _build_tts(args)
+    except (OSError, ImportError, RuntimeError, ValueError) as exc:
+        return _fail(as_json, EXIT_ENVIRONMENT, "environment", f"モデルを読み込めません: {exc}",
+                     hint="setup.bat を実行したか、--backend の指定を確認してください")
+    try:
+        console_ui.run_header(tts.backend.name, args.speaker, args.num_steps, args.seed, len(texts))
+        total_audio = total_wall = 0.0
+        for index, text in enumerate(texts):
+            if args.out is not None:
+                out_wav = args.out
+            elif len(texts) > 1:
+                out_wav = args.out_dir / f"{args.speaker}_{args.seed}_{index:03}.wav"
+            else:
+                out_wav = args.out_dir / f"{args.speaker}_{args.seed}.wav"
+            try:
+                with console_ui.working(f"生成中 ({index + 1}/{len(texts)})"):
+                    result = tts.synthesize(
+                        text=text, speaker=args.speaker, out_wav=out_wav,
+                        seed=args.seed, num_steps=args.num_steps, seconds=args.seconds,
+                    )
+            except Exception as exc:  # noqa: BLE001 - 失敗は終了コードと JSON で伝える
+                return _fail(as_json, EXIT_FAILED, "synthesis_failed",
+                             f"{index + 1} 件目の生成に失敗しました: {exc}", index=index + 1)
+            audio = float(result.get("audio_s") or 0.0)
+            wall = float(result.get("wall_s") or 0.0)
+            total_audio += audio
+            total_wall += wall
+            if as_json:
+                # latent（次のセリフの prefix 用の Tensor）は含めない
+                print(json.dumps({
+                    "ok": True, "index": index + 1, "total": len(texts), "text": text,
+                    "speaker": args.speaker, "wav": str(out_wav), "audio_s": round(audio, 3),
+                    "wall_s": round(wall, 3), "rtf": round(wall / audio, 3) if audio else None,
+                    "backend": result.get("backend"), "seed": args.seed, "steps": args.num_steps,
+                }, ensure_ascii=False), flush=True)
+            else:
+                console_ui.line_done(index + 1, len(texts), text, audio, wall)
+            if args.play:
+                console_ui.play_wav(out_wav, wait=True)
+        if not as_json:
+            console_ui.run_summary(len(texts), total_audio, total_wall,
+                                   Path(args.out).parent if args.out is not None else args.out_dir)
+        return EXIT_OK
+    finally:
+        tts.close()
 
 
 def _run_serve(args: argparse.Namespace, tts: IrodoriTTS) -> int:
@@ -1174,7 +1317,9 @@ def _run_serve(args: argparse.Namespace, tts: IrodoriTTS) -> int:
             self.wfile.write(body)
 
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
-    print(f"serving on http://127.0.0.1:{args.port}  backend={tts.backend.name}")
+    console_ui.banner("Irodori TTS server",
+                      [("url", f"http://127.0.0.1:{args.port}"), ("backend", tts.backend.name)],
+                      f"serving on http://127.0.0.1:{args.port}  backend={tts.backend.name}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -1186,13 +1331,17 @@ def _run_serve(args: argparse.Namespace, tts: IrodoriTTS) -> int:
 
 def main(argv: Optional[list[str]] = None) -> int:
     args = _build_argparser().parse_args(argv)
-    tts = _build_tts(args)
-    try:
-        if args.mode == "serve":
+    # --json のとき、または端末に直接出していないときは、結果を 1 行 1 件の JSON で出す
+    if args.json:
+        console_ui.force_plain()
+    as_json = args.json or not console_ui.fancy()
+    if args.mode == "serve":
+        tts = _build_tts(args)
+        try:
             return _run_serve(args, tts)
-        return _run_cli(args)
-    finally:
-        tts.close()
+        finally:
+            tts.close()
+    return _run_cli(args, as_json)
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ from pathlib import Path
 from http.server import ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
+import console_ui
 from voicevox_engine import (Handler, VoicevoxAdapter, ROOT, ENGINE_UUID_NAMESPACE,
                               TINY_PNG, SESSION_TOKEN, MAX_BODY_BYTES, MAX_TEXT_CHARS,
                               DEFAULT_SPEAKER_NAME, _speaker_resource_index,
@@ -501,7 +502,7 @@ class EditorAdapter:
             current = self.progress["percent"]
             self._phase_marks.append((matched, stamped))
         percent = next((value for phase, value in phase_percent.items() if phase in message), current)
-        print(f"[irodori] {time.strftime('%H:%M:%S')} stage: {message}", flush=True)
+        console_ui.stage(message)
         self._set_progress(message, percent)
 
     def _report_synthesis(self, speaker_name, query, wav, started):
@@ -544,7 +545,11 @@ class EditorAdapter:
         line = "synth done: " + " ".join(parts)
         if phases:
             line += " | phases: " + " ".join(phases)
-        print(f"[irodori] {line}", flush=True)
+        console_ui.synth_done(
+            f"[irodori] {line}", speaker=speaker_label, total=elapsed,
+            audio=audio_seconds or None, rtf=(elapsed / audio_seconds if audio_seconds else None),
+            chars=len(text), steps=query.get("irodori_steps"), backend=backend, model=model,
+            seed=query.get("irodori_seed"), phases=phases)
         with self.progress_lock:
             self.logs.append(line)
 

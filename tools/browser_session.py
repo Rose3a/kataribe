@@ -46,6 +46,32 @@ if os.name == "nt":
 
 
 
+def _load_console_ui():
+    """見やすい表示（wrapper/console_ui.py）。rich が無い・端末でないときは None（従来の 1 行表示）。"""
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "irodori-tts" / "wrapper"))
+        import console_ui
+    except Exception:  # noqa: BLE001
+        return None
+    return console_ui if console_ui.fancy() else None
+
+
+_CONSOLE_UI = _load_console_ui()
+
+
+def _show_log_line(label: str, line: str) -> None:
+    """ログ 1 行をコンソールへ。端末なら色分け・整形し、そうでなければ従来どおり。"""
+    if _CONSOLE_UI is not None:
+        try:
+            markup = _CONSOLE_UI.log_line_markup(label, line)
+            if markup:  # 空は「細かすぎるので出さない」行（ログファイルには残る）
+                _CONSOLE_UI.print_markup(markup)
+            return
+        except Exception:  # noqa: BLE001 - 整形に失敗しても素の行は必ず出す
+            pass
+    print(f"[{label}] {line.rstrip()}", flush=True)
+
+
 class LogStreamer(threading.Thread):
     """デバッグ用: ログファイルの追記をコンソールへ流す(tail -f 相当)。"""
 
@@ -74,7 +100,7 @@ class LogStreamer(threading.Thread):
                         handle.seek(self._position)
                         for line in handle:
                             if not any(pattern in line for pattern in self.skip_patterns):
-                                print(f"[{self.label}] {line.rstrip()}", flush=True)
+                                _show_log_line(self.label, line)
                         self._position = handle.tell()
             except FileNotFoundError:
                 pass
@@ -319,7 +345,11 @@ class BrowserSession:
         self.browser = self._start_batch(self.box / "bat" / "serve_browser.bat")
         self.wait_ready()
         if DEBUG:
-            print("[session] engine and browser UI are ready", flush=True)
+            if _CONSOLE_UI is not None:
+                _CONSOLE_UI.print_markup(f"[bold #8fd9b6]✔ 起動しました[/]  [#7f948a]エンジン[/] :{ENGINE_PORT}"
+                                         f"  [#7f948a]UI[/] [underline #8ecbff]{BROWSER_URL}[/]")
+            else:
+                print("[session] engine and browser UI are ready", flush=True)
         webbrowser.open(BROWSER_URL)
         while self.launcher.exists():
             if self.engine.poll() is not None or self.browser.poll() is not None:

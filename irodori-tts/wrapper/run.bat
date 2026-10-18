@@ -55,7 +55,7 @@ if not exist "%PYEXE%" (
 )
 
 if "%~1"=="" (
-    "%PYEXE%" "%ROOT%\wrapper\interactive.py"
+    "%PYEXE%" "%ROOT%\wrapper\tts_cli.py" --help
     set "RC=%ERRORLEVEL%"
     if not "%RC%"=="0" echo [exit] %RC%
     exit /b %RC%

@@ -49,6 +49,7 @@ from synthesis_queue import ClientGone, QueueFull, SynthesisQueue, connection_cl
 from token_split import (DEFAULT_TOKEN_SPLIT_THRESHOLD, TOKEN_SPLITS, active_threshold,
                          describe_tokens, threshold_value, token_split_applies)
 from text_cleanup import clean_pasted_text
+import console_ui  # noqa: E402
 from context_latents import ContextLatentStore, context_latent, decode_data_url, pcm_digest  # noqa: E402
 from third_party_licenses import dependency_licenses
 from speaker_catalog import blink_thumbnail_for, credit_for, display_name_for, policy_for, mouth_open_thumbnail_for, mouth_parts_for, portrait_for, speaker_catalog, _fallback_icon  # noqa: E402
@@ -586,7 +587,7 @@ def _stderr_progress(message: str, percent: int | None = None) -> None:
     どのサンプラーとステップ数で動いたかを後から確認できる。
     """
     suffix = "" if percent is None else f" ({percent}%)"
-    print(f"[voicevox] {message}{suffix}", file=sys.stderr, flush=True)
+    console_ui.notice("voicevox", f"{message}{suffix}", stderr=True)
 
 
 def _unique_speakers(tts: IrodoriTTS) -> list[str]:
@@ -758,13 +759,12 @@ class VoicevoxAdapter:
         if not value:
             return None, False
         if not self.supports_prefix:
-            print("[voicevox] irodori_context_audio is ignored (model/backend has no prefix support)",
-                  file=sys.stderr, flush=True)
+            console_ui.notice("voicevox", "irodori_context_audio is ignored (model/backend has no prefix support)",
+                              stderr=True, style="yellow")
             return None, False
         raw = decode_data_url(value, "irodori context audio")
         found = context_latent(self._context_store(), raw, self.tts.backend.runtime,
-                               log=lambda message: print(f"[voicevox] {message}", file=sys.stderr,
-                                                         flush=True))
+                               log=lambda message: console_ui.notice("voicevox", message, stderr=True))
         return found if found is not None else (None, False)
 
     def remember_stream_alias(self, wav: bytes, sent_digest: str) -> None:
@@ -923,7 +923,11 @@ class Handler(BaseHTTPRequestHandler):
     adapter: VoicevoxAdapter
 
     def log_message(self, fmt, *args):
-        sys.stderr.write("[voicevox] " + (fmt % args) + "\n")
+        message = fmt % args
+        if message.startswith(("request rejected", "request failed", "stream failed")):
+            console_ui.notice("voicevox", message, stderr=True, style="red")
+        else:
+            console_ui.http_log(message)
 
     def _send(self, status: int, body: bytes, content_type: str = "application/json; charset=utf-8",
               cache_control: str | None = None, retry_after: int | None = None):
@@ -1425,12 +1429,16 @@ def main(argv: list[str] | None = None) -> int:
                               progress_callback=_stderr_progress)
     Handler.adapter = adapter
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
-    print(
+    console_ui.banner(
+        "Irodori VOICEVOX engine",
+        [("url", f"http://127.0.0.1:{args.port}"), ("backend", args.backend),
+         ("checkpoint", str(adapter.checkpoint or "(unset)")),
+         ("flow", f"{adapter.flow_parameterization} ({adapter.flow_parameterization_source})"),
+         ("default steps", str(adapter.default_steps))],
         f"Irodori VOICEVOX engine: http://127.0.0.1:{args.port} backend={args.backend} "
         f"checkpoint={adapter.checkpoint or '(unset)'} "
         f"flow={adapter.flow_parameterization}({adapter.flow_parameterization_source}) "
         f"default_steps={adapter.default_steps}",
-        flush=True,
     )
     try:
         server.serve_forever()
