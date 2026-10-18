@@ -59,6 +59,37 @@ ENGINE_VERSION = "0.1.1"
 ENGINE_UUID_NAMESPACE = uuid.UUID("1d9f9d29-5a2a-4a4d-81e9-bb5f78a89d4b")
 DEFAULT_SPEAKER_NAME = "tsukuyomi"
 MAX_BODY_BYTES = 16 * 1024 * 1024
+# /connect_waves は全セリフの WAV を base64 で受けるので、長い作品でも通るよう大きくとる。
+MAX_CONNECT_BODY_BYTES = 1024 * 1024 * 1024
+
+
+def _connect_waves(waves) -> bytes:
+    """base64 の WAV を並べた配列を、1本の 16bit WAV につなげる。"""
+    import io
+    import numpy as np
+    import soundfile as sf
+
+    if not isinstance(waves, list) or not waves:
+        raise ValueError("WAV の配列が必要です")
+    rate = None
+    channels = 1
+    parts = []
+    for item in waves:
+        if not isinstance(item, str):
+            raise ValueError("WAV は base64 の文字列で指定してください")
+        try:
+            raw = base64.b64decode(item, validate=True)
+            data, file_rate = sf.read(io.BytesIO(raw), dtype="float32", always_2d=True)
+        except (ValueError, binascii.Error, RuntimeError) as exc:
+            raise ValueError(f"WAV を読めません: {exc}") from exc
+        if rate is None:
+            rate, channels = file_rate, data.shape[1]
+        elif file_rate != rate or data.shape[1] != channels:
+            raise ValueError("サンプリングレートかチャンネル数が揃っていません")
+        parts.append(data)
+    out = io.BytesIO()
+    sf.write(out, np.concatenate(parts), rate, format="WAV", subtype="PCM_16")
+    return out.getvalue()
 # 30秒前後の日本語音声（目安180〜240文字）を収めつつ、
 # DirectMLワーカーのメモリ使用量が急増する長文を防ぐ。
 MAX_TEXT_CHARS = 256
@@ -987,7 +1018,7 @@ class Handler(BaseHTTPRequestHandler):
         self._send(status, json.dumps(value, ensure_ascii=False).encode("utf-8"),
                    retry_after=retry_after)
 
-    def _body_json(self) -> dict:
+    def _body_json(self, max_bytes: int = MAX_BODY_BYTES, allow_list: bool = False):
         raw_length = self.headers.get("Content-Length")
         try:
             length = int(raw_length) if raw_length is not None else 0
@@ -995,10 +1026,11 @@ class Handler(BaseHTTPRequestHandler):
             raise RequestBodyError(400, "Content-Length must be an integer") from exc
         if length <= 0:
             raise RequestBodyError(400, "request body is required")
-        if length > MAX_BODY_BYTES:
-            raise RequestBodyError(413, f"request body exceeds {MAX_BODY_BYTES} bytes")
+        if length > max_bytes:
+            raise RequestBodyError(413, f"request body exceeds {max_bytes} bytes")
         previous_timeout = self.connection.gettimeout()
-        self.connection.settimeout(10.0)
+        # 大きな本文（音声の連結）は10秒では読み切れないことがある。
+        self.connection.settimeout(10.0 if max_bytes <= MAX_BODY_BYTES else 120.0)
         try:
             payload = self.rfile.read(length)
         except TimeoutError as exc:
@@ -1011,7 +1043,7 @@ class Handler(BaseHTTPRequestHandler):
             value = json.loads(payload.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError) as exc:
             raise RequestBodyError(400, "request body must be valid JSON") from exc
-        if not isinstance(value, dict):
+        if not isinstance(value, (dict, list) if allow_list else dict):
             raise RequestBodyError(400, "request body must be a JSON object")
         return value
 
@@ -1286,6 +1318,11 @@ class Handler(BaseHTTPRequestHandler):
                         data = self.adapter.synthesize(query, speaker)
                 if ok:
                     self._send(200, data, "audio/wav")
+                return
+            if parsed.path == "/connect_waves":
+                # VOICEVOX 互換: base64 の WAV の配列を、1本の WAV につなげて返す。
+                waves = self._body_json(MAX_CONNECT_BODY_BYTES, allow_list=True)
+                self._send(200, _connect_waves(waves), "audio/wav")
                 return
             if parsed.path == "/irodori/synthesis_stream":
                 params = parse_qs(parsed.query)
