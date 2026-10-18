@@ -110,6 +110,27 @@ class PrefixToCaptionTest(unittest.TestCase):
             self.call(wrapper)
 
 
+class DropStepInputsTest(unittest.TestCase):
+    """合成が終わったら、Adapter と _PrefixToCaption が持つ plan の入力（文脈 K/V）を捨てる。
+
+    残すと長文・話者ありで 0.4〜0.5GB が待機中も GPU に残り、その塊ごと VRAM を返せなかった。
+    """
+
+    def test_clears_the_adapter_chain(self):
+        inner = types.SimpleNamespace(prepared={("cache", 100): ("kv",)})
+        outer = tts_cli._PrefixToCaption(inner, fake_model(), 512)
+        outer._merged = ("cache", (1, 4), ["merged"], "mask", (1, 512))
+        backend = object.__new__(tts_cli.TrtBackend)
+        backend.adapter = outer
+        backend._drop_step_inputs()
+        self.assertEqual(inner.prepared, {})
+        self.assertIsNone(outer._merged)
+        # 包んでいない Adapter だけでも動く
+        backend.adapter = types.SimpleNamespace(prepared={1: 2})
+        backend._drop_step_inputs()
+        self.assertEqual(backend.adapter.prepared, {})
+
+
 class SupportsPrefixTest(unittest.TestCase):
     def tts(self, backend):
         tts = tts_cli.IrodoriTTS.__new__(tts_cli.IrodoriTTS)

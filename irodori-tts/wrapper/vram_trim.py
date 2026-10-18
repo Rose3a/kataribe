@@ -38,9 +38,21 @@ def _is_plain(tensor):
     return type(tensor.data) is torch.Tensor
 
 
-def has_quantized_weights(model):
-    """torchao の量子化テンソル（INT4 など）を持つモデルか。"""
-    return any(not _is_plain(p) for p in model.parameters())
+def has_quantized_weights_outside_plan(model):
+    """TensorRT の plan だけが使う DiT の Linear 以外に、torchao の量子化テンソルがあるか。
+
+    W8A8 の Blockwise Small は DiT の Linear だけが INT8 で、PyTorch 側は素の BF16 のまま
+    （CUDA Graph を使っても VRAM は増えない）。v4-Large INT4 はテキストエンコーダなども量子化されている。
+    """
+    for block in model.blocks:
+        plan_only = {id(p) for name, child in block.named_children()
+                     for sub, mod in ([(n, c) for n, c in child.named_children() if n not in KV_PROJECTION]
+                                      if name == "attention" else [("", child)])
+                     for p in mod.parameters()}
+        if any(not _is_plain(p) and id(p) not in plan_only for p in block.parameters()):
+            return True
+    blocks = {id(p) for p in model.blocks.parameters()}
+    return any(not _is_plain(p) for p in model.parameters() if id(p) not in blocks)
 
 
 def _param_bytes(param):

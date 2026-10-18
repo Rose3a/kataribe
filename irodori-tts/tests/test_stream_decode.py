@@ -49,6 +49,24 @@ class StreamingDecodeTests(unittest.TestCase):
     def test_without_sink_is_a_pass_through(self):
         self.assertTrue(torch.equal(self.wrapper(self.latent), fake_decode(self.latent)))
 
+    def test_chunked_decode_without_sink(self):
+        """chunk_frames を決めると、ストリーミングでなくても窓に分け、結果は一度に復号したものと同じ。"""
+        calls = []
+
+        def counting(latent):
+            calls.append(latent.shape[1])
+            return fake_decode(latent)
+
+        wrapper = StreamingDecode(counting, HOP, 48000)
+        wrapper.chunk_frames = 50
+        self.assertTrue(torch.allclose(wrapper(self.latent), fake_decode(self.latent)))
+        # 200 フレームを 50 ずつ、前後 MARGIN の余白つき
+        self.assertEqual(calls, [50 + MARGIN, 50 + 2 * MARGIN, 50 + 2 * MARGIN, 50 + MARGIN])
+        calls.clear()
+        short = self.latent[:, :50 + 2 * MARGIN]
+        self.assertTrue(torch.equal(wrapper(short), fake_decode(short)))
+        self.assertEqual(calls, [50 + 2 * MARGIN])  # 窓1つ分なら分けない
+
     def test_windowed_result_equals_one_shot(self):
         self.assertLessEqual(RECEPTIVE, MARGIN)
         sent = []

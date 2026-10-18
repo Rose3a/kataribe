@@ -23,6 +23,7 @@ KNOWN_REPOS = {
     "Aratako/Irodori-TTS-v4.1-Small-MF": "Irodori-TTS v4.1 Small MF（MeanFlow）",
     "j-llm/Irodori-TTS-v4.1-Small-Yomi-Tech-tuned": "Irodori-TTS v4.1 Small Yomi Tech",
     "phasefield-audio/Irodori-TTS-v4.1-Anime": "Irodori-TTS v4.1 Anime",
+    "rose3/Irodori-TTS-v4.1-Small-Blockwise": "Irodori-TTS v4.1 Small Blockwise（bf16 / W8A8）",
     "Aratako/Irodori-TTS-v4-Large": "Irodori-TTS v4 Large（bf16）",
     "Aratako/Irodori-TTS-v4-Large-Quantized": "Irodori-TTS v4 Large 量子化版",
     "Aratako/Irodori-TTS-500M-v3": "Irodori-TTS 500M v3（旧版）",

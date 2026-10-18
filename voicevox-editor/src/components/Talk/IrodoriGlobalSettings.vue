@@ -27,9 +27,9 @@
         hide-selected
         new-value-mode="add-unique"
         hint="プリセットから選択、または .safetensors の絶対パスを入力"
-        @new-value="setCustomModel"
         :disable="locked"
         class="q-mb-sm"
+        @new-value="setCustomModel"
       >
         <template #option="scope">
           <QItemLabel
@@ -131,6 +131,23 @@
       <div class="text-caption q-mb-sm">
         直前のセリフが同じ話者で生成済みなら、その音声の最後（最大10秒）を聞かせてから作るので、セリフの間や調子が自然につながります。連続再生や書き出しのように上から順に作ると、全体が続きになります。直前のセリフを作り直すと、続くセリフも作り直しになります（トグルを切り替えるとすぐ保存されます）。{{
           blockwiseNote
+        }}
+      </div>
+      <QToggle
+        v-model="lowVram"
+        dense
+        label="省VRAM（NVIDIA のみ・少し遅くなる）"
+        :disable="locked"
+      />
+      <div class="text-caption q-mb-sm">
+        ゲームなどと一緒に使うとき向けです。長い音声は 6
+        秒ずつに分けて書き出し、参照音声用の部品は使うときだけ GPU
+        に載せ、使っていない VRAM をすぐ返します。v4.1 Small 系・RTX 3060
+        では、生成を続けたときの VRAM が TensorRT で 4.4GB → 約2GB、CUDA で
+        5.2GB → 約2GB になり、生成は1行あたり 0.1 秒弱遅くなります。TensorRT
+        では CUDA Graph
+        も使いません。音声は変わらないか、聞き分けられない程度の差です。「設定を適用」でエンジンを読み込み直します。{{
+          lowVramNote
         }}
       </div>
       <QInput
@@ -296,7 +313,21 @@ const hasUnappliedChanges = computed(
       (settings.value.token_split_threshold ??
         IRODORI_DEFAULT_TOKEN_SPLIT_THRESHOLD) !==
         (appliedSettings.value.token_split_threshold ??
-          IRODORI_DEFAULT_TOKEN_SPLIT_THRESHOLD)),
+          IRODORI_DEFAULT_TOKEN_SPLIT_THRESHOLD) ||
+      (settings.value.low_vram ?? false) !==
+        (appliedSettings.value.low_vram ?? false)),
+);
+// 省VRAM。TensorRT のエンジンを作るときに効くので、「設定を適用」で読み込み直す。
+const lowVram = computed<boolean>({
+  get: () => settings.value?.low_vram === true,
+  set: (value) => {
+    if (settings.value) settings.value.low_vram = value;
+  },
+});
+const lowVramNote = computed(() =>
+  lowVram.value && !["trt", "cuda"].includes(settings.value?.backend ?? "")
+    ? "いまのエンジンは NVIDIA（TensorRT・CUDA）ではないので効きません。"
+    : "",
 );
 watch(defaultSteps, (value) => {
   irodoriDefaultSteps.value = value;
@@ -474,7 +505,28 @@ type ModelOption = {
 };
 const modelOptions = ref<ModelOption[]>([
   {
-    label: "Irodori-TTS v4.1 Small（既定・8ステップ）",
+    label:
+      "Irodori-TTS v4.1 Small Blockwise bf16（既定・前のセリフから続けて生成）",
+    value: "rose3/Irodori-TTS-v4.1-Small-Blockwise/bf16",
+    group: "Small 系（軽量・おすすめ）",
+    description:
+      "RFモデル・前のセリフの続きとして生成 / TensorRT・CUDA・CPU / MIT",
+    license: "MIT",
+    note: "約1.7GBをダウンロードします。v4.1 Small に、前のセリフの音声の最後（最大10秒）を聞かせてから次のセリフを作る仕組み（blockwise）を学習させた試作モデルです。下の「前のセリフから続けて生成」をオンにすると、同じ話者のセリフの間や調子が自然につながります。オフなら v4.1 Small とほぼ同じ1行生成です。NVIDIA（TensorRT・CUDA）か CPU で使えます（DirectML は不可）。TensorRT では初回だけ plan を作ります（数分）。話者ファイルは v4.1 Small 用がそのまま使えます。",
+    unsupportedBackends: ["radeon"],
+  },
+  {
+    label: "Irodori-TTS v4.1 Small Blockwise W8A8（TensorRT で速い）",
+    value: "rose3/Irodori-TTS-v4.1-Small-Blockwise/w8a8",
+    group: "Small 系（軽量・おすすめ）",
+    description:
+      "Blockwise の DiT を INT8 量子化（重み・活性とも）/ TensorRT 向け / MIT",
+    license: "MIT",
+    note: "約1.4GBをダウンロードします。既定の Blockwise bf16 の DiT（音声を作る本体）を、重みも計算途中の値も INT8 にしたものです。TensorRT では 1 行が短文で約5%、長文で約2割速くなり、plan も約3分の2の大きさになります。読みの正確さはほぼ同じですが、音はごくわずかに変わります。TensorRT 向けです。CUDA・CPU でも動きますが、Windows では INT8 の計算が遅く、CUDA では bf16 版の約5倍の時間がかかります。TensorRT では初回だけ INT8 用の plan を作ります（約2〜3分）。",
+    unsupportedBackends: ["radeon"],
+  },
+  {
+    label: "Irodori-TTS v4.1 Small（8ステップ）",
     value: "Aratako/Irodori-TTS-v4.1-Small",
     group: "Small 系（軽量・おすすめ）",
     description: "RFモデル / MIT",
@@ -501,15 +553,6 @@ const modelOptions = ref<ModelOption[]>([
     group: "Small 系（軽量・おすすめ）",
     description: "Anime fine-tune / MIT",
     license: "MIT",
-  },
-  {
-    label: "Irodori-TTS v4.1 Small Blockwise（前のセリフから続けて生成）",
-    value: "rose3/Irodori-TTS-v4.1-Small-Blockwise",
-    group: "Small 系（軽量・おすすめ）",
-    description: "RFモデル・前のセリフの続きとして生成 / TensorRT・CUDA・CPU / MIT",
-    license: "MIT",
-    note: "約3.4GBをダウンロードします。v4.1 Small に、前のセリフの音声の最後（最大10秒）を聞かせてから次のセリフを作る仕組み（blockwise）を学習させた試作モデルです。下の「前のセリフから続けて生成」をオンにすると、同じ話者のセリフの間や調子が自然につながります。オフなら v4.1 Small とほぼ同じ1行生成です。NVIDIA（TensorRT・CUDA）か CPU で使えます（DirectML は不可）。TensorRT では初回だけ plan を作ります（数分）。話者ファイルは v4.1 Small 用がそのまま使えます。",
-    unsupportedBackends: ["radeon"],
   },
   {
     label: "Irodori-TTS v4 Large INT4（TensorRT 対応・省VRAM）",

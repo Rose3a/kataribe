@@ -15,6 +15,7 @@ sys.path.insert(0, str(BOX / 'runtime' / 'trt-lab' / 'repo'))
 # variables to test another revision without editing this file.
 MODEL_REPO = 'Aratako/Irodori-TTS-v4.1-Small'
 MODEL_REVISION = os.environ.get('IRODORI_MODEL_REVISION', '2b28324dc263ed5e6638b3cf3dd94c82ead07b4b')
+EDITOR_DEFAULT_MODEL = 'rose3/Irodori-TTS-v4.1-Small-Blockwise/bf16'
 CODEC_REPO = 'Aratako/Semantic-DACVAE-Japanese-32dim'
 CODEC_REVISION = os.environ.get('IRODORI_CODEC_REVISION', '47376ee24834d7a05a48ebabfe3cde29b3c5e214')
 
@@ -92,7 +93,11 @@ def main():
     for repo in {config['text_tokenizer_repo'], config.get('caption_tokenizer_repo') or config['text_tokenizer_repo']}:
         PretrainedTextTokenizer.from_pretrained(repo, revision=config.get('text_encoder_revision'))
     settings = BOX / 'irodori-tts' / 'editor-settings.json'
-    value = dict(backend=args.backend, model='model.safetensors', steps=8, seed=1001, seconds=None)
+    # 新しく入れたときのエディタの既定モデル（初回の「設定を適用」で取得する）。models/model.safetensors の
+    # v4.1 Small は CLI と TensorRT のセットアップが使う。Blockwise は Radeon（DirectML）で使えないので、
+    # Radeon では v4.1 Small のまま。設定が既にあれば、そのモデルを使い続ける。
+    default_model = 'model.safetensors' if args.backend == 'radeon' else EDITOR_DEFAULT_MODEL
+    value = dict(backend=args.backend, model=default_model, steps=8, seed=1001, seconds=None)
     if settings.exists():
         try: value.update(json.loads(settings.read_text(encoding='utf-8-sig')))
         except (ValueError, OSError): pass

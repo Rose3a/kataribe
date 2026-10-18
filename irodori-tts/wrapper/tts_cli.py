@@ -455,10 +455,43 @@ class TorchBackend:
         self.stream_decoder = StreamingDecode.install(self.runtime)
         # TrtBackend と同じく常駐の1スレッドで合成する（cuDNN などはスレッドごとに初回コストがある）。
         self._worker = _ResidentWorker()
+        self.busy = threading.Lock()
+        self.idle_release = None
+        if self.device == "cuda":
+            self._trim_vram()
+
+    def _trim_vram(self):
+        """CUDA の VRAM を抑える。
+
+        いつも: 使っていない VRAM を、待機して数秒たったら返す（返さないと長文や参照音声の後の
+        5GB 前後を持ったままになる。v4.1 Small・RTX 3060）。
+        省VRAM（IRODORI_LOW_VRAM=1）: 参照音声のときしか使わない話者エンコーダと codec の
+        エンコーダを CPU に置き（使うときだけ GPU へ、往復約0.1秒）、長い音声は 6 秒の窓で
+        デコードし（長文のピーク −0.6〜0.9GB。PyTorch の codec では一度にデコードした結果と
+        SNR 約47dB で、ビット一致はしない）、待機1秒で VRAM を返す。
+        """
+        import vram_trim
+        low_vram = os.environ.get("IRODORI_LOW_VRAM") == "1"
+        if low_vram:
+            model = self.runtime.model
+            moved = 0
+            if getattr(model, "speaker_encoder", None) is not None:
+                moved += vram_trim.park_on_demand(model.speaker_encoder, "cuda")
+            moved += vram_trim.park_on_demand(self.runtime.codec.model.encoder, "cuda")
+            self.stream_decoder.chunk_frames = int(os.environ.get("IRODORI_CODEC_CHUNK_FRAMES", "150")) or None
+            torch.cuda.empty_cache()
+            print(f"[torch] low VRAM: moved {moved / 2**20:.0f} MB of reference-only weights to CPU RAM",
+                  file=sys.stderr, flush=True)
+        self.idle_release = vram_trim.IdleRelease(self.busy, delay=1.0 if low_vram else 5.0)
 
     def synthesize(self, request, speaker_tensor: torch.Tensor, out_wav, log_fn=None) -> dict:
         # IrodoriTTS.synthesize has already put the speaker tensor on the request.
-        result = self._worker.run(lambda: self.runtime.synthesize(request, log_fn=log_fn))
+        try:
+            with self.busy:
+                result = self._worker.run(lambda: self.runtime.synthesize(request, log_fn=log_fn))
+        finally:
+            if self.idle_release is not None:
+                self.idle_release.touch()
         write_wav(out_wav, result.audio, result.sample_rate)
         return {"backend": self.name, "wall_s": result.total_to_decode,
                 "audio_s": result.audio.shape[-1] / result.sample_rate,
@@ -546,14 +579,18 @@ class TrtBackend:
         self.trt_version = trt_version
         # Both accelerations below keep or improve numerics and can be turned
         # off for comparison: IRODORI_CUDA_GRAPHS=0, IRODORI_TRT_CODEC=0.
-        # CUDA graphs are off by default for torchao-quantized models (v4-Large INT4): the DiT
-        # in the plan dominates there, so graphs gain nothing (1.34 s vs 1.39 s for 8.5 s of
-        # audio) while their private memory pools add 1.5-4.5 GB of VRAM.  Set
-        # IRODORI_CUDA_GRAPHS=1 to force them on.
+        # CUDA graphs are off by default when torchao-quantized weights run in PyTorch (v4-Large
+        # INT4): the DiT in the plan dominates there, so graphs gain nothing (1.34 s vs 1.39 s for
+        # 8.5 s of audio) while their private memory pools add 1.5-4.5 GB of VRAM.  Models whose
+        # only quantized weights are the plan's DiT Linears (Blockwise Small W8A8) keep them on:
+        # without graphs each line was 25-55 ms slower.  Set IRODORI_CUDA_GRAPHS=0/1 to force.
         import vram_trim
+        # 省VRAM（エディタの設定、IRODORI_LOW_VRAM=1）: CUDA Graph を切り（約0.5GB、1行 25〜55ms 遅い）、
+        # codec を窓でデコードし（長文で −0.4〜0.6GB、+約25ms）、待機中の VRAM を早めに返す。
+        low_vram = os.environ.get("IRODORI_LOW_VRAM") == "1"
         graphs = os.environ.get("IRODORI_CUDA_GRAPHS")
         if graphs is None:
-            graphs = "0" if vram_trim.has_quantized_weights(self.runtime.model) else "1"
+            graphs = "0" if low_vram or vram_trim.has_quantized_weights_outside_plan(self.runtime.model) else "1"
         self.graphs = {}
         if graphs != "0":
             import cuda_graphs
@@ -570,6 +607,12 @@ class TrtBackend:
                       file=sys.stderr, flush=True)
         # Windowed decoding for streaming playback; a pass-through until a sink is set.
         self.stream_decoder = StreamingDecode.install(self.runtime)
+        if self.codec is not None:
+            # 省VRAM では長い音声も 6 秒の窓でデコードする（TensorRT の codec では一度にデコードした
+            # 結果とビット単位で同じ）。codec は作業領域を長さぴったりで確保するので、長文ほど VRAM を
+            # 食う（18秒で約670MB）。窓にすると長文で +約25ms。
+            chunk = os.environ.get("IRODORI_CODEC_CHUNK_FRAMES", "150" if low_vram else "0")
+            self.stream_decoder.chunk_frames = int(chunk) or None
         # Weights only the plans use go to CPU RAM, and idle cache goes back
         # to the driver (IRODORI_TRT_LOW_VRAM=0 keeps everything resident).
         self.busy = threading.Lock()
@@ -578,15 +621,35 @@ class TrtBackend:
         if os.environ.get("IRODORI_TRT_LOW_VRAM", "1") != "0":
             import vram_trim
             moved = vram_trim.install(self)
-            self.idle_release = vram_trim.IdleRelease(self.busy)
+            self.idle_release = vram_trim.IdleRelease(self.busy, delay=1.0 if low_vram else 5.0)
             print(f"[trt] moved {moved / 2**20:.0f} MB of plan-duplicated weights to CPU RAM",
                   file=sys.stderr, flush=True)
 
     def _synthesize_on_stream(self, request, log_fn):
         with torch.cuda.stream(self.stream):
-            result = self.runtime.synthesize(request, log_fn=log_fn)
-            torch.cuda.synchronize()
+            try:
+                result = self.runtime.synthesize(request, log_fn=log_fn)
+                torch.cuda.synchronize()
+            finally:
+                self._drop_step_inputs()
         return result
+
+    def _drop_step_inputs(self):
+        """1回の合成の中だけで使い回す plan の入力（文脈 K/V など）を捨てる。
+
+        Adapter は直近2回分の context_kv_cache と、それを plan 用に並べた入力を持ち続け、
+        _PrefixToCaption も prefix をつないだ K/V を持つ。合わせて 0.4〜0.5GB（16 ステップ・長文・
+        話者あり）が合成後も残り、それが載った塊ごと IdleRelease の empty_cache で返せなくなっていた
+        （待機中の専用 VRAM 3.3GB のうち約 1.4GB）。次の合成は別の cache なので、捨てても速さは同じ。
+        """
+        adapter = self.adapter
+        while adapter is not None:
+            prepared = getattr(adapter, "prepared", None)
+            if prepared is not None and "prepared" in vars(adapter):
+                prepared.clear()
+            if "_merged" in vars(adapter):
+                adapter._merged = None
+            adapter = vars(adapter).get("adapter")
 
     def synthesize(self, request, speaker_tensor: torch.Tensor, out_wav, log_fn=None) -> dict:
         _cap_reference_seconds(request, self.runtime, getattr(self, "max_ref_seconds", None))

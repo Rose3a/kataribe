@@ -81,5 +81,54 @@ class QuantizedWeightTests(unittest.TestCase):
         self.assertIsNot(holder.first.data, holder.second.data)
 
 
+
+class _Attention(torch.nn.Module if torch is not None else object):
+    def __init__(self):
+        super().__init__()
+        self.wq = torch.nn.Linear(4, 4, bias=False)
+        self.wk_text = torch.nn.Linear(4, 4, bias=False)
+
+
+class _Block(torch.nn.Module if torch is not None else object):
+    def __init__(self):
+        super().__init__()
+        self.attention = _Attention()
+        self.mlp = torch.nn.Linear(4, 4, bias=False)
+
+
+class _Model(torch.nn.Module if torch is not None else object):
+    def __init__(self):
+        super().__init__()
+        self.blocks = torch.nn.ModuleList([_Block()])
+        self.text_encoder = torch.nn.Linear(4, 4, bias=False)
+
+
+class _Int8(torch.Tensor if torch is not None else object):
+    """素の Tensor ではないもの（torchao の Int8Tensor の代役）。"""
+
+
+@unittest.skipIf(torch is None, "torch is not installed in this interpreter")
+class QuantizedOutsidePlanTests(unittest.TestCase):
+    def quantize(self, linear):
+        linear.weight = torch.nn.Parameter(linear.weight.detach().as_subclass(_Int8), requires_grad=False)
+
+    def test_plan_only_linears_do_not_count(self):
+        model = _Model()
+        self.assertFalse(vram_trim.has_quantized_weights_outside_plan(model))
+        self.quantize(model.blocks[0].attention.wq)
+        self.quantize(model.blocks[0].mlp)
+        # W8A8 の Blockwise Small: plan だけが使う DiT の Linear が INT8 → CUDA Graph は使ってよい
+        self.assertFalse(vram_trim.has_quantized_weights_outside_plan(model))
+
+    def test_context_projection_and_encoders_count(self):
+        model = _Model()
+        self.quantize(model.blocks[0].attention.wk_text)  # PyTorch が K/V キャッシュに使う
+        self.assertTrue(vram_trim.has_quantized_weights_outside_plan(model))
+        model = _Model()
+        self.quantize(model.text_encoder)  # v4-Large INT4 のテキストエンコーダ
+        self.assertTrue(vram_trim.has_quantized_weights_outside_plan(model))
+
+
+
 if __name__ == "__main__":
     unittest.main()

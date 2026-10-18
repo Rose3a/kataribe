@@ -62,6 +62,10 @@ class StreamingDecode:
         self.inner, self.hop, self.sample_rate = inner, int(hop), int(sample_rate)
         self.sink = None        # callable(pcm16 bytes, sample_rate) or None
         self.sent_samples = 0   # samples already handed to the sink
+        # ストリーミングでないときも、これより長い latent はこの長さの窓に分けてデコードする
+        # （None なら一度に）。TensorRT の codec は作業領域を長さぴったりで毎回確保するので、
+        # 長文（18秒で約670MB）ほど VRAM を食い、長さが変わるたびに新しい塊が増えていた。
+        self.chunk_frames = None
 
     @classmethod
     def install(cls, runtime):
@@ -79,7 +83,12 @@ class StreamingDecode:
     def __call__(self, latent):
         sink = self.sink
         total = latent.shape[1]
-        if sink is None or latent.shape[0] != 1 or total <= FIRST_FRAMES + MARGIN:
+        if sink is None:
+            chunk = self.chunk_frames
+            if chunk is None or latent.shape[0] != 1 or total <= chunk + 2 * MARGIN:
+                return self.inner(latent)
+            return self._decode_windows(latent, windows(total, chunk, (chunk,)))
+        if latent.shape[0] != 1 or total <= FIRST_FRAMES + MARGIN:
             return self.inner(latent)
         hop, pieces = self.hop, []
         for start, end in windows(total):
@@ -91,4 +100,12 @@ class StreamingDecode:
                 data = to_pcm16(piece)
                 sink(data, self.sample_rate)
                 self.sent_samples += len(data) // 2
+        return torch.cat(pieces, dim=-1)
+
+    def _decode_windows(self, latent, spans):
+        total, hop, pieces = latent.shape[1], self.hop, []
+        for start, end in spans:
+            lo, hi = max(0, start - MARGIN), min(total, end + MARGIN)
+            audio = self.inner(latent[:, lo:hi])
+            pieces.append(audio[..., (start - lo) * hop:(start - lo) * hop + (end - start) * hop])
         return torch.cat(pieces, dim=-1)

@@ -94,10 +94,11 @@ DEFAULT_AUDIO_CACHE_MB = 25
 
 
 class EditorAdapter:
-    DEFAULT_SETTINGS = dict(backend="cpu", model="Aratako/Irodori-TTS-v4.1-Small", seed=4763674,
+    # 既定モデル: 前のセリフから続けて生成できる Blockwise の bf16 版（FP32 版と生成結果は同じで半分の大きさ）
+    DEFAULT_SETTINGS = dict(backend="cpu", model="rose3/Irodori-TTS-v4.1-Small-Blockwise/bf16", seed=4763674,
                             sway_coeff=-1.0, token_split_threshold=DEFAULT_TOKEN_SPLIT_THRESHOLD,
                             stream_playback=False, blockwise=False, default_steps=DEFAULT_STEPS_RF,
-                            audio_cache_mb=DEFAULT_AUDIO_CACHE_MB)
+                            audio_cache_mb=DEFAULT_AUDIO_CACHE_MB, low_vram=False)
 
     def __init__(self):
         self.backend_name = "editor"
@@ -128,10 +129,10 @@ class EditorAdapter:
         # モデルごとの flow_parameterization / 既定ステップ数の判定結果。
         self._model_info_cache = {}
         self.config_path = ROOT / "editor-settings.json"
-        self.settings = dict(backend="cpu", model="Aratako/Irodori-TTS-v4.1-Small", seed=4763674,
+        self.settings = dict(backend="cpu", model="rose3/Irodori-TTS-v4.1-Small-Blockwise/bf16", seed=4763674,
                              sway_coeff=-1.0, token_split_threshold=DEFAULT_TOKEN_SPLIT_THRESHOLD,
                             stream_playback=False, blockwise=False, default_steps=DEFAULT_STEPS_RF,
-                            audio_cache_mb=DEFAULT_AUDIO_CACHE_MB)
+                            audio_cache_mb=DEFAULT_AUDIO_CACHE_MB, low_vram=False)
         try:
             saved = json.loads(self.config_path.read_text(encoding="utf-8"))
             if isinstance(saved, dict):
@@ -270,8 +271,10 @@ class EditorAdapter:
         config = json.loads(metadata.get("config_json") or "{}")
         quantization = metadata.get("irodori_quantization_json")
         if quantization:
-            # 量子化の種類（int8_weight_only など）。TensorRT では使えない。
-            config["_quantization"] = json.loads(quantization).get("quantization_type") or "unknown"
+            # 量子化の種類（int8_weight_only など）。TensorRT で使えるのは INT4 と、活性スケール付きの W8A8 だけ。
+            payload = json.loads(quantization)
+            config["_quantization"] = payload.get("quantization_type") or "unknown"
+            config["_trt_activation_scales"] = bool(payload.get("trt_activation_amax"))
         return config
 
     @staticmethod
@@ -347,6 +350,7 @@ class EditorAdapter:
             metadataAvailable=bool(config),
             speakerDim=int(config["speaker_dim"]) if config.get("speaker_dim") else None,
             quantization=config.get("_quantization"),
+            trtActivationScales=bool(config.get("_trt_activation_scales")),
             textTokenizerRepo=config.get("text_tokenizer_repo"),
             # 前のセリフから続けて生成（blockwise）できるモデルか（Irodori-TTS-v4.1-Small-Blockwise など）
             blockwise=bool(config.get("use_latent_prefix")),
@@ -387,15 +391,19 @@ class EditorAdapter:
         self._validate_model_source(model)
         if value["backend"] == "trt":
             try:
-                quantization = self.model_info(model).get("quantization")
+                info = self.model_info(model)
             except Exception:  # noqa: BLE001 - 判定できなければ変換時のエラーに任せる
-                quantization = None
+                info = {}
+            quantization = info.get("quantization")
             # INT4（torchao int4-weight-only）は INT4 の DequantizeLinear に組み直して plan にする
-            # （trt_int4.py）。INT8・FP8 は変換先が無いので CUDA で使う。
-            if quantization and quantization != "int4_weight_only":
+            # （trt_int4.py）。W8A8 は活性スケールがメタデータにあるものだけ Q/DQ にできる（trt_int8.py）。
+            # それ以外の INT8・FP8 は変換先が無いので CUDA で使う。
+            trt_ready = quantization == "int4_weight_only" or (
+                quantization == "int8_dynamic_activation_int8_weight" and info.get("trtActivationScales"))
+            if quantization and not trt_ready:
                 raise ValueError(
-                    "TensorRT で使える量子化モデルは INT4（int4-weight-only）だけです。"
-                    "INT8 などは NVIDIA / CUDA を選んでください")
+                    "TensorRT で使える量子化モデルは INT4（int4-weight-only）と、TensorRT 用の活性スケール付きの"
+                    " W8A8 だけです。それ以外は NVIDIA / CUDA を選んでください")
         if value.get("token_split_threshold", DEFAULT_TOKEN_SPLIT_THRESHOLD) not in TOKEN_SPLIT_THRESHOLDS:
             raise ValueError("token_split_threshold は -10、-11、-12、-13、none のどれかを指定してください")
         steps = value.get("default_steps", DEFAULT_STEPS_RF)
@@ -405,6 +413,8 @@ class EditorAdapter:
             raise ValueError("stream_playback は true か false を指定してください")
         if not isinstance(value.get("blockwise", False), bool):
             raise ValueError("blockwise は true か false を指定してください")
+        if not isinstance(value.get("low_vram", False), bool):
+            raise ValueError("low_vram は true か false を指定してください")
         cache_mb = value.get("audio_cache_mb", DEFAULT_AUDIO_CACHE_MB)
         if isinstance(cache_mb, bool) or not isinstance(cache_mb, int) or not 0 <= cache_mb <= 1024:
             raise ValueError("audio_cache_mb は0〜1024の整数で指定してください")
@@ -717,7 +727,10 @@ class EditorAdapter:
             tmp.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
             tmp.replace(self.config_path)
             with self.state_lock:
-                changed_backend = any(value[k] != self.settings[k] for k in ("backend", "model"))
+                # 省VRAM は NVIDIA（TensorRT・CUDA）のエンジンを作るときに効く（CUDA Graph の有無など）ので、読み込み直す
+                changed_backend = (any(value[k] != self.settings[k] for k in ("backend", "model"))
+                                   or (value["backend"] in ("trt", "cuda")
+                                       and value.get("low_vram", False) != self.settings.get("low_vram", False)))
             with self.state_lock:
                 changed_model = value["model"] != self.settings["model"]
             if changed_backend:
@@ -758,6 +771,11 @@ class EditorAdapter:
             raise ValueError(
             "モデルは .safetensors のパスか Hugging Face の repo_id を指定してください")
         os.environ["IRODORI_CHECKPOINT"] = str(local_model)
+        # 省VRAM（TensorRT・CUDA。中身は tts_cli.TrtBackend / TorchBackend）
+        if self.settings.get("low_vram", False):
+            os.environ["IRODORI_LOW_VRAM"] = "1"
+        else:
+            os.environ.pop("IRODORI_LOW_VRAM", None)
         self._active_checkpoint = Path(local_model)
         # 判定結果をローカルパス付きで更新しておく（次回のポーリング用）。
         # メタデータの更新は付随処理なので、失敗しても読み込みは続ける。
@@ -768,8 +786,11 @@ class EditorAdapter:
         plan = self._plan_path()
         if self.settings['backend'] == 'trt':
             from trt_int4 import is_int4_checkpoint
+            from trt_int8 import is_w8a8_checkpoint
             if is_int4_checkpoint(local_model):
                 from trt_int4 import ensure_plan
+            elif is_w8a8_checkpoint(local_model):
+                from trt_int8 import ensure_plan
             else:
                 from trt_cache import ensure_plan
             plan = ensure_plan(local_model, self._set_progress, self._runtime_log)
