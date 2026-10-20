@@ -121,6 +121,48 @@
           <p v-if="referenceAudioName" class="settings-hint">
             音声参照を解除すると、話者の強度と追加話者を編集できます。
           </p>
+          <template
+            v-if="additionalSpeakersValue.length > 0 && !referenceAudioName"
+          >
+            <QSeparator spaced />
+            <div class="settings-label">この組み合わせを話者として保存</div>
+            <div class="row items-center no-wrap q-gutter-sm mix-save-row">
+              <QInput
+                v-model="mixSaveName"
+                outlined
+                dense
+                :maxlength="32"
+                placeholder="新しい話者の名前"
+                class="col"
+                aria-label="組み合わせた話者の名前"
+                @keydown.enter="saveLineMix"
+              />
+              <QBtn
+                color="primary"
+                unelevated
+                label="保存"
+                :loading="mixSaving"
+                :disable="locked || mixSaving || mixSaveName.trim() === ''"
+                @click="saveLineMix"
+              />
+            </div>
+            <QCheckbox
+              v-model="mixSwitchAfterSave"
+              dense
+              label="保存したら、このセリフの話者にする"
+            />
+            <p class="settings-hint">
+              基本の話者と追加話者を今の強度で足し合わせた声を保存します（組み合わせの値も一緒に保存）。保存した話者を強度
+              1.00・追加話者なしで使うと、同じ声になります。
+            </p>
+            <p
+              v-if="mixSaveStatus"
+              class="settings-hint"
+              :class="{ 'text-negative': mixSaveFailed }"
+            >
+              {{ mixSaveStatus }}
+            </p>
+          </template>
         </div>
       </QCard>
 
@@ -549,7 +591,11 @@ import { useStore } from "@/store";
 import CharacterButton from "@/components/CharacterButton.vue";
 import IrodoriVoiceDesign from "@/components/Talk/IrodoriVoiceDesign.vue";
 import { createEngineUrl } from "@/domain/url";
-import { fetchIrodoriStatusQuietly } from "@/helpers/irodoriEngine";
+import {
+  fetchIrodoriStatusQuietly,
+  irodoriRequest,
+  refreshIrodoriSpeakers,
+} from "@/helpers/irodoriEngine";
 import {
   clearAudioCache,
   handlePossiblyNotMorphableError,
@@ -577,6 +623,7 @@ import {
   IRODORI_DEFAULT_STEPS,
   irodoriBlockwise,
   irodoriBlockwiseFromStatus,
+  irodoriBlockwiseLookahead,
 } from "@/domain/irodori";
 import {
   previewSliderHelper,
@@ -645,6 +692,8 @@ watch(
     if (cancelled || status == undefined) return;
     // 設定画面を開かなくても、前のセリフから続けて生成する設定を反映する
     irodoriBlockwise.value = irodoriBlockwiseFromStatus(status);
+    irodoriBlockwiseLookahead.value =
+      status.settings.blockwise_lookahead === true;
     const modelInfo = status.modelInfo;
     if (modelInfo == undefined) return;
     irodoriDefaultSteps.value = modelInfo.defaultSteps;
@@ -1015,6 +1064,94 @@ function saveStrength(key: StrengthKey, input: number | null) {
     irodori: { ...irodori.value, [key]: normalized },
   });
 }
+// 「基本の話者＋追加話者」を足し合わせた埋め込みと組み合わせの値を、エンジンに話者として保存する。
+const mixSaveName = ref("");
+const mixSwitchAfterSave = ref(true);
+const mixSaving = ref(false);
+const mixSaveStatus = ref("");
+const mixSaveFailed = ref(false);
+watch(
+  () => props.activeAudioKey,
+  () => {
+    mixSaveStatus.value = "";
+  },
+);
+function engineEndpoint() {
+  const info = store.state.engineInfos[props.engineId];
+  if (!info) return undefined;
+  return createEngineUrl({
+    ...info,
+    port: store.state.altPortInfos[props.engineId] ?? info.defaultPort,
+  });
+}
+async function saveLineMix() {
+  const item = audioItem.value;
+  const endpoint = engineEndpoint();
+  const name = mixSaveName.value.trim();
+  if (!item || !endpoint || !name || mixSaving.value || locked.value) return;
+  mixSaving.value = true;
+  mixSaveFailed.value = false;
+  mixSaveStatus.value = "保存中…";
+  const audioKey = props.activeAudioKey;
+  try {
+    const response = await irodoriRequest(endpoint, "/irodori/line-mix/save", {
+      method: "POST",
+      body: {
+        name,
+        speakerStyleId: item.voice.styleId,
+        speakerStrength: irodori.value.speakerStrength,
+        additionalSpeakers: irodori.value.additionalSpeakers,
+      },
+      timeoutMs: 60000,
+    });
+    if (!response.ok) {
+      let detail = `通信エラー (${response.status})`;
+      try {
+        detail =
+          ((await response.json()) as { detail?: string }).detail ?? detail;
+      } catch {
+        // 本文が JSON でなければ状態コードだけ出す
+      }
+      throw new Error(detail);
+    }
+    const result = (await response.json()) as { speakerUuid?: string };
+    mixSaveName.value = "";
+    await refreshIrodoriSpeakers(endpoint);
+    await store.actions.LOAD_CHARACTER({ engineId: props.engineId });
+    const character = (store.state.characterInfos[props.engineId] ?? []).find(
+      (info) => info.metas.speakerUuid === result.speakerUuid,
+    );
+    const style = character?.metas.styles[0];
+    if (mixSwitchAfterSave.value && character && style) {
+      await store.actions.COMMAND_MULTI_CHANGE_VOICE({
+        audioKeys: [audioKey],
+        voice: {
+          engineId: props.engineId,
+          speakerId: character.metas.speakerUuid,
+          styleId: style.styleId,
+        },
+      });
+      // 足し合わせ済みなので、強度 1・追加話者なしにすると同じ声になる
+      const current = store.state.audioItems[audioKey]?.irodori;
+      await store.actions.COMMAND_SET_IRODORI_SETTINGS({
+        audioKey,
+        irodori: {
+          ...current,
+          speakerStrength: 1,
+          additionalSpeakers: [],
+          secondarySpeakerStyleId: null,
+        },
+      });
+    }
+    mixSaveStatus.value = `「${name}」を話者として保存しました`;
+  } catch (cause) {
+    mixSaveFailed.value = true;
+    mixSaveStatus.value =
+      cause instanceof Error ? cause.message : "保存に失敗しました";
+  } finally {
+    mixSaving.value = false;
+  }
+}
 function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -1379,6 +1516,9 @@ const speedTargetCount = computed(() => selectedAudioKeys.value.length);
 }
 .settings-hint {
   margin: 0;
+}
+.mix-save-row {
+  margin-left: 0;
 }
 .strength-value {
   text-align: right;

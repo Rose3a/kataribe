@@ -26,6 +26,7 @@ import {
   IRODORI_DEFAULT_ENGLISH_SPACING,
   IRODORI_DEFAULT_AUDIO_CACHE_MB,
   irodoriBlockwise,
+  irodoriBlockwiseLookahead,
   irodoriDefaultSteps,
 } from "@/domain/irodori";
 import type { AudioKey } from "@/type/preload";
@@ -127,6 +128,35 @@ export function previousLineContext(
   return blob == undefined ? undefined : { id, blob };
 }
 
+/**
+ * 次のセリフも読んで生成するときに一緒に読ませる、次のセリフの文。
+ *
+ * 設定がオン（前のセリフから続けて生成も有効）で、次のセリフが同じ話者のときだけ返す。
+ * 次のセリフの文を直すと、このセリフも別の音声になる（キャッシュキーに含める）。
+ */
+export function nextLineText(
+  state: AudioStoreState,
+  audioKey: AudioKey | undefined,
+): string | undefined {
+  if (!irodoriBlockwise.value || !irodoriBlockwiseLookahead.value)
+    return undefined;
+  if (audioKey == undefined) return undefined;
+  const index = state.audioKeys.indexOf(audioKey);
+  if (index < 0 || index + 1 >= state.audioKeys.length) return undefined;
+  const current = state.audioItems[audioKey];
+  const next = state.audioItems[state.audioKeys[index + 1]];
+  if (
+    current == undefined ||
+    next == undefined ||
+    current.morphingInfo != undefined ||
+    next.voice.engineId !== current.voice.engineId ||
+    next.voice.styleId !== current.voice.styleId
+  )
+    return undefined;
+  const text = next.text.trim();
+  return text === "" ? undefined : text;
+}
+
 async function contextAudio(context: IrodoriLineContext | undefined) {
   if (context == undefined) return undefined;
   const bytes = new Uint8Array(await context.blob.arrayBuffer());
@@ -143,6 +173,7 @@ function synthesisParams(
   audioItem: AudioItem,
   engineAudioQuery: ReturnType<typeof convertAudioQueryFromEditorToEngine>,
   irodoriContextAudio?: { dataUrl: string },
+  irodoriNextText?: string,
 ) {
   const speaker = audioItem.voice.styleId;
   const effectiveSeed =
@@ -188,6 +219,7 @@ function synthesisParams(
       irodoriAdditionalSpeakers: audioItem.irodori?.additionalSpeakers,
       irodoriReferenceAudio: audioItem.irodori?.referenceAudio,
       irodoriContextAudio,
+      irodoriNextText,
     },
     speaker,
     enableInterrogativeUpspeak:
@@ -214,11 +246,13 @@ export async function fetchAudioFromAudioItem(
   const engineId = audioItem.voice.engineId;
   // モーフィングは前のセリフから続けて生成できない
   if (audioItem.morphingInfo != undefined) context = undefined;
+  const nextText = nextLineText(state, audioKey);
 
   const [id, audioQuery] = await generateUniqueIdAndQuery(
     state,
     audioItem,
     context?.id,
+    nextText,
   );
   if (audioQuery == undefined)
     throw new Error("audioQuery is not defined for audioItem");
@@ -253,6 +287,7 @@ export async function fetchAudioFromAudioItem(
         audioItem,
         engineAudioQuery,
         await contextAudio(context),
+        nextText,
       ),
     );
   }
@@ -289,10 +324,12 @@ export async function streamAudioFromAudioItem(
 ): Promise<{ blob: Blob; streamed: boolean } | undefined> {
   const engineId = audioItem.voice.engineId;
   if (audioItem.morphingInfo != undefined) return undefined;
+  const nextText = nextLineText(state, audioKey);
   const [id, audioQuery] = await generateUniqueIdAndQuery(
     state,
     audioItem,
     context?.id,
+    nextText,
   );
   if (audioQuery == undefined)
     throw new Error("audioQuery is not defined for audioItem");
@@ -310,6 +347,7 @@ export async function streamAudioFromAudioItem(
       state.engineManifests[engineId].defaultSamplingRate,
     ),
     await contextAudio(context),
+    nextText,
   );
   const revision = audioCacheRevision;
   const response = await irodoriRequest(
@@ -426,6 +464,8 @@ async function generateUniqueIdAndQuery(
   audioItem: AudioItem,
   /** 前のセリフから続けて生成するときの、直前のセリフの音声のキャッシュキー。 */
   contextId?: string,
+  /** 次のセリフも読んで生成するときの、次のセリフの文。 */
+  nextText?: string,
 ): Promise<[string, EditorAudioQuery | undefined]> {
   audioItem = JSON.parse(JSON.stringify(audioItem)) as AudioItem;
   const audioQuery = audioItem.query;
@@ -451,6 +491,8 @@ async function generateUniqueIdAndQuery(
     state.experimentalSetting.enableInterrogativeUpspeak, // このフラグが違うと、同じAudioQueryで違う音声が生成されるので追加
     // 続けて生成したセリフは、前のセリフの音声が変われば別の音声になる
     ...(contextId != undefined ? [contextId] : []),
+    // 次のセリフも読んで生成したセリフは、次のセリフの文が変われば別の音声になる
+    ...(nextText != undefined ? [{ nextText }] : []),
   ]);
   return [id, audioQuery];
 }

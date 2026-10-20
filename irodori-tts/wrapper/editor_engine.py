@@ -37,7 +37,7 @@ from speaker_catalog import (
 )
 from asr_timeline import (AsrTimeline, decode_wav, ensure_asr_model, asr_package_error,
                           MODEL_DIR as ASR_MODEL_DIR)
-from tts_cli import SpeakerCassette, resolve_embed_dirs
+from tts_cli import SpeakerCassette, mix_line_speakers, resolve_embed_dirs
 from speaker_mix import compose_speaker_mix
 from synthesis_queue import SynthesisQueue
 import voice_design
@@ -53,6 +53,10 @@ ASR_DOWNLOAD_WAIT_SECONDS = float(os.environ.get("IRODORI_ASR_WAIT_SECONDS", "45
 REPO_ROOT = ROOT.parent
 MODEL_DIR = Path(os.environ.get("IRODORI_MODEL_DIR", str(REPO_ROOT / "models")))
 SPEAKER_DIR = Path(os.environ.get("IRODORI_EMBED_DIR", str(REPO_ROOT / "speakers")))
+# セリフ設定で組み合わせた話者の保存先（SPEAKER_DIR の下）
+LINE_MIX_FOLDER = "組み合わせた話者"
+WINDOWS_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL",
+                          *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 
 # Hugging Face のリポジトリID。model.safetensors を含むリポジトリを指定する。
 HF_MODEL_PATTERN = re.compile(
@@ -97,7 +101,8 @@ class EditorAdapter:
     # 既定モデル: 前のセリフから続けて生成できる Blockwise の bf16 版（FP32 版と生成結果は同じで半分の大きさ）
     DEFAULT_SETTINGS = dict(backend="cpu", model="rose3/Irodori-TTS-v4.1-Small-Blockwise/bf16", seed=4763674,
                             sway_coeff=-1.0, token_split_threshold=DEFAULT_TOKEN_SPLIT_THRESHOLD,
-                            stream_playback=False, blockwise=False, default_steps=DEFAULT_STEPS_RF,
+                            stream_playback=False, blockwise=False, blockwise_lookahead=False,
+                            default_steps=DEFAULT_STEPS_RF,
                             audio_cache_mb=DEFAULT_AUDIO_CACHE_MB, low_vram=False)
 
     def __init__(self):
@@ -131,7 +136,8 @@ class EditorAdapter:
         self.config_path = ROOT / "editor-settings.json"
         self.settings = dict(backend="cpu", model="rose3/Irodori-TTS-v4.1-Small-Blockwise/bf16", seed=4763674,
                              sway_coeff=-1.0, token_split_threshold=DEFAULT_TOKEN_SPLIT_THRESHOLD,
-                            stream_playback=False, blockwise=False, default_steps=DEFAULT_STEPS_RF,
+                            stream_playback=False, blockwise=False, blockwise_lookahead=False,
+                            default_steps=DEFAULT_STEPS_RF,
                             audio_cache_mb=DEFAULT_AUDIO_CACHE_MB, low_vram=False)
         try:
             saved = json.loads(self.config_path.read_text(encoding="utf-8"))
@@ -413,6 +419,8 @@ class EditorAdapter:
             raise ValueError("stream_playback は true か false を指定してください")
         if not isinstance(value.get("blockwise", False), bool):
             raise ValueError("blockwise は true か false を指定してください")
+        if not isinstance(value.get("blockwise_lookahead", False), bool):
+            raise ValueError("blockwise_lookahead は true か false を指定してください")
         if not isinstance(value.get("low_vram", False), bool):
             raise ValueError("low_vram は true か false を指定してください")
         cache_mb = value.get("audio_cache_mb", DEFAULT_AUDIO_CACHE_MB)
@@ -990,6 +998,72 @@ class EditorAdapter:
         self.refresh()
         return {"name": name}
 
+    def line_mix_save(self, payload):
+        """セリフ設定の「基本の話者＋追加話者」を足し合わせた埋め込みと、組み合わせの値を保存する。
+        合成時と同じ計算（tts_cli.mix_line_speakers）なので、保存した話者を強度1で使えば同じ声になる。"""
+        if not isinstance(payload, dict):
+            raise ValueError("request must be an object")
+        name = payload.get("name")
+        name = name.strip() if isinstance(name, str) else ""
+        if (not 1 <= len(name) <= 32 or re.search(r'[\\/:*?"<>|.\x00-\x1f]', name)
+                or name.upper().split(" ")[0] in WINDOWS_RESERVED_NAMES):
+            raise ValueError("名前は1〜32文字で、\\ / : * ? \" < > | . は使えません")
+
+        def speaker_for(style_id):
+            if (isinstance(style_id, bool) or not isinstance(style_id, int)
+                    or style_id not in self.id_to_name):
+                raise ValueError("話者が見つかりません。話者一覧を更新してください")
+            return self.id_to_name[style_id]
+
+        def strength_of(value):
+            if isinstance(value, bool) or not isinstance(value, (int, float)) \
+                    or not math.isfinite(value) or not 0 <= value <= 1:
+                raise ValueError("強度は0〜1の数値だけ指定できます")
+            return float(value)
+
+        base = speaker_for(payload.get("speakerStyleId"))
+        base_strength = strength_of(payload.get("speakerStrength"))
+        additions = payload.get("additionalSpeakers")
+        if not isinstance(additions, list) or not additions or len(additions) > 3:
+            raise ValueError("追加話者を1〜3人選んでから保存してください")
+        additional = []
+        for entry in additions:
+            if not isinstance(entry, dict):
+                raise ValueError("追加話者の指定が正しくありません")
+            added = speaker_for(entry.get("styleId"))
+            if not added or added == base or added in (n for n, _ in additional):
+                raise ValueError("追加話者が重複しているか、話者なしが指定されています")
+            additional.append((added, strength_of(entry.get("strength"))))
+
+        speaker_dim = self._model_speaker_dim()
+        cassette = SpeakerCassette(resolve_embed_dirs(), preferred_dim=speaker_dim)
+        if cassette.has(name):
+            raise ValueError(f"「{name}」という話者はもうあります。別の名前にしてください")
+        tensor = mix_line_speakers(cassette, base, base_strength, additional, speaker_dim)
+        if tensor is None or not tensor.any():
+            raise ValueError("強度がすべて0なので保存できません")
+        if tensor.ndim == 3 and tensor.shape[0] == 1:
+            tensor = tensor[0]
+        from safetensors.torch import save_file
+        folder = SPEAKER_DIR / LINE_MIX_FOLDER
+        width = f".{tensor.shape[-1]}" if speaker_dim else ""
+        target = folder / f"{name}{width}.speaker.safetensors"
+        recipe = folder / f"{name}.line-mix.json"
+        if target.exists() or recipe.exists():
+            raise ValueError(f"「{name}」という話者はもうあります。別の名前にしてください")
+        folder.mkdir(parents=True, exist_ok=True)
+        # dtype もそのまま（bf16）で保存する。読み込んだ値が合成時の値と1ビットも違わないように
+        save_file({"speaker_embedding": tensor.contiguous()}, str(target))
+        recipe.write_text(json.dumps({
+            "version": 1,
+            "speaker": base,
+            "speakerStrength": base_strength,
+            "additionalSpeakers": [{"speaker": n, "strength": s} for n, s in additional],
+            "speakerDim": int(tensor.shape[-1]),
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        self.refresh()
+        return {"name": name, "speakerUuid": str(uuid.uuid5(ENGINE_UUID_NAMESPACE, name))}
+
     # ---- 声づくり（voice_design.py）
     def _remember_take(self, key, query, speaker_id, wav):
         """参照音声を使わない合成の結果を、声として保存できるよう覚えておく。"""
@@ -1174,6 +1248,9 @@ class EditorAdapter:
             if not self.settings.get("blockwise", False):
                 # 「前のセリフから続けて生成」がオフなら、前のセリフの音声は使わない
                 query.pop("irodori_context_audio", None)
+            if not (self.settings.get("blockwise", False) and self.settings.get("blockwise_lookahead", False)):
+                # 「次のセリフも読んで生成」がオフなら、次のセリフの文は使わない
+                query.pop("irodori_next_text", None)
             self.delegate.token_split_threshold = self.settings.get(
                 "token_split_threshold", DEFAULT_TOKEN_SPLIT_THRESHOLD)
             started = time.perf_counter()
@@ -1305,7 +1382,8 @@ class EditorHandler(Handler):
     def do_POST(self):
         if not self._authorized():
             return self._json(403, {"detail": "invalid local origin/session"})
-        voice_actions = {"/irodori/voices/save": self.adapter.voice_save,
+        voice_actions = {"/irodori/line-mix/save": self.adapter.line_mix_save,
+                         "/irodori/voices/save": self.adapter.voice_save,
                          "/irodori/voices/update": self.adapter.voice_update,
                          "/irodori/voices/delete": self.adapter.voice_delete}
         action = voice_actions.get(urlparse(self.path).path)

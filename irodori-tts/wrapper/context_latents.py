@@ -64,6 +64,24 @@ def pcm_digest(wav: bytes) -> str | None:
     return None if pcm is None else pcm_digest_of_samples(pcm[0].tobytes())
 
 
+def trailing_silence_seconds(wav: bytes, floor_db: float = -40.0) -> float:
+    """前のセリフの末尾の無音の長さ（秒）。続きの行との間を測るのに使う（runtime の
+    leading_silence_seconds と同じく、10ms ごとの RMS が最大より floor_db 下回る間を無音とみなす）。"""
+    import numpy as np
+    pcm = _read_pcm16(wav)
+    if pcm is None:
+        return 0.0
+    samples, rate = pcm
+    window = max(1, int(rate * 0.01))
+    count = len(samples) // window
+    if count == 0:
+        return 0.0
+    frames = samples[: count * window].astype(np.float32).reshape(count, window)
+    rms = np.sqrt(np.mean(frames * frames, axis=1))
+    loud = np.nonzero(rms > rms.max() * 10.0 ** (floor_db / 20.0))[0]
+    return (count - 1 - int(loud[-1]) if loud.size else count) * window / float(rate)
+
+
 class ContextLatentStore:
     """このエンジンが返した音声の latent を、PCM の SHA-256 で少しのあいだ覚えておく。"""
 

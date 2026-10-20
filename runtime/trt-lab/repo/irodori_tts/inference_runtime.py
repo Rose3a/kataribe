@@ -188,6 +188,80 @@ def find_flattening_point(
     return int(hits[0, 0]) if hits.numel() else total_steps
 
 
+def leading_silence_seconds(audio: torch.Tensor, sample_rate: int, floor_db: float = -40.0) -> float:
+    """先頭の無音の長さ（秒）。10ms ごとの RMS が、その音声の最大より floor_db 下回る間を無音とみなす。"""
+    samples = audio.detach().float().reshape(-1)
+    window = max(1, int(sample_rate * 0.01))
+    count = samples.numel() // window
+    if count == 0:
+        return 0.0
+    rms = samples[: count * window].view(count, window).square().mean(dim=1).sqrt()
+    loud = (rms > rms.max() * (10.0 ** (floor_db / 20.0))).nonzero()
+    return (int(loud[0, 0]) if loud.numel() else count) * window / float(sample_rate)
+
+
+def _shortens_gap(req: "SamplingRequest") -> bool:
+    """続きの行の先頭の無音を切る指定があるか（倍率 1 未満か、上限あり）。"""
+    return float(req.prefix_gap_scale) < 1.0 or req.prefix_gap_max is not None
+
+
+LOOKAHEAD_SEPARATOR = "　"
+# 先読みで境目を探す幅（見積もりの前後、秒）と、境目とみなす無音の最短（秒）
+LOOKAHEAD_SEARCH_SECONDS = 0.8
+# 笑い声の「ハ」と「ハ」の間などの短い無音（0.1 秒前後）を境目と取り違えないよう、0.15 秒以上だけを境目にする
+LOOKAHEAD_MIN_GAP_SECONDS = 0.15
+# 話し終わりで切るときに残す、声の減衰ぶん（秒）
+LOOKAHEAD_DECAY_SECONDS = 0.04
+
+
+class LookaheadNoGap(RuntimeError):
+    """先読みで作った音声に、この行と次の行の境目（はっきりした無音）が見つからなかった。
+    呼び出し側は先読みをやめて、この行だけで作り直す。"""
+
+    lookahead_no_gap = True
+
+
+def lookahead_cut_frame(audio: torch.Tensor, sample_rate: int, hop: int, ratio: float,
+                        total_frames: int) -> int | None:
+    """先読みで作った音声の、この行の終わり（フレーム）。
+
+    声のある範囲（10ms ごとの RMS が最大の 1% 以上の最初から最後まで）を ratio で分けた位置を見積もりとし、
+    その前後 LOOKAHEAD_SEARCH_SECONDS 秒でいちばん長い無音を境目とする。その頭から減衰ぶんだけ残して切る。
+    はっきりした無音が無ければ（間を置かずに続く場合）None。音の小さいところで切ると、笑い声の頭など
+    次の行の声が入ってしまった。
+    ratio は長さ予測の「この行だけ ÷ まとめて」（文字数の比だと行の中の「！」の後などを選び外した）。"""
+    samples = audio.detach().float().reshape(-1)
+    window = max(1, int(sample_rate * 0.01))
+    count = samples.numel() // window
+    fps = sample_rate / float(hop)
+    if count == 0 or total_frames <= 1:
+        return None
+    rms = samples[: count * window].view(count, window).square().mean(dim=1).sqrt()
+    loud = (rms >= rms.max() * 0.01).nonzero()
+    if loud.numel() == 0:
+        return None
+    first, last = int(loud[0, 0]) * 0.01, int(loud[-1, 0]) * 0.01
+    quiet = (rms < rms.max() * 0.01).tolist()
+    center = first + ratio * (last - first)
+    lo = max(0, int((center - LOOKAHEAD_SEARCH_SECONDS) * 100))
+    hi = min(count, int((center + LOOKAHEAD_SEARCH_SECONDS) * 100) + 1)
+    if hi <= lo:
+        return None
+    best, start = None, None
+    for i in range(lo, hi):
+        if quiet[i]:
+            start = i if start is None else start
+            if best is None or i + 1 - start > best[1] - best[0]:
+                best = (start, i + 1)
+        else:
+            start = None
+    if best is None or best[1] - best[0] < LOOKAHEAD_MIN_GAP_SECONDS * 100:
+        return None
+    gap_start, gap_end = best[0] * 0.01, best[1] * 0.01
+    frame = min(int(gap_end * fps), math.ceil((gap_start + LOOKAHEAD_DECAY_SECONDS) * fps))
+    return max(1, min(int(frame), total_frames - 1))
+
+
 @dataclass(frozen=True)
 class RuntimeKey:
     checkpoint: str
@@ -259,9 +333,24 @@ class SamplingRequest:
     # blockwise（use_latent_prefix のモデルだけ）: 直前に生成した音声の latent（フレーム数, latent_dim）。
     # 末尾の prefix_seconds 秒を prefix にして、その続きとして生成する。続きの先頭には無音が入るので
     # （学習では分け目＝無音の真ん中から始まる）、長さに prefix_lead_frames を足す。
+    # 6 フレーム（0.24s）では足りず、モデルは 0.4〜0.9s の間を取ってセリフを最大 3 割詰めていた。
+    # 20 フレームあればモデルが取る間はほぼ頭打ちになる（40 にしても間は変わらず、余りは末尾の無音と
+    # ゆっくりしたセリフに回る）。行の間（前の行の末尾の無音＋この行の先頭の無音）はモデルの判断のまま
+    # にし、prefix_gap_scale 倍に縮める・prefix_gap_max 秒で頭打ちにする、のどちらか（両方も可）で
+    # 先頭の無音を切れる。prefix_tail_seconds は前の行の末尾の無音の長さ（呼び出し側が前の行の音声から測る）。
     prefix_latent: torch.Tensor | None = None
     prefix_seconds: float = 10.0
-    prefix_lead_frames: int = 6
+    prefix_lead_frames: int = 20
+    prefix_tail_seconds: float = 0.0
+    prefix_gap_scale: float = 1.0
+    prefix_gap_max: float | None = None
+    # 末尾の無音の上限（秒）。None なら find_flattening_point の切り方だけ。呼び出し側が
+    # blockwise のときに指定する（次の行との間をそろえるため）。
+    tail_silence_max: float | None = None
+    # 次の行も読む（先読み）: 「この行＋次の行」をまとめて作り、この行の話し終わりで切って返す。
+    # 行末が「ここで終わるボイス」の言い切りにならないよう、続きがあることをモデルに見せる。
+    # 境目は長さ予測（この行だけ／まとめて）の比で見積もり、その近くのいちばん長い無音で探す。
+    lookahead_text: str | None = None
 
 
 @dataclass
@@ -1180,6 +1269,45 @@ class InferenceRuntime:
         )
         return state, mask, freqs
 
+    def _edge_silence_seconds(self, latent: torch.Tensor, at_end: bool) -> float:
+        """latent (T, D) の先頭（at_end なら末尾）の無音の秒数。その側の 2 秒だけを先にデコードして測る
+        （ストリーミング再生の窓より前に切れるよう、デコード前の latent で切るため）。"""
+        hop = int(self.codec.model.hop_length)
+        rate = int(self.codec.sample_rate)
+        frames = min(int(latent.shape[0]), 2 * rate // hop)
+        if frames <= 0:
+            return 0.0
+        part = latent[-frames:] if at_end else latent[:frames]
+        # ストリーミング用の包み（stream_decode.StreamingDecode）を通すと、この試し読みが流れてしまう
+        decode = getattr(self.codec.decode_latent, "inner", self.codec.decode_latent)
+        audio = decode(part[None])
+        return leading_silence_seconds(audio.flip(-1) if at_end else audio, rate)
+
+    def _edge_trim_frames(self, latent: torch.Tensor, req: SamplingRequest, *, prefixed: bool) -> tuple[int, int]:
+        """(先頭から切るフレーム数, 末尾から切るフレーム数)。
+
+        - 続きの行（prefixed）: 前の行の末尾の無音と合わせた間（モデルが取った間）を
+          prefix_gap_scale 倍にし、prefix_gap_max 秒までにする。伸ばすことはしない。
+        - 末尾: 無音を tail_silence_max 秒までにする（find_flattening_point で切れずに 1 秒近く
+          残る行があり、次の行との間が開いていた）。"""
+        fps = int(self.codec.sample_rate) / int(self.codec.model.hop_length)
+        total = int(latent.shape[0])
+        head_cut = tail_cut = 0
+        if prefixed and _shortens_gap(req):
+            head = self._edge_silence_seconds(latent, at_end=False)
+            tail_before = max(0.0, float(req.prefix_tail_seconds))
+            gap = (tail_before + head) * min(1.0, max(0.0, float(req.prefix_gap_scale)))
+            if req.prefix_gap_max is not None:
+                gap = min(gap, float(req.prefix_gap_max))
+            # 話し始めの直前は少し残す（子音の立ち上がりを削らない）
+            keep = max(0.05, gap - tail_before)
+            head_cut = max(0, min(int((head - keep) * fps), total - 1))
+        if req.tail_silence_max is not None and total - head_cut > 1:
+            tail = self._edge_silence_seconds(latent[head_cut:], at_end=True)
+            keep = max(0.05, float(req.tail_silence_max))
+            tail_cut = max(0, min(int((tail - keep) * fps), total - head_cut - 1))
+        return head_cut, tail_cut
+
     def synthesize(
         self,
         req: SamplingRequest,
@@ -1242,6 +1370,19 @@ class InferenceRuntime:
         normalized_text = normalize_text(raw_text).strip()
         if normalized_text == "":
             raise ValueError("text became empty after normalization.")
+        # 先読み: この行だけの文（長さの比を出すのに使う）を残し、生成は次の行とつないだ文で行う
+        lookahead_line_text = None
+        lookahead_raw = "" if req.lookahead_text is None else str(req.lookahead_text).strip()
+        if lookahead_raw:
+            if manual_seconds is not None or int(req.num_candidates) != 1:
+                msg = "info: lookahead is ignored with a manual duration or several candidates."
+                messages.append(msg)
+                _log(msg)
+            else:
+                next_text = normalize_text(lookahead_raw).strip()
+                if next_text:
+                    lookahead_line_text = normalized_text
+                    normalized_text = f"{normalized_text}{LOOKAHEAD_SEPARATOR}{next_text}"
 
         text_max_len = (
             self.default_text_max_len if req.max_text_len is None else int(req.max_text_len)
@@ -1427,6 +1568,7 @@ class InferenceRuntime:
             # Hold shared condition encodings. When manual_seconds bypasses duration
             # prediction, leave this unset and build the encoding in the RF stage.
             encoded_conditions = None
+            lookahead_ratio = None
             if manual_seconds is not None:
                 clamped_seconds = min(max_seconds, max(min_seconds, manual_seconds))
                 if clamped_seconds != manual_seconds:
@@ -1451,61 +1593,76 @@ class InferenceRuntime:
                 elif self.model_cfg.use_speaker_condition_resolved and ref_mask is not None:
                     has_speaker_duration = ref_mask.any(dim=1)
                 has_speaker_duration &= reference_strength > 0.0
-                duration_features = build_duration_features(
-                    [normalized_text] * num_candidates,
-                    token_counts=text_mask.sum(dim=1),
-                    max_text_len=text_max_len,
-                    has_speaker=has_speaker_duration,
-                ).to(self.model_device)
-                (
-                    duration_text_state,
-                    duration_text_mask,
-                    duration_speaker_state,
-                    _duration_speaker_mask,
-                    _duration_caption_state,
-                    _duration_caption_mask,
-                ) = self.model.encode_conditions(
-                    text_input_ids=text_ids,
-                    text_mask=text_mask,
-                    ref_latent=ref_latent,
-                    ref_mask=ref_mask,
-                    caption_input_ids=caption_ids,
-                    caption_mask=caption_mask,
-                    speaker_state_override=speaker_state_override,
-                    speaker_mask_override=speaker_mask_override,
-                    speaker_uncond_mode=req.speaker_uncond_mode,
-                    skip_caption_encoding=not has_caption_text,
-                    speaker_strength=reference_strength,
-                    caption_strength=caption_strength,
-                )
-                # Reuse the condition encodings during RF sampling.
-                encoded_conditions = (
-                    duration_text_state,
-                    duration_text_mask,
-                    duration_speaker_state,
-                    _duration_speaker_mask,
-                    _duration_caption_state,
-                    _duration_caption_mask,
-                )
-                pred_log_frames = self.model.predict_duration_log_frames(
-                    text_state=duration_text_state,
-                    text_mask=duration_text_mask,
-                    speaker_state=duration_speaker_state,
-                    speaker_mask=_duration_speaker_mask,
-                    caption_state=_duration_caption_state,
-                    caption_mask=_duration_caption_mask,
-                    duration_features=duration_features,
-                    has_speaker=has_speaker_duration,
-                    has_caption=torch.full(
-                        (num_candidates,),
-                        has_caption_text and caption_strength > 0.0,
-                        dtype=torch.bool,
-                        device=self.model_device,
+                def predict_frames(text, ids, mask):
+                    """(条件のエンコード結果, 予測フレーム数)。"""
+                    duration_features = build_duration_features(
+                        [text] * num_candidates,
+                        token_counts=mask.sum(dim=1),
+                        max_text_len=text_max_len,
+                        has_speaker=has_speaker_duration,
+                    ).to(self.model_device)
+                    (
+                        duration_text_state,
+                        duration_text_mask,
+                        duration_speaker_state,
+                        _duration_speaker_mask,
+                        _duration_caption_state,
+                        _duration_caption_mask,
+                    ) = self.model.encode_conditions(
+                        text_input_ids=ids,
+                        text_mask=mask,
+                        ref_latent=ref_latent,
+                        ref_mask=ref_mask,
+                        caption_input_ids=caption_ids,
+                        caption_mask=caption_mask,
+                        speaker_state_override=speaker_state_override,
+                        speaker_mask_override=speaker_mask_override,
+                        speaker_uncond_mode=req.speaker_uncond_mode,
+                        skip_caption_encoding=not has_caption_text,
+                        speaker_strength=reference_strength,
+                        caption_strength=caption_strength,
                     )
-                    if self.model_cfg.use_caption_condition
-                    else None,
-                )
-                pred_frames = torch.expm1(pred_log_frames).float().mean().item()
+                    conditions = (
+                        duration_text_state,
+                        duration_text_mask,
+                        duration_speaker_state,
+                        _duration_speaker_mask,
+                        _duration_caption_state,
+                        _duration_caption_mask,
+                    )
+                    pred_log_frames = self.model.predict_duration_log_frames(
+                        text_state=duration_text_state,
+                        text_mask=duration_text_mask,
+                        speaker_state=duration_speaker_state,
+                        speaker_mask=_duration_speaker_mask,
+                        caption_state=_duration_caption_state,
+                        caption_mask=_duration_caption_mask,
+                        duration_features=duration_features,
+                        has_speaker=has_speaker_duration,
+                        has_caption=torch.full(
+                            (num_candidates,),
+                            has_caption_text and caption_strength > 0.0,
+                            dtype=torch.bool,
+                            device=self.model_device,
+                        )
+                        if self.model_cfg.use_caption_condition
+                        else None,
+                    )
+                    return conditions, torch.expm1(pred_log_frames).float().mean().item()
+
+                # Reuse the condition encodings during RF sampling.
+                encoded_conditions, pred_frames = predict_frames(normalized_text, text_ids, text_mask)
+                lookahead_ratio = None
+                if lookahead_line_text is not None:
+                    line_ids, line_mask = self.tokenizer.batch_encode(
+                        [lookahead_line_text] * num_candidates, max_length=text_max_len)
+                    _, line_frames = predict_frames(
+                        lookahead_line_text, line_ids.to(self.model_device), line_mask.to(self.model_device))
+                    lookahead_ratio = min(0.95, max(0.05, line_frames / max(pred_frames, 1.0)))
+                    msg = f"info: lookahead: this line {line_frames:.1f} / joined {pred_frames:.1f} frames."
+                    messages.append(msg)
+                    _log(msg)
+
                 scaled_frames = pred_frames * duration_scale
                 min_frames = max(1, math.ceil(min_seconds * self.codec.sample_rate / hop_length))
                 max_frames = max(1, math.floor(max_seconds * self.codec.sample_rate / hop_length))
@@ -1524,6 +1681,8 @@ class InferenceRuntime:
                 _log(f"[runtime] predict_duration: {stage_sec * 1000.0:.1f} ms")
             else:
                 fallback_seconds = 30.0
+                if lookahead_line_text is not None:
+                    lookahead_ratio = len(lookahead_line_text) / max(1, len(normalized_text))
                 target_samples = int(fallback_seconds * self.codec.sample_rate)
                 latent_steps = math.ceil(target_samples / hop_length)
                 msg = "info: checkpoint has no duration predictor; falling back to 30.000s."
@@ -1645,6 +1804,36 @@ class InferenceRuntime:
             stage_timings.append(("unpatchify_latent", stage_sec))
             _log(f"[runtime] unpatchify_latent: {stage_sec * 1000.0:.1f} ms")
             z = z[:, :latent_steps]
+
+            if lookahead_ratio is not None and num_candidates == 1:
+                t0 = _measure_start(self.model_device, self.codec_device)
+                # ストリーミング用の包みを通すと、次の行の分まで流れてしまうので素のデコーダで試し読みする
+                decode = getattr(self.codec.decode_latent, "inner", self.codec.decode_latent)
+                cut = lookahead_cut_frame(decode(z[:1]), int(self.codec.sample_rate), hop_length,
+                                          lookahead_ratio, int(z.shape[1]))
+                if cut is None:
+                    # デコード（ストリーミング）の前なので、まだ何も渡していない
+                    _log("[runtime] lookahead_cut: no clear gap before the next line")
+                    raise LookaheadNoGap("no clear gap between this line and the next")
+                z = z[:, :cut]
+                latent_steps = cut
+                target_samples = int(latent_steps * hop_length)
+                stage_sec = _measure_end(self.model_device, t0, self.codec_device)
+                stage_timings.append(("lookahead_cut", stage_sec))
+                _log(f"[runtime] lookahead_cut: keep {cut} frames ({stage_sec * 1000.0:.1f} ms)")
+
+            if num_candidates == 1 and (req.tail_silence_max is not None
+                                        or (prefix is not None and _shortens_gap(req))):
+                t0 = _measure_start(self.model_device, self.codec_device)
+                head_cut, tail_cut = self._edge_trim_frames(z[0], req, prefixed=prefix is not None)
+                if head_cut or tail_cut:
+                    z = z[:, head_cut:z.shape[1] - tail_cut]
+                    latent_steps = int(z.shape[1])
+                    target_samples = int(latent_steps * hop_length)
+                stage_sec = _measure_end(self.model_device, t0, self.codec_device)
+                stage_timings.append(("edge_trim", stage_sec))
+                _log(f"[runtime] edge_trim: head {head_cut} / tail {tail_cut} frames "
+                     f"({stage_sec * 1000.0:.1f} ms)")
 
             t0 = _measure_start(self.model_device, self.codec_device)
             trimmed_audios: list[torch.Tensor] = []

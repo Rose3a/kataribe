@@ -23,6 +23,7 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import json
+import re
 import threading
 from pathlib import Path
 
@@ -45,6 +46,10 @@ KEEP_TOKENS = frozenset({
     "オフショア", "モスクワ", "テラス席", "缶バッジ", "ジュリー", "ッチャー", "ティーン", "トゥルー",
     "マリッジ", "リフィル", "リベット",
 })
+# ひらがな（と長音符・踊り字）だけのトークンは分けない。字のとおりに読むので分けても読みは
+# 変わらず、「か|ならず」「わ|からず」のように語の途中で切れて間や抑揚が崩れるだけ
+# （work/len_split: 除外しても判定語の OK率は 0.75 → 0.76、音声の長さは +3% → +2.6%）。
+_HIRAGANA_ONLY = re.compile(r"[ぁ-ゖゝゞー]+")
 _LOWERED_SCORE = -1e9
 
 
@@ -78,14 +83,11 @@ def token_split_applies(model_tokenizer_repo: str | None) -> bool:
     return not model_tokenizer_repo or str(model_tokenizer_repo) == DEFAULT_TOKENIZER_REPO
 
 
-def _piece_chars(piece: str) -> int:
-    return len(piece.replace("▁", ""))
-
-
 def _splits(piece: str, score: float, threshold: float) -> bool:
     """このトークンを語彙分割で避けるか。"""
-    return (score <= threshold and _piece_chars(piece) >= MIN_SPLIT_CHARS
-            and piece.replace("▁", "") not in KEEP_TOKENS)
+    text = piece.replace("▁", "")
+    return (score <= threshold and len(text) >= MIN_SPLIT_CHARS
+            and text not in KEEP_TOKENS and not _HIRAGANA_ONLY.fullmatch(text))
 
 
 # ---------------------------------------------------------------- 写しのトークナイザ
@@ -96,6 +98,8 @@ _LOW: dict[int, tuple[object, dict[float, object]]] = {}
 
 def low_score_tokenizer(tokenizer, threshold: float):
     """4文字以上で出現度が threshold 以下のトークンを使わない、tokenizer の写し。
+
+    KEEP_TOKENS と、ひらがなだけのトークンは除く。
 
     tokenizer は tokenizers.Tokenizer（HF の backend_tokenizer）。Unigram でなければ None。
     特殊トークンとバイトのトークンは出現度が 0 なので対象にならない。
@@ -170,6 +174,32 @@ def split_token_ids(hf_tokenizer, text: str) -> list[int]:
         else:
             ids.extend(hf_tokenizer.encode(part, add_special_tokens=False))
     return ids
+
+
+def split_token_groups(hf_tokenizer, text: str) -> list[int | None]:
+    """split_token_ids と同じ並びで、各トークンが語彙分割で生まれたものなら、元のトークンごとの番号
+    （「ゼルダの伝説」→ ゼルダ|の|伝説 の 3 つが同じ番号）。そうでなければ None。"""
+    threshold = _ACTIVE.get()
+    low = _active_low(hf_tokenizer)
+    if low is None:
+        return [None] * len(split_token_ids(hf_tokenizer, text))
+    backend = hf_tokenizer.backend_tokenizer
+    scores = _scores(backend)
+    groups: list[int | None] = []
+    count = 0
+    for part in text.split(SPLIT_MARK):
+        if not part:
+            continue
+        original = backend.encode(part, add_special_tokens=False)
+        spans = [offset for token_id, offset in zip(original.ids, original.offsets)
+                 if offset[0] != offset[1]
+                 and _splits(part[offset[0]:offset[1]], scores.get(token_id, 0.0), threshold)]
+        base = count
+        count += len(spans)
+        for start, end in low.encode(part, add_special_tokens=False).offsets:
+            found = [base + i for i, (a, b) in enumerate(spans) if a <= start and end <= b]
+            groups.append(found[0] if found and start != end else None)
+    return groups
 
 
 def install_split_encoding(text_tokenizer) -> None:

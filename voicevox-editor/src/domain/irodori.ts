@@ -63,6 +63,12 @@ export const irodoriStreamPlayback = ref(false);
  */
 export const irodoriBlockwise = ref(false);
 
+/**
+ * 次のセリフも読んで生成するか（設定の blockwise_lookahead。前のセリフから続けて生成が有効なときだけ）。
+ * IrodoriGlobalSettings.vue が反映し、生成側（FETCH_AUDIO・ストリーミング再生）が参照する。
+ */
+export const irodoriBlockwiseLookahead = ref(false);
+
 /** 前のセリフから続けて生成できるエンジン。TensorRT は prefix を caption 枠に足して渡す。DirectML の DiT は prefix の入力を持たない。 */
 export const IRODORI_BLOCKWISE_BACKENDS = ["cpu", "cuda", "trt"];
 
@@ -131,6 +137,11 @@ export type IrodoriSettings = {
    * その音声の末尾を聞かせてから作る。古いエンジンは返さない。
    */
   blockwise?: boolean;
+  /**
+   * 次のセリフも読んで生成する（blockwise が有効なときだけ）。次のセリフが同じ話者なら、その文も一緒に
+   * 読ませて作り、このセリフの話し終わりで切る。古いエンジンは返さない。
+   */
+  blockwise_lookahead?: boolean;
   /** 全行共通の既定ステップ数（1〜80）。MeanFlow も含めて既定は8。古いエンジンは返さない。 */
   default_steps?: number;
   /** 生成済み音声をメモリに持っておく量（0〜1024MB、0 で持たない）。古いエンジンは返さない。 */

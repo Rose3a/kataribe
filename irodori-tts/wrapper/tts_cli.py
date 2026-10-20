@@ -36,6 +36,8 @@ DEFAULT_RUNTIME_DIR = BOX_ROOT / "runtime"
 DEFAULT_PYTHON = BOX_ROOT / ".local" / "venv" / "Scripts" / "python.exe"
 DEFAULT_CACHE_DIR = BOX_ROOT / ".cache" / "irodori-tts-cache"
 MAX_HTTP_BODY = 16 * 1024 * 1024
+# blockwise 対応モデルで、セリフの末尾に残す無音の上限（秒）
+BLOCKWISE_TAIL_SILENCE_MAX = 0.3
 
 
 def parse_radeon_precision(value: str | None = None) -> str:
@@ -758,6 +760,7 @@ class RadeonBackend:
 
 
 # ---------------------------------------------------------------- wrapper
+SPLIT_OPEN, SPLIT_CLOSE = "{", "}"  # 語彙分割で生まれたトークンの目印（コンソールでは色に変える）
 _TOKEN_MARKS = {"▁": "␣", "​": "[ZW]"}
 
 
@@ -771,16 +774,31 @@ def token_view(runtime, text: str) -> Optional[str]:
     if tokenizer is None:
         return None
     from irodori_tts.text_normalization import normalize_text
-    from token_split import split_token_ids
+    from token_split import split_token_groups, split_token_ids
 
     # 見えない区切りと語彙分割は、合成時と同じく split_token_ids でエンコードする
     ids = split_token_ids(tokenizer, normalize_text(text).strip())
+    normalized = normalize_text(text).strip()
+    groups = split_token_groups(tokenizer, normalized)
     pieces = []
     for piece in tokenizer.convert_ids_to_tokens(ids):
         for raw, mark in _TOKEN_MARKS.items():
             piece = piece.replace(raw, mark)
         pieces.append(piece)
-    return f"tokens ({len(pieces)}): " + "|".join(pieces)
+    count = len(pieces)
+    # 語彙分割で 1 つのトークンが分かれた範囲を { } で囲む（ゼルダの伝説 → {ゼルダ|の|伝説}）
+    parts, index = [], 0
+    while index < count:
+        end = index + 1
+        if groups[index] is not None:
+            while end < count and groups[end] == groups[index]:
+                end += 1
+            parts.append(SPLIT_OPEN + "|".join(pieces[index:end]) + SPLIT_CLOSE)
+        else:
+            parts.append(pieces[index])
+        index = end
+    pieces = parts
+    return f"tokens ({count}): " + "|".join(pieces)
 
 
 def _speaker_dim_message(name: Optional[str], dim: int, model_dim: int) -> str:
@@ -788,6 +806,57 @@ def _speaker_dim_message(name: Optional[str], dim: int, model_dim: int) -> str:
     return (f"{label}の埋め込みは {dim} 次元で、選択中のモデル（{model_dim} 次元）では使えません。"
             "話者ファイルは作成に使ったモデル専用です（既存の話者は v4.1 Small 系用の 768 次元）。"
             "このモデルでは「話者なし」か参照音声を使うか、このモデル用の話者ファイルを用意してください")
+
+
+def _token_rows(tensor: torch.Tensor, model_dim: Optional[int],
+                name: Optional[str] = None) -> torch.Tensor:
+    if tensor.ndim == 3 and tensor.shape[0] == 1:
+        tensor = tensor[0]
+    if tensor.ndim != 2:
+        raise ValueError("speaker cassette has an unsupported shape")
+    if model_dim is not None and tensor.shape[1] != model_dim:
+        raise ValueError(_speaker_dim_message(name, tensor.shape[1], model_dim))
+    return tensor
+
+
+def _add_speakers(speaker_tensor: Optional[torch.Tensor], additional_speakers, cassette,
+                  model_dim: Optional[int]) -> Optional[torch.Tensor]:
+    """追加話者を強度倍して足す。合成と「組み合わせを話者として保存」で同じ値にするため共通にしている。"""
+    for additional_name, raw_strength in additional_speakers:
+        strength = float(raw_strength)
+        if not math.isfinite(strength) or not 0 <= strength <= 1:
+            raise ValueError("additional speaker strength must be between 0 and 1")
+        if strength == 0:
+            continue
+        second = _token_rows(cassette.get(additional_name), model_dim, additional_name)
+        if speaker_tensor is None:
+            speaker_tensor = second * strength
+            continue
+        primary = _token_rows(speaker_tensor, model_dim)
+        rows = max(primary.shape[0], second.shape[0])
+        combined = torch.zeros((rows, primary.shape[1]), dtype=torch.float32,
+                               device=primary.device)
+        combined[:primary.shape[0]] += primary.float()
+        combined[:second.shape[0]] += second.to(
+            device=primary.device, dtype=torch.float32) * strength
+        speaker_tensor = combined.to(primary.dtype)
+    return speaker_tensor
+
+
+def mix_line_speakers(cassette, speaker_name: str, speaker_strength: float,
+                      additional_speakers, model_dim: Optional[int] = None) -> Optional[torch.Tensor]:
+    """セリフ設定の「基本の話者＋追加話者」を1本の埋め込みにする。
+    synthesize が ref_embed として渡す値と同じになる（保存した話者を強度1で使えば同じ声）。"""
+    if len(additional_speakers) > 3:
+        raise ValueError("追加話者は最大3人までです")
+    speaker_strength = float(speaker_strength)
+    if not math.isfinite(speaker_strength) or not 0 <= speaker_strength <= 1:
+        raise ValueError("speaker strength must be between 0 and 1")
+    speaker_tensor = None
+    if speaker_name and speaker_strength > 0:
+        speaker_tensor = cassette.get(speaker_name) * speaker_strength
+        _token_rows(speaker_tensor, model_dim, speaker_name)
+    return _add_speakers(speaker_tensor, additional_speakers, cassette, model_dim)
 
 
 def _pick_default_speaker(cassette: "SpeakerCassette") -> Optional[str]:
@@ -915,14 +984,20 @@ class IrodoriTTS:
                    log_fn=None,
                    speaker_tensor_override: Optional[torch.Tensor] = None,
                    prefix_latent: Optional[torch.Tensor] = None,
+                   prefix_tail_seconds: float = 0.0,
+                   lookahead_text: Optional[str] = None,
                    watermark: bool = False) -> dict:
         """prefix_latent: 前のセリフの latent（blockwise 対応モデルのときだけ使う）。
+        prefix_tail_seconds: 前のセリフの末尾の無音の秒数（行の間をそろえるのに使う）。
+        lookahead_text: 次のセリフの文。「この行＋次の行」をまとめて作り、この行の部分だけ返す（blockwise 対応モデルだけ）。
         watermark: 出力に透かしを入れる（参照音声を使うときは指定が無くても入れる）。"""
         if not text.strip():
             raise ValueError("text must not be empty")
         if not getattr(self, "split_encoding", False):
             from token_split import strip_marks
             text = strip_marks(text)
+            if lookahead_text:
+                lookahead_text = strip_marks(lookahead_text)
         speaker_name = self.default_speaker if speaker is None else speaker
         if ref_wav is not None and speaker_tensor_override is not None:
             raise ValueError("reference audio and speaker mix cannot be combined")
@@ -955,37 +1030,11 @@ class IrodoriTTS:
         if speaker_tensor is not None:
             speaker_tensor = None if speaker_strength == 0 else speaker_tensor * speaker_strength
 
-        def token_rows(tensor: torch.Tensor, name: Optional[str] = None) -> torch.Tensor:
-            if tensor.ndim == 3 and tensor.shape[0] == 1:
-                tensor = tensor[0]
-            if tensor.ndim != 2:
-                raise ValueError("speaker cassette has an unsupported shape")
-            if model_dim is not None and tensor.shape[1] != model_dim:
-                raise ValueError(_speaker_dim_message(name, tensor.shape[1], model_dim))
-            return tensor
-
         if speaker_tensor is not None:
-            token_rows(speaker_tensor,
-                       None if speaker_tensor_override is not None else speaker_name)
+            _token_rows(speaker_tensor, model_dim,
+                        None if speaker_tensor_override is not None else speaker_name)
 
-        for additional_name, raw_strength in additional_speakers:
-            strength = float(raw_strength)
-            if not math.isfinite(strength) or not 0 <= strength <= 1:
-                raise ValueError("additional speaker strength must be between 0 and 1")
-            if strength == 0:
-                continue
-            second = token_rows(self.cassette.get(additional_name), additional_name)
-            if speaker_tensor is None:
-                speaker_tensor = second * strength
-                continue
-            primary = token_rows(speaker_tensor)
-            rows = max(primary.shape[0], second.shape[0])
-            combined = torch.zeros((rows, primary.shape[1]), dtype=torch.float32,
-                                   device=primary.device)
-            combined[:primary.shape[0]] += primary.float()
-            combined[:second.shape[0]] += second.to(
-                device=primary.device, dtype=torch.float32) * strength
-            speaker_tensor = combined.to(primary.dtype)
+        speaker_tensor = _add_speakers(speaker_tensor, additional_speakers, self.cassette, model_dim)
         # out_wav may also be a binary file object (io.BytesIO) to keep the
         # resident engine off the disk.
         if out_wav is None or isinstance(out_wav, (str, os.PathLike)):
@@ -1024,9 +1073,15 @@ class IrodoriTTS:
             request.no_ref = True
         if watermark:
             request.watermark = True
+        if self.supports_prefix:
+            # 前のセリフから続けて生成できるモデルでは、末尾に残った長い無音を切る（次の行との間がそろう）
+            request.tail_silence_max = BLOCKWISE_TAIL_SILENCE_MAX
+            if lookahead_text and lookahead_text.strip():
+                request.lookahead_text = lookahead_text
         if prefix_latent is not None:
             if self.supports_prefix:
                 request.prefix_latent = prefix_latent
+                request.prefix_tail_seconds = float(prefix_tail_seconds)
             else:
                 print("[irodori] this model/backend cannot continue from the previous line; "
                       "generating it on its own", file=sys.stderr, flush=True)
@@ -1048,7 +1103,16 @@ class IrodoriTTS:
         if stream is not None and decoder is not None and ref_wav is None:
             decoder.begin(stream)
         try:
-            result = self.backend.synthesize(request, speaker_tensor, out_wav, log_fn=log_fn)
+            try:
+                result = self.backend.synthesize(request, speaker_tensor, out_wav, log_fn=log_fn)
+            except Exception as exc:  # noqa: BLE001 - 先読みの境目が見つからないときだけ作り直す
+                if not getattr(exc, "lookahead_no_gap", False):
+                    raise
+                # 次の行と間を置かずにつながった（笑い声など）。先読みをやめて、この行だけで作る
+                console_ui.notice("irodori", "次のセリフとの切れ目がはっきりしないので、このセリフだけで作り直します",
+                                  stderr=True, style="dim")
+                request.lookahead_text = None
+                result = self.backend.synthesize(request, speaker_tensor, out_wav, log_fn=log_fn)
         finally:
             if decoder is not None:
                 decoder.end()

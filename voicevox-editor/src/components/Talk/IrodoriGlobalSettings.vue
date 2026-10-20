@@ -134,6 +134,16 @@
         }}
       </div>
       <QToggle
+        v-model="blockwiseLookahead"
+        dense
+        class="q-ml-md"
+        label="次のセリフも読んで生成（試作）"
+        :disable="locked || !blockwiseAvailable || !blockwise"
+      />
+      <div class="text-caption q-mb-sm q-ml-md">
+        次のセリフが同じ話者なら、その文も一緒に読ませて作り、このセリフの話し終わりで切ります。続きがあると分かった話し方になるので、行末が毎回言い切りになりにくくなります。生成の時間は約2倍です。次のセリフの文を直すと、このセリフも作り直しになります（トグルを切り替えるとすぐ保存されます）。
+      </div>
+      <QToggle
         v-model="lowVram"
         dense
         label="省VRAM（NVIDIA のみ・少し遅くなる）"
@@ -271,6 +281,7 @@ import {
   IRODORI_MIN_STEPS,
   irodoriDefaultSteps,
   irodoriBlockwise,
+  irodoriBlockwiseLookahead,
   irodoriMeanflow,
   irodoriStreamPlayback,
 } from "@/domain/irodori";
@@ -393,6 +404,33 @@ watch(
   () => blockwise.value && blockwiseAvailable.value,
   (value) => {
     irodoriBlockwise.value = value;
+  },
+  { immediate: true },
+);
+// 次のセリフも読んで生成（前のセリフから続けて生成の中の選択肢）。切り替えるとすぐエンジンへ保存する。
+const blockwiseLookahead = computed<boolean>({
+  get: () => settings.value?.blockwise_lookahead === true,
+  set: (value) => {
+    if (!settings.value) return;
+    settings.value.blockwise_lookahead = value;
+    if (appliedSettings.value)
+      appliedSettings.value.blockwise_lookahead = value;
+    irodoriRequest(endpoint.value, "/irodori/settings", {
+      method: "POST",
+      body: { blockwise_lookahead: value },
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await response.text());
+      })
+      .catch((cause: unknown) => {
+        error.value = cause instanceof Error ? cause.message : String(cause);
+      });
+  },
+});
+watch(
+  blockwiseLookahead,
+  (value) => {
+    irodoriBlockwiseLookahead.value = value;
   },
   { immediate: true },
 );

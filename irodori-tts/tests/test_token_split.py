@@ -21,9 +21,9 @@ from token_split import (DEFAULT_TOKEN_SPLIT_THRESHOLD, SPLIT_MARK, TOKEN_SPLIT_
 
 SMALL_TOKENIZER = "sbintuitions/modernbert-ja-310m"
 LARGE_TOKENIZER = "google/t5gemma-2-1b-1b"
-# (トークン, 出現度)。浦和レッズ は珍しい5文字、ください はよく出る4文字、レッズ は3文字。
+# (トークン, 出現度)。浦和レッズ は珍しい5文字、ください・サッカー はよく出る4文字、レッズ は3文字。
 VOCAB = [("<unk>", 0.0), ("浦和レッズ", -14.3), ("ください", -9.3), ("レッズ", -14.0),
-         ("浦和", -11.0), ("レッ", -12.0), ("が", -5.0), ("勝った", -10.0)]
+         ("浦和", -11.0), ("レッ", -12.0), ("が", -5.0), ("勝った", -10.0), ("サッカー", -9.5)]
 
 
 def tiny_tokenizer():
@@ -86,7 +86,9 @@ class LowScoreTokenizerTests(unittest.TestCase):
 
     def test_raising_the_threshold_splits_more_words(self):
         low = low_score_tokenizer(self.tok, -9.0)
-        self.assertEqual(pieces(low, "ください"), list("ください"))
+        self.assertEqual(pieces(low, "サッカー"), list("サッカー"))
+        # ひらがなだけのトークンは境目を上げても分けない
+        self.assertEqual(pieces(low, "ください"), ["ください"])
 
     def test_three_character_tokens_are_never_split(self):
         low = low_score_tokenizer(self.tok, -10.0)
@@ -136,6 +138,18 @@ class RealTokenizerTests(unittest.TestCase):
         view = describe_tokens(["瀬戸内海"], threshold=-13.0)["results"][0]
         self.assertFalse(view["original"][0]["low"])
 
+
+    def test_hiragana_only_tokens_stay_whole(self):
+        from tokenizers import Tokenizer
+        tok = Tokenizer.from_file(str(find_tokenizer_json(SMALL_TOKENIZER)))
+        low = low_score_tokenizer(tok, -13.0)
+        # どれも出現度が -13 以下の4文字以上の1トークン（以前は か|ならず などに割れていた）
+        for word in ("かならず", "わからず", "わたくし", "あちこち", "よっぽど"):
+            self.assertEqual(pieces(tok, word), [word])
+            self.assertEqual(pieces(low, word), [word])
+        self.assertEqual(pieces(low, "私はかならず浦和レッズ"), ["私は", "かならず", "浦和", "レッ", "ズ"])
+        view = describe_tokens(["かならず"], threshold=-13.0)["results"][0]
+        self.assertFalse(view["original"][0]["low"])
 
 class SplitEncodingTests(unittest.TestCase):
     def setUp(self):

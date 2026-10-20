@@ -50,7 +50,8 @@ from token_split import (DEFAULT_TOKEN_SPLIT_THRESHOLD, TOKEN_SPLITS, active_thr
                          describe_tokens, threshold_value, token_split_applies)
 from text_cleanup import clean_pasted_text
 import console_ui  # noqa: E402
-from context_latents import ContextLatentStore, context_latent, decode_data_url, pcm_digest  # noqa: E402
+from context_latents import (ContextLatentStore, context_latent, decode_data_url, pcm_digest,  # noqa: E402
+                             trailing_silence_seconds)
 from third_party_licenses import dependency_licenses
 from speaker_catalog import blink_thumbnail_for, credit_for, display_name_for, policy_for, mouth_open_thumbnail_for, mouth_parts_for, portrait_for, speaker_catalog, _fallback_icon  # noqa: E402
 
@@ -270,6 +271,11 @@ IRODORI_QUERY_FIELDS: dict[str, dict] = {
         "description": "前のセリフの音声（このエンジンが返した WAV）。blockwise 対応モデル"
                        "（use_latent_prefix）を PyTorch か TensorRT で動かしているときだけ、その続きとして生成する。"
                        "それ以外のモデル・エンジンでは無視する",
+    },
+    "irodori_next_text": {
+        "type": "string", "nullable": True,
+        "description": "次のセリフの文（同じ話者）。blockwise 対応モデルでは「この行＋次の行」をまとめて作り、"
+                       "この行の話し終わりで切って返す（行末が言い切りにならない）。それ以外のモデル・エンジンでは無視する",
     },
     "irodori_sway_coeff": {
         "type": "number",
@@ -807,17 +813,20 @@ class VoicevoxAdapter:
         return store
 
     def _context_prefix(self, value):
-        """irodori_context_audio から prefix の latent を得る。返り値: (latent か None, 透かしが要るか)。"""
+        """irodori_context_audio から prefix の latent を得る。
+        返り値: (latent か None, 透かしが要るか, 前のセリフの末尾の無音の秒数)。"""
         if not value:
-            return None, False
+            return None, False, 0.0
         if not self.supports_prefix:
             console_ui.notice("voicevox", "irodori_context_audio is ignored (model/backend has no prefix support)",
                               stderr=True, style="yellow")
-            return None, False
+            return None, False, 0.0
         raw = decode_data_url(value, "irodori context audio")
         found = context_latent(self._context_store(), raw, self.tts.backend.runtime,
                                log=lambda message: console_ui.notice("voicevox", message, stderr=True))
-        return found if found is not None else (None, False)
+        if found is None:
+            return None, False, 0.0
+        return found[0], found[1], trailing_silence_seconds(raw)
 
     def remember_stream_alias(self, wav: bytes, sent_digest: str) -> None:
         """ストリーミングで送った PCM（エディタはそれで WAV を組み直す）の SHA-256 でも latent を引けるようにする。"""
@@ -857,6 +866,11 @@ class VoicevoxAdapter:
         text = READING_DICTIONARY.convert(text, **options)
         if not text:
             raise ValueError("audio query does not contain text (irodori_text/kana)")
+        # 次のセリフも読んで生成する（blockwise 対応モデルだけ）。この行と同じ前処理をかける
+        next_text = None
+        if query.get("irodori_next_text") and self.supports_prefix:
+            next_text = READING_DICTIONARY.convert(
+                clean_pasted_text(str(query["irodori_next_text"]))[:MAX_TEXT_CHARS], **options) or None
         if len(text) > MAX_TEXT_CHARS:
             raise ValueError(
                 f"セリフが長すぎます（{len(text)}文字 / 上限{MAX_TEXT_CHARS}文字）。"
@@ -917,7 +931,7 @@ class VoicevoxAdapter:
         )
         reference = query.get("irodori_reference_audio")
         with self.lock:
-            prefix_latent, context_watermark = self._context_prefix(query.get("irodori_context_audio"))
+            prefix_latent, context_watermark, prefix_tail = self._context_prefix(query.get("irodori_context_audio"))
             # The runtime reads reference audio from a file, so only that case
             # needs a temporary folder; the output WAV stays in memory.
             with (tempfile.TemporaryDirectory(prefix="irodori-vv-", dir=str(ROOT / "wrapper"))
@@ -962,6 +976,8 @@ class VoicevoxAdapter:
                     ref_wav=ref_wav,
                     log_fn=self.progress_callback,
                     prefix_latent=prefix_latent,
+                    prefix_tail_seconds=prefix_tail,
+                    lookahead_text=next_text,
                     watermark=context_watermark,
                 )
                 data = wav.getvalue()

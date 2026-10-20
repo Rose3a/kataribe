@@ -378,7 +378,13 @@ def log_line_markup(label: str, line: str) -> str:
             return "\n".join([f"{tag}{lines[0]}", f"{'':<7}{lines[1]}"])
         m = _TOKENS.match(body)
         if m:
-            pieces = f"[{DIM}]|[/]".join(esc(p) for p in m.group(2).split("|"))
+            # 語彙分割で分けた範囲は { } で囲まれている。中の | も含めて黄色のマーカーにする
+            pieces = ""
+            for chunk in re.split(r"(\{[^{}]+\})", m.group(2)):
+                if len(chunk) > 2 and chunk.startswith("{") and chunk.endswith("}"):
+                    pieces += f"[black on yellow]{esc(chunk[1:-1])}[/]"
+                else:
+                    pieces += esc(chunk).replace("|", f"[{DIM}]|[/]")
             return f"{tag}[{DIM}]読み {m.group(1)} トークン[/]  {pieces}"
         return f"{tag}[{DIM}]{esc(body)}[/]"
     if line.startswith("[voicevox] "):
