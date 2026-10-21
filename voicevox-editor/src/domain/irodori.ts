@@ -146,7 +146,7 @@ export type IrodoriSettings = {
   default_steps?: number;
   /** 生成済み音声をメモリに持っておく量（0〜1024MB、0 で持たない）。古いエンジンは返さない。 */
   audio_cache_mb?: number;
-  /** 省VRAM（TensorRT・CUDA。codec の窓デコード・参照音声用の部品を CPU に置く・待機中の VRAM をすぐ返す。TensorRT では CUDA Graph も使わない）。古いエンジンは返さない。 */
+  /** 省VRAM（TensorRT・CUDA。codec の窓デコード・テキストエンコーダや参照音声用の部品を CPU に置く・待機中の VRAM をすぐ返す。TensorRT では CUDA Graph も使わず、30 秒の待機でエンジンも解放する）。古いエンジンは返さない。 */
   low_vram?: boolean;
 };
 

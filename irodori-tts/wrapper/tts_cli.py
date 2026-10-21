@@ -468,7 +468,8 @@ class TorchBackend:
         いつも: 使っていない VRAM を、待機して数秒たったら返す（返さないと長文や参照音声の後の
         5GB 前後を持ったままになる。v4.1 Small・RTX 3060）。
         省VRAM（IRODORI_LOW_VRAM=1）: 参照音声のときしか使わない話者エンコーダと codec の
-        エンコーダを CPU に置き（使うときだけ GPU へ、往復約0.1秒）、長い音声は 6 秒の窓で
+        エンコーダを CPU に置き（使うときだけ GPU へ、往復約0.1秒）、テキストエンコーダ（−約0.6GB）と
+        prefix エンコーダ（−約0.12GB）も CPU に置き、長い音声は 6 秒の窓で
         デコードし（長文のピーク −0.6〜0.9GB。PyTorch の codec では一度にデコードした結果と
         SNR 約47dB で、ビット一致はしない）、待機1秒で VRAM を返す。
         """
@@ -480,6 +481,10 @@ class TorchBackend:
             if getattr(model, "speaker_encoder", None) is not None:
                 moved += vram_trim.park_on_demand(model.speaker_encoder, "cuda")
             moved += vram_trim.park_on_demand(self.runtime.codec.model.encoder, "cuda")
+            if vram_trim.text_on_cpu_enabled(low_vram):
+                moved += vram_trim.park_text_backbone(model, "cuda")
+            if vram_trim.low_vram_flag("IRODORI_PREFIX_ON_DEMAND", low_vram):
+                moved += vram_trim.park_prefix_encoder(model, "cuda")
             self.stream_decoder.chunk_frames = int(os.environ.get("IRODORI_CODEC_CHUNK_FRAMES", "150")) or None
             torch.cuda.empty_cache()
             print(f"[torch] low VRAM: moved {moved / 2**20:.0f} MB of reference-only weights to CPU RAM",
@@ -589,6 +594,9 @@ class TrtBackend:
         import vram_trim
         # 省VRAM（エディタの設定、IRODORI_LOW_VRAM=1）: CUDA Graph を切り（約0.5GB、1行 25〜55ms 遅い）、
         # codec を窓でデコードし（長文で −0.4〜0.6GB、+約25ms）、待機中の VRAM を早めに返す。
+        # さらにテキストエンコーダを CPU に置き（−約0.6GB、1行 +50〜190ms）、prefix エンコーダと
+        # 文脈 K/V の射影を使うときだけ GPU に載せ（−約0.28GB、+0〜24ms）、待機が30秒続いたら
+        # plan を解放する（待機時 約1.2GB → 0.3GB、解放後の最初の1行 +約1秒）。
         low_vram = os.environ.get("IRODORI_LOW_VRAM") == "1"
         graphs = os.environ.get("IRODORI_CUDA_GRAPHS")
         if graphs is None:
@@ -604,6 +612,7 @@ class TrtBackend:
             try:
                 with torch.cuda.stream(self.stream):
                     self.codec = trt_codec.install(self.runtime, Path(codec_plan))
+                    self.codec_plan_path = Path(codec_plan)
             except Exception as exc:  # noqa: BLE001 - the PyTorch codec still works
                 print(f"[trt] codec plan unusable, using the PyTorch codec: {exc}",
                       file=sys.stderr, flush=True)
@@ -622,8 +631,14 @@ class TrtBackend:
         self.idle_release = None
         if os.environ.get("IRODORI_TRT_LOW_VRAM", "1") != "0":
             import vram_trim
-            moved = vram_trim.install(self)
-            self.idle_release = vram_trim.IdleRelease(self.busy, delay=1.0 if low_vram else 5.0)
+            moved = vram_trim.install(self, text_on_cpu=vram_trim.text_on_cpu_enabled(low_vram),
+                                      prefix_on_demand=vram_trim.low_vram_flag("IRODORI_PREFIX_ON_DEMAND", low_vram),
+                                      kv_on_demand=vram_trim.low_vram_flag("IRODORI_KV_ON_DEMAND", low_vram),
+                                      unloadable_plans=bool(vram_trim.unload_after_seconds(low_vram)))
+            self.idle_release = vram_trim.IdleRelease(
+                self.busy, delay=1.0 if low_vram else 5.0,
+                unload=getattr(self, "unload_plans", None),
+                unload_after=vram_trim.unload_after_seconds(low_vram) or None)
             print(f"[trt] moved {moved / 2**20:.0f} MB of plan-duplicated weights to CPU RAM",
                   file=sys.stderr, flush=True)
 
