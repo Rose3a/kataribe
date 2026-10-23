@@ -60,6 +60,16 @@ try {
     if (!$Force -and (Test-Path $stateFile) -and (Test-Path $python) -and (Test-FrontendInstall)) {
         $saved = Get-Content $stateFile -Raw | ConvertFrom-Json
         if ($saved.identity -eq $identity) {
+            # Setups from before the bunsetsu token split option lack fugashi / unidic-lite
+            # (irodori-tts\wrapper\bunsetsu.py). Add them without rebuilding; if this fails,
+            # only that optional, off-by-default setting stays unavailable.
+            & $python -c "import importlib.util as u, sys; sys.exit(0 if u.find_spec('fugashi') and u.find_spec('unidic_lite') else 1)"
+            if ($LASTEXITCODE -ne 0 -and (Test-Path -LiteralPath $uv -PathType Leaf)) {
+                Write-Host '[MECAB] Installing fugashi and unidic-lite for the bunsetsu token split...' -ForegroundColor Cyan
+                $env:UV_CACHE_DIR = Join-Path $stateDir 'uv-cache'
+                & $uv pip install --python $python 'fugashi==1.5.2' 'unidic-lite==1.0.8'
+                if ($LASTEXITCODE -ne 0) { Write-Warning 'fugashi install failed. The bunsetsu token split option stays unavailable.' }
+            }
             # Setups from before the watermark only need SilentCipher added,
             # not the whole environment rebuilt.
             & $python (Join-Path $PSScriptRoot 'prepare.py') --backend $Backend --watermark-only --check | Out-Null
