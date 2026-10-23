@@ -130,6 +130,8 @@ export type IrodoriSettings = {
   sway_coeff: number;
   /** 語彙分割の境目。古いエンジンは返さない（-13 として扱う）。 */
   token_split_threshold?: IrodoriTokenSplitThreshold;
+  /** 文節の頭（助詞・助動詞のあとに自立語が来る位置）でも分ける。古いエンジンは返さない。 */
+  token_split_bunsetsu?: boolean;
   /** 生成の完了を待たずに鳴らし始める（ストリーミング再生）。古いエンジンは返さない。 */
   stream_playback?: boolean;
   /**
@@ -179,6 +181,10 @@ export type IrodoriTokenSplitState = {
   /** true なら、v4 Small 系（modernbert-ja）のモデルで、境目が none でなければ当てる。 */
   applies: boolean;
   modelTokenizer: string | null;
+  /** 文節の頭でも分ける設定か。古いエンジンは返さない。 */
+  bunsetsu?: boolean;
+  /** 文節の区切りに使う MeCab（fugashi・unidic-lite）が入っているか。古いエンジンは返さない。 */
+  bunsetsuAvailable?: boolean;
 };
 
 /** エンジンが持つ進捗（生成だけでなくモデル取得でも動く）。 */

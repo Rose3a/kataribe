@@ -139,6 +139,42 @@ class RealTokenizerTests(unittest.TestCase):
         self.assertFalse(view["original"][0]["low"])
 
 
+    def test_force_splits_cut_only_that_token(self):
+        from tokenizers import Tokenizer
+        tok = Tokenizer.from_file(str(find_tokenizer_json(SMALL_TOKENIZER)))
+        low = low_score_tokenizer(tok, -13.0)
+
+        def cut(text):
+            return [text[a:b] for _, a, b in token_split._encode_low(low, text)]
+        # 指定した語は、どれも元は1トークンで、指定した片の境目で必ず切れる（語彙にある片はそのトークン、
+        # 無い片はさらに細かく分かれる）
+        for word, parts in token_split.FORCE_SPLITS.items():
+            self.assertEqual(pieces(tok, word), [word])
+            self.assertEqual("".join(parts), word)
+            got = cut(word)
+            ends = {sum(len(p) for p in got[:i + 1]) for i in range(len(got))}
+            for i, part in enumerate(parts):
+                self.assertIn(sum(len(p) for p in parts[:i + 1]), ends, word)
+                if low.token_to_id(part) is not None:
+                    self.assertIn(part, got, word)
+        self.assertEqual(cut("イベルメクチン"), ["イ", "ベル", "メ", "ク", "チン"])  # 語彙に無い片 イベルメ|クチン
+        # 前後の区切りは元のまま、その語だけを割る
+        text = "朝食はセブンイレブンのおにぎりですませた。"
+        self.assertEqual(pieces(tok, text)[:3], ["朝食は", "セブンイレブン", "の"])
+        self.assertEqual(cut(text), ["朝食は", "セブン", "イレブン"] + pieces(tok, text)[2:])
+        self.assertEqual(cut("楽天市場で買う"), ["楽天", "市場", "で買う"])
+        # 境目より上の、もとから言える語は割らない（一律に境目を上げていたときは パ|ジャ|マ に割れた）
+        for word in ("パジャマ", "フェンス", "フォース", "株式会社"):
+            self.assertEqual(pieces(low, word), [word])
+        # 見えない区切り・画面の表示も同じ割り方
+        hf = HF(tok)
+        with active_threshold(-13.0):
+            ids = split_token_ids(hf, "楽天市場で")
+        self.assertEqual(ids, [tok.token_to_id(p) for p in ("楽天", "市場")] + tok.encode("で", add_special_tokens=False).ids)
+        view = describe_tokens(["楽天市場で"], threshold=-13.0)["results"][0]
+        self.assertTrue(view["original"][0]["low"])
+        self.assertEqual([t["text"] for t in view["tokens"]], ["楽天", "市場", "で"])
+
     def test_hiragana_only_tokens_stay_whole(self):
         from tokenizers import Tokenizer
         tok = Tokenizer.from_file(str(find_tokenizer_json(SMALL_TOKENIZER)))

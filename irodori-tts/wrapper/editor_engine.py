@@ -101,6 +101,7 @@ class EditorAdapter:
     # 既定モデル: 前のセリフから続けて生成できる Blockwise の bf16 版（FP32 版と生成結果は同じで半分の大きさ）
     DEFAULT_SETTINGS = dict(backend="cpu", model="rose3/Irodori-TTS-v4.1-Small-Blockwise/bf16", seed=4763674,
                             sway_coeff=-1.0, token_split_threshold=DEFAULT_TOKEN_SPLIT_THRESHOLD,
+                            token_split_bunsetsu=False,
                             stream_playback=False, blockwise=False, blockwise_lookahead=False,
                             default_steps=DEFAULT_STEPS_RF,
                             audio_cache_mb=DEFAULT_AUDIO_CACHE_MB, low_vram=False)
@@ -136,6 +137,7 @@ class EditorAdapter:
         self.config_path = ROOT / "editor-settings.json"
         self.settings = dict(backend="cpu", model="rose3/Irodori-TTS-v4.1-Small-Blockwise/bf16", seed=4763674,
                              sway_coeff=-1.0, token_split_threshold=DEFAULT_TOKEN_SPLIT_THRESHOLD,
+                            token_split_bunsetsu=False,
                             stream_playback=False, blockwise=False, blockwise_lookahead=False,
                             default_steps=DEFAULT_STEPS_RF,
                             audio_cache_mb=DEFAULT_AUDIO_CACHE_MB, low_vram=False)
@@ -412,6 +414,8 @@ class EditorAdapter:
                     " W8A8 だけです。それ以外は NVIDIA / CUDA を選んでください")
         if value.get("token_split_threshold", DEFAULT_TOKEN_SPLIT_THRESHOLD) not in TOKEN_SPLIT_THRESHOLDS:
             raise ValueError("token_split_threshold は -10、-11、-12、-13、none のどれかを指定してください")
+        if not isinstance(value.get("token_split_bunsetsu", False), bool):
+            raise ValueError("token_split_bunsetsu は true か false を指定してください")
         steps = value.get("default_steps", DEFAULT_STEPS_RF)
         if isinstance(steps, bool) or not isinstance(steps, int) or not 1 <= steps <= 80:
             raise ValueError("default_steps は1〜80の整数で指定してください")
@@ -676,6 +680,12 @@ class EditorAdapter:
             return self.settings.get("token_split_threshold", DEFAULT_TOKEN_SPLIT_THRESHOLD)
 
     @property
+    def token_split_bunsetsu(self):
+        """文節の頭でも分けるか（全体の設定）。/irodori/tokenize も合成と同じに分ける。"""
+        with self.state_lock:
+            return bool(self.settings.get("token_split_bunsetsu", False))
+
+    @property
     def text_tokenizer_repo(self):
         """読み込み中のモデルのトークナイザ。未読み込みなら None。"""
         with self.state_lock:
@@ -689,7 +699,10 @@ class EditorAdapter:
             delegate = self.delegate
         repo = (getattr(delegate, "text_tokenizer_repo", None) if delegate is not None
                 else model_info.get("textTokenizerRepo"))
-        return {"threshold": threshold, "applies": token_split_applies(repo), "modelTokenizer": repo}
+        import bunsetsu
+        return {"threshold": threshold, "applies": token_split_applies(repo), "modelTokenizer": repo,
+                "bunsetsu": bool(settings.get("token_split_bunsetsu", False)),
+                "bunsetsuAvailable": bunsetsu.available()}
 
     def status(self):
         available = self.available_backends()
@@ -1253,6 +1266,7 @@ class EditorAdapter:
                 query.pop("irodori_next_text", None)
             self.delegate.token_split_threshold = self.settings.get(
                 "token_split_threshold", DEFAULT_TOKEN_SPLIT_THRESHOLD)
+            self.delegate.token_split_bunsetsu = bool(self.settings.get("token_split_bunsetsu", False))
             started = time.perf_counter()
             try:
                 result = self.delegate.synthesize(query, sid)

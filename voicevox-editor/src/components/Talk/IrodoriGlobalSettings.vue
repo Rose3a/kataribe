@@ -113,6 +113,21 @@
         }}
       </div>
       <QToggle
+        v-model="tokenSplitBunsetsu"
+        dense
+        label="文節の頭でも分ける（試験中）"
+        :disable="locked || tokenSplit?.bunsetsuAvailable === false"
+      />
+      <div class="text-caption q-mb-sm">
+        助詞・助動詞のあとに自立語が来る位置でも分けて読ませます（に乗|ったら →
+        に|乗った|ら、 はありますか →
+        は|ありますか）。文脈で読みが決まる語（上手・寒気など）が少し良くなります。語彙分割と同じく
+        v4 Small
+        系のモデルにだけ当たり、セリフごとの語彙分割が「使う」のときに効きます。{{
+          tokenSplitBunsetsuNote
+        }}
+      </div>
+      <QToggle
         v-model="streamPlayback"
         dense
         label="ストリーミング再生（生成の完了を待たずに再生を始める）"
@@ -328,6 +343,8 @@ const hasUnappliedChanges = computed(
         IRODORI_DEFAULT_TOKEN_SPLIT_THRESHOLD) !==
         (appliedSettings.value.token_split_threshold ??
           IRODORI_DEFAULT_TOKEN_SPLIT_THRESHOLD) ||
+      (settings.value.token_split_bunsetsu ?? false) !==
+        (appliedSettings.value.token_split_bunsetsu ?? false) ||
       (settings.value.low_vram ?? false) !==
         (appliedSettings.value.low_vram ?? false)),
 );
@@ -486,6 +503,17 @@ const tokenSplitThreshold = computed<IrodoriTokenSplitThreshold>({
     if (settings.value) settings.value.token_split_threshold = value;
   },
 });
+const tokenSplitBunsetsu = computed<boolean>({
+  get: () => settings.value?.token_split_bunsetsu === true,
+  set: (value) => {
+    if (settings.value) settings.value.token_split_bunsetsu = value;
+  },
+});
+const tokenSplitBunsetsuNote = computed(() =>
+  tokenSplit.value?.bunsetsuAvailable === false
+    ? "MeCab（fugashi・unidic-lite）が入っていないため使えません。"
+    : "",
+);
 const tokenSplitThresholds: {
   label: string;
   value: IrodoriTokenSplitThreshold;

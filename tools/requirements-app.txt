@@ -19,5 +19,8 @@ sherpa-onnx>=1.12,<2
 # SilentCipher（参照音声で生成した音声への透かし）が読み込む。SilentCipher 本体は
 # 依存に Flask などを含むため、setup.ps1 が --no-deps で固定コミットを入れる。
 pydub==0.25.1
+# 語彙分割の「文節の頭でも分ける」（irodori-tts/wrapper/bunsetsu.py）。MeCab と UniDic の軽量辞書（約50MB）。
+fugashi==1.5.2
+unidic-lite==1.0.8
 # ONNX packages are installed separately by setup.ps1.  descript-audiotools
 # requires protobuf<3.20, while modern ONNX requires protobuf>=3.20.2.

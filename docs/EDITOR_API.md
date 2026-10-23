@@ -49,6 +49,7 @@ Editor 経由の `/synthesis` では、次のように設定が適用されま�
 | `seed` | Editor の共通設定 | `irodori_seed` が省略された場合の既定値 |
 | `sway_coeff` | Editor の共通設定 | 行クエリへ適用。入力側の同名値より優先 |
 | `token_split_threshold` | Editor の共通設定、`/irodori/settings` | 語彙分割の境目。`-10` / `-11` / `-12` / `-13`（既定）/ `none`。4文字以上で出現度がこれ以下のトークンを避けて分ける。v4 Small 系（modernbert-ja）のモデルにだけ当たる。変更はモデルの再読み込みなしで次の合成から有効。セリフごとの `irodori_token_split` が `off` なら常に当てない |
+| `token_split_bunsetsu` | Editor の共通設定、`/irodori/settings` | 試験中。`true` なら文節の頭（助詞・助動詞のあとに自立語が来る位置）でも分けてエンコードする（`に乗\|ったら` → `に\|乗った\|ら`）。MeCab（fugashi・unidic-lite）を使う。既定 `false`。当たる条件は `token_split_threshold` と同じ（v4 Small 系・セリフの `irodori_token_split` が `on`）で、境目が `none` でも効く。`GET /irodori/settings` の `tokenSplit.bunsetsu` / `bunsetsuAvailable` で状態が分かる |
 | CFG / step / Schedule / 音声長 / caption / 話速など | 音声クエリの `irodori_*` / `speedScale` | その1行だけ |
 | ユーザー辞書 | プロジェクトルートの `user_dictionary.json` | `/audio_query` と合成時のテキスト変換 |
 | 同梱の読み辞書 | `irodori-tts/wrapper/data/builtin_readings.json` | ユーザー辞書に当たらなかった部分に、英語の読みより先に当てる。読みが1通りの語（英字略語・四字熟語・地名・人名・日常の難読語・作品名、約3,200語）と、数字の直後の単位（`10km` → 10キロメートル）。読みは英字と単位がカタカナ、漢字の語がひらがな。ユーザー辞書に同じ語を登録すればそちらが優先する。ファイルを書き換えると再起動なしで反映 |

@@ -17,6 +17,7 @@ from unittest.mock import Mock, patch
 
 IRODORI_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(IRODORI_ROOT / "wrapper"))
+import bunsetsu  # noqa: E402
 try:
     from editor_engine import EditorAdapter
 except ModuleNotFoundError as exc:  # テスト環境に torch が無い場合のスタブ
@@ -238,7 +239,9 @@ class ModelInfoTests(unittest.TestCase):
         large = {"textTokenizerRepo": "google/t5gemma-2-1b-1b"}
         self.assertEqual(adapter.token_split_state({"token_split_threshold": "-12"}, small),
                          {"threshold": "-12", "applies": True,
-                          "modelTokenizer": "sbintuitions/modernbert-ja-310m"})
+                          "modelTokenizer": "sbintuitions/modernbert-ja-310m",
+                          "bunsetsu": False, "bunsetsuAvailable": bunsetsu.available()})
+        self.assertTrue(adapter.token_split_state({"token_split_bunsetsu": True}, small)["bunsetsu"])
         self.assertFalse(adapter.token_split_state({}, large)["applies"])
         self.assertEqual(adapter.token_split_state({}, large)["threshold"], "-13")
         # メタデータが読めないモデルは当てる側に倒す

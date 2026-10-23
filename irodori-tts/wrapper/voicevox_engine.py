@@ -796,6 +796,8 @@ class VoicevoxAdapter:
         # 語彙分割の境目（全体の設定。エディタが合成のたびに渡す）と、読み込み中のモデルの
         # トークナイザ（境目の尺度の modernbert-ja と同じか比べる）。
         self.token_split_threshold = DEFAULT_TOKEN_SPLIT_THRESHOLD
+        # 文節の頭でも分けるか（全体の設定 token_split_bunsetsu。bunsetsu.py）
+        self.token_split_bunsetsu = False
         model_cfg = getattr(getattr(self.tts.backend, "runtime", None), "model_cfg", None)
         self.text_tokenizer_repo = getattr(model_cfg, "text_tokenizer_repo", None)
         # 前のセリフから続けて生成（blockwise）するための、返した音声の latent（context_latents.py）
@@ -841,6 +843,11 @@ class VoicevoxAdapter:
             return None
         return threshold_value(getattr(self, "token_split_threshold", DEFAULT_TOKEN_SPLIT_THRESHOLD))
 
+    def split_bunsetsu(self) -> bool:
+        """いまのモデルに文節の区切りを当てるか（語彙分割と同じく modernbert-ja のモデルだけ）。"""
+        return (bool(getattr(self, "token_split_bunsetsu", False))
+                and token_split_applies(getattr(self, "text_tokenizer_repo", None)))
+
     def text_tokenizer(self):
         """モデルに文を渡すトークナイザ（/irodori/tokenize 用）。"""
         return getattr(getattr(self.tts.backend, "runtime", None), "tokenizer", None)
@@ -857,7 +864,8 @@ class VoicevoxAdapter:
     def synthesize(self, query: dict, speaker_id: int) -> bytes:
         options, token_split = _reading_options(query)
         # 語彙分割はエンコード時に当てる（文字列は書き換えない）
-        with active_threshold(self.split_threshold() if token_split else None):
+        with active_threshold(self.split_threshold() if token_split else None,
+                              bunsetsu=token_split and self.split_bunsetsu()):
             return self._synthesize(query, speaker_id, options)
 
     def _synthesize(self, query: dict, speaker_id: int, options: dict) -> bytes:
@@ -1365,7 +1373,8 @@ class Handler(BaseHTTPRequestHandler):
                 threshold = threshold_value(getattr(adapter, "token_split_threshold",
                                                     DEFAULT_TOKEN_SPLIT_THRESHOLD))
                 repo = getattr(adapter, "text_tokenizer_repo", None) if tokenizer is not None else None
-                self._json(200, describe_tokens(texts, tokenizer, threshold, repo))
+                bunsetsu = bool(getattr(adapter, "token_split_bunsetsu", False))
+                self._json(200, describe_tokens(texts, tokenizer, threshold, repo, bunsetsu=bunsetsu))
                 return
             self._json(404, {"detail": "Not Found"})
         except RequestBodyError as exc:
