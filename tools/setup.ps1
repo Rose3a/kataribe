@@ -1,4 +1,4 @@
-param([ValidateSet('auto','cuda','cpu','radeon')][string]$Backend='auto', [switch]$Check, [switch]$Force)
+param([ValidateSet('auto','cuda','cpu','radeon')][string]$Backend='auto', [switch]$Check, [switch]$Force, [switch]$Quick)
 $ErrorActionPreference='Stop'
 $box = Split-Path $PSScriptRoot -Parent
 $stateDir = Join-Path $box '.local'
@@ -64,6 +64,7 @@ try {
             # (irodori-tts\wrapper\bunsetsu.py). Add them without rebuilding; if this fails,
             # only that optional, off-by-default setting stays unavailable.
             & $python -c "import importlib.util as u, sys; sys.exit(0 if u.find_spec('fugashi') and u.find_spec('unidic_lite') else 1)"
+            if ($LASTEXITCODE -ne 0 -and $Quick) { exit 3 }
             if ($LASTEXITCODE -ne 0 -and (Test-Path -LiteralPath $uv -PathType Leaf)) {
                 Write-Host '[MECAB] Installing fugashi and unidic-lite for the bunsetsu token split...' -ForegroundColor Cyan
                 $env:UV_CACHE_DIR = Join-Path $stateDir 'uv-cache'
@@ -74,6 +75,7 @@ try {
             # not the whole environment rebuilt.
             & $python (Join-Path $PSScriptRoot 'prepare.py') --backend $Backend --watermark-only --check | Out-Null
             if ($LASTEXITCODE -eq 0) { exit 0 }
+            if ($Quick) { exit 3 }
             if (Test-Path -LiteralPath $uv -PathType Leaf) {
                 Start-Transcript -Path (Join-Path $box 'logs\first-setup.log') -Append | Out-Null
                 Write-Host '[WATERMARK] Installing SilentCipher for reference-audio watermarking...' -ForegroundColor Cyan
@@ -88,6 +90,9 @@ try {
             }
         }
     }
+    # -Quick (kataribe.exe runs this without a window): only confirm a finished setup.
+    # Anything that would install or download exits 3 so it reruns where progress is visible.
+    if ($Quick) { exit 3 }
     Start-Transcript -Path (Join-Path $box 'logs\first-setup.log') -Append | Out-Null
     Write-Host "Irodori-TTS first setup / repair`nGPU: $($gpu -join ', ')`nBackend: $Backend`nThis downloads Python, dependencies and models. Please keep this window open."
     $env:UV_PYTHON_INSTALL_DIR = Join-Path $stateDir 'python'
@@ -164,7 +169,7 @@ try {
     # without asking the resolver to reconcile those incompatible metadata.
     # ONNX 1.23 needs protobuf 6.31+ and fails to import on protobuf 5, which
     # --no-deps would not catch; keep it below 1.23 to match the protobuf cap.
-    Run-Uv @('pip','install','--python',$python,'--upgrade','protobuf>=4.25.1,<6','ml_dtypes>=0.5.4','flatbuffers','coloredlogs','packaging','sympy')
+    Run-Uv @('pip','install','--python',$python,'--upgrade','protobuf>=4.25.1,<6','ml_dtypes>=0.5.4','flatbuffers==25.12.19','coloredlogs','packaging','sympy')
     Run-Uv @('pip','install','--python',$python,'--no-deps','onnx>=1.16,<1.23','onnxruntime>=1.24,<2','onnxscript>=0.2','onnx_ir>=0.1')
     if (Test-Path -LiteralPath $prebuiltEditor -PathType Leaf) {
         Write-Host '[EDITOR] Using the bundled Electron editor.' -ForegroundColor Cyan

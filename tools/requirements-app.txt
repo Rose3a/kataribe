@@ -1,5 +1,10 @@
 # Torch is installed separately from the selected CPU/CUDA index.
 transformers==5.16.1
+# 次の3つと下の sherpa-onnx は licenses\ に本文の控えがある版（tools/generate_runtime_licenses.py の SNAPSHOT_VERSIONS）。
+# 固定しないと新しい版が出た時点で初回セットアップのライセンス収集が止まるので、上げるときは控えも見直す。
+tokenizers==0.23.2
+ffmpy==1.0.0
+tensorboard-data-server==0.7.2
 huggingface-hub==1.30.0
 safetensors==0.8.0
 sentencepiece==0.1.99
@@ -15,7 +20,8 @@ torchao>=0.16,<0.17
 torchcodec>=0.10,<0.11
 # 口パクのタイムライン（/irodori/timeline）で使うASR。モデル本体（約626MB）は
 # 初回利用時にエンジンが models\asr へ自動取得する。
-sherpa-onnx>=1.12,<2
+sherpa-onnx==1.13.8
+sherpa-onnx-core==1.13.8
 # SilentCipher（参照音声で生成した音声への透かし）が読み込む。SilentCipher 本体は
 # 依存に Flask などを含むため、setup.ps1 が --no-deps で固定コミットを入れる。
 pydub==0.25.1
