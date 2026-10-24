@@ -56,7 +56,7 @@ from third_party_licenses import dependency_licenses
 from speaker_catalog import blink_thumbnail_for, credit_for, display_name_for, policy_for, mouth_open_thumbnail_for, mouth_parts_for, portrait_for, speaker_catalog, _fallback_icon  # noqa: E402
 
 
-ENGINE_VERSION = "0.1.1"
+ENGINE_VERSION = "0.1.2"
 ENGINE_UUID_NAMESPACE = uuid.UUID("1d9f9d29-5a2a-4a4d-81e9-bb5f78a89d4b")
 DEFAULT_SPEAKER_NAME = "tsukuyomi"
 MAX_BODY_BYTES = 16 * 1024 * 1024

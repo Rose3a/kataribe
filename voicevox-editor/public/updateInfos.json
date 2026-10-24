@@ -1,5 +1,16 @@
 [
   {
+    "version": "0.1.2",
+    "descriptions": [
+      "Radeon（DirectML）で 500M v3 と Blockwise（bf16）のモデルが使えなかったのを直す",
+      "Radeon で量子化モデル（INT4・W8A8）を選んだときは、設定の時点で分かりやすいエラーを出す",
+      "Radeon の FP16（IRODORI_RADEON_PRECISION=fp16）で音声にならなかったのを直す（FP32 の約1.5倍速）",
+      "Radeon のセットアップで音声コーデックを二重にダウンロードしていたのを直す",
+      "セットアップ失敗時に案内するログのファイル名を、実際の logs\\first-setup.log に合わせる"
+    ],
+    "contributors": []
+  },
+  {
     "version": "0.1.1",
     "descriptions": [
       "TensorRT 経路の高速化（codec の FP16 TensorRT 化、条件エンコーダの CUDA Graph 化、ディスク I/O の廃止など。1 行あたり約 2.7 倍速）",
