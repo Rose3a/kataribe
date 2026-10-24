@@ -250,17 +250,27 @@ class ModelStorage:
             detail = f"{identity.get('gpu', '?')} · TensorRT {identity.get('trt', '?')}"
             # INT4 の plan（trt_int4.py）は identity に variant と変換スクリプトの内容ハッシュが加わる
             int4 = identity.get("variant") == "int4"
-            env = {k: v for k, v in identity.items() if k not in ("model", "variant", "int4_sources")}
+            adaln = identity.get("variant") == "adaln"
+            env = {k: v for k, v in identity.items()
+                   if k not in ("model", "variant", "int4_sources", "int8_sources", "base", "adaln_sources")}
             if int4:
                 try:
                     from trt_int4 import int4_sources
                     int4_current = identity.get("int4_sources") == int4_sources()
                 except Exception:  # noqa: BLE001
                     int4_current = False
+            elif adaln:  # adaLN 事前計算の plan（trt_adaln.py）。変換スクリプトの内容ハッシュが加わる
+                try:
+                    from trt_adaln import adaln_sources
+                    int4_current = identity.get("adaln_sources") == adaln_sources()
+                except Exception:  # noqa: BLE001
+                    int4_current = False
             else:
                 int4_current = True
             if int4:
                 label += "（INT4）"
+            elif adaln:
+                label += "（adaLN事前計算）"
             if active_dir is not None and folder.resolve() == active_dir:
                 status, note = "in_use", "読み込み中のモデルが使っています"
             elif current is not None and env == current and int4_current:

@@ -814,7 +814,13 @@ class EditorAdapter:
                 from trt_int8 import ensure_plan
             else:
                 from trt_cache import ensure_plan
-            plan = ensure_plan(local_model, self._set_progress, self._runtime_log)
+            import trt_adaln
+            if trt_adaln.usable(local_model):
+                # adaLN を事前計算にした plan（DiT 1回 約16%、sample_rf −6〜14%）。作れなければ従来の plan。
+                plan, _ = trt_adaln.ensure_plan_or_fallback(
+                    local_model, self._set_progress, self._runtime_log, ensure_plan)
+            else:
+                plan = ensure_plan(local_model, self._set_progress, self._runtime_log)
             self._active_plan = Path(plan)
             self._prepare_trt_codec()
         return VoicevoxAdapter(self.settings["backend"], 50125, resolve_embed_dirs(),

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 import torch
+import adaln_pre
 import console_ui
 from stream_decode import StreamingDecode, current_sink
 
@@ -568,6 +569,16 @@ class TrtBackend:
         ))
         self.original_forward = self.runtime.model.forward_with_encoded_conditions
         self.adapter = Adapter(self.runtime.model, self.engine, compact=True)
+        # adaLN を事前計算にした plan（t が mod）なら、全ステップ分の表を合成の前に作って渡す。
+        # 重みは vram_trim が plan 用として捨てる前に、ここで持っておく。
+        self.adaln = None
+        if adaln_pre.plan_takes_mod(self.engine):
+            self.adaln = adaln_pre.AdalnPrecompute(
+                self.runtime.model, low_vram=os.environ.get("IRODORI_LOW_VRAM") == "1")
+            self.adapter = adaln_pre.AdalnAdapter(self.adapter, self.adaln)
+            adaln_pre.install_sample_hook(self.adaln)
+            print(f"[trt] adaLN precompute: {self.adaln.bytes / 2**20:.0f} MB of weights on "
+                  f"{'CPU' if self.adaln.low_vram else 'GPU'}", file=sys.stderr, flush=True)
         # blockwise 対応モデルは、prefix を caption 枠に足して同じ plan で動かす
         self.prefix_capable = (bool(getattr(self.runtime, "supports_prefix", False))
                                and _plan_max_caption(self.engine) is not None)
