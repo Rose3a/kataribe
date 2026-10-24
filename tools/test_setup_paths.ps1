@@ -32,8 +32,9 @@ foreach ($entry in @('setup.bat', 'bat\first_setup.bat')) {
         $errors = $process.StandardError.ReadToEnd()
         $process.WaitForExit()
         if ($process.ExitCode -ne $expected) { throw "$entry returned $($process.ExitCode), expected $expected`: $output $errors" }
-        $log = Get-Content -LiteralPath (Join-Path $box 'logs\first_setup.log') -Raw
-        if ($log -notmatch 'REACHED_SETUP') { throw 'Installer was not reached' }
+        # first_setup.bat no longer redirects the installer into a log file
+        # (setup.ps1 writes logs\first-setup.log itself), so check its output.
+        if ($output -notmatch 'REACHED_SETUP') { throw 'Installer was not reached' }
         Write-Host "PASS $entry exit=$expected"
         $process.Dispose()
     }

@@ -100,10 +100,12 @@ def main():
     args = parser.parse_args()
     from huggingface_hub import hf_hub_download
     # Pinned revision so an existing ONNX codec can be reproduced later.
+    # prepare.py and the runtime use HF_HOME=.cache\huggingface, whose cache is
+    # the hub\ subfolder; pointing at the parent would download the codec twice.
     weights = hf_hub_download("Aratako/Semantic-DACVAE-Japanese-32dim", "weights.pth",
                               revision=os.environ.get("IRODORI_CODEC_REVISION",
                                                       "47376ee24834d7a05a48ebabfe3cde29b3c5e214"),
-                              cache_dir=str(BOX / ".cache" / "huggingface"))
+                              cache_dir=str(BOX / ".cache" / "huggingface" / "hub"))
     model = DACVAE.load(weights).eval().to(
         dtype=torch.float16 if args.precision == "fp16" else torch.float32)
     patch_runtime_watermark(model)

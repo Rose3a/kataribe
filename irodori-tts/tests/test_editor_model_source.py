@@ -221,6 +221,20 @@ class ModelInfoTests(unittest.TestCase):
                 adapter.validate(settings)
             adapter.validate({**settings, "backend": "cuda"})
 
+    def test_quantized_models_are_rejected_for_radeon(self):
+        adapter = fake_adapter()
+        adapter.available_backends = lambda: {"cpu": True, "cuda": False, "trt": False, "radeon": True}
+        settings = dict(backend="radeon", model="rose3/Irodori-TTS-v4.1-Small-Blockwise/w8a8",
+                        seed=1, sway_coeff=-1.0)
+        for quantization in ("int4_weight_only", "int8_dynamic_activation_int8_weight", "unknown"):
+            adapter.model_info = lambda model, q=quantization: {"quantization": q}
+            with self.assertRaisesRegex(ValueError, "Radeon"):
+                adapter.validate(settings)
+            adapter.validate({**settings, "backend": "cpu"})
+        # bf16 / FP32 のモデル（量子化なし）は Radeon で使える
+        adapter.model_info = lambda model: {"quantization": None, "blockwise": True}
+        adapter.validate({**settings, "model": "rose3/Irodori-TTS-v4.1-Small-Blockwise/bf16"})
+
     def test_token_split_threshold_is_validated_and_defaults_to_minus_13(self):
         adapter = fake_adapter()
         adapter.available_backends = lambda: {"cpu": True, "cuda": False, "trt": False, "radeon": False}

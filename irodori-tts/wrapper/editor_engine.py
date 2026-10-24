@@ -412,6 +412,16 @@ class EditorAdapter:
                 raise ValueError(
                     "TensorRT で使える量子化モデルは INT4（int4-weight-only）と、TensorRT 用の活性スケール付きの"
                     " W8A8 だけです。それ以外は NVIDIA / CUDA を選んでください")
+        if value["backend"] == "radeon":
+            try:
+                info = self.model_info(model)
+            except Exception:  # noqa: BLE001 - 判定できなければ読み込み時のエラーに任せる
+                info = {}
+            # DirectML の作業プロセスは通常の重み（FP32 / bf16）だけを読める。量子化モデルは読み込みで落ちる。
+            if info.get("quantization"):
+                raise ValueError(
+                    "Radeon（DirectML）では量子化モデル（INT4・W8A8 など）を使えません。"
+                    "bf16 か FP32 のモデルを選ぶか、CPU を選んでください")
         if value.get("token_split_threshold", DEFAULT_TOKEN_SPLIT_THRESHOLD) not in TOKEN_SPLIT_THRESHOLDS:
             raise ValueError("token_split_threshold は -10、-11、-12、-13、none のどれかを指定してください")
         if not isinstance(value.get("token_split_bunsetsu", False), bool):

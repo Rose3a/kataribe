@@ -8,7 +8,7 @@ if "%SETUP_EXIT%"=="0" (
   echo Setup completed successfully.
 ) else (
   echo Setup failed with exit code %SETUP_EXIT%.
-  echo See "%~dp0logs\first_setup.log" for details.
+  echo See "%~dp0logs\first-setup.log" for details.
 )
 pause
 exit /b %SETUP_EXIT%

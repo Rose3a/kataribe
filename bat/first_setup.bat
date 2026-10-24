@@ -8,7 +8,7 @@ if not exist "logs" (
   popd
   exit /b 1
 )
-echo Setup is running. Log: "%CD%\logs\first_setup.log"
+echo Setup is running. Log: "%CD%\logs\first-setup.log"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File ".\tools\setup.ps1" %*
 set "SETUP_EXIT=%errorlevel%"
 popd

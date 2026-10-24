@@ -123,7 +123,15 @@ class Bridge:
                     lengths.append(mask.shape[1])
             context = {k: pack(mask[:, :n] if mask is not None else None)
                        for k, mask, n in zip(("text_mask", "speaker_mask", "caption_mask"), masks, lengths)}
-            context["kv"] = [[pack(t[:, :lengths[i // 2]]) for i, t in enumerate(layer)]
+            # K/V は text、[speaker]、[caption] の順に K と V が並ぶ。無い条件は詰められているので、
+            # モデルの条件の有無から各 K/V に対応するマスクの長さを決める。
+            attention = self.runtime.model.blocks[0].attention
+            kv_lengths = [lengths[0]]
+            if attention.has_speaker_condition:
+                kv_lengths.append(lengths[1])
+            if attention.has_caption_condition:
+                kv_lengths.append(lengths[2])
+            context["kv"] = [[pack(t[:, :kv_lengths[i // 2]]) for i, t in enumerate(layer)]
                               for layer in cache]
             self.command({"op": "context", "key": key, "context": context})
         result = self.command({"op": "forward", "key": key, "x": pack(kw["x_t"]),

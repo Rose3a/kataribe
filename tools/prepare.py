@@ -94,8 +94,9 @@ def main():
         PretrainedTextTokenizer.from_pretrained(repo, revision=config.get('text_encoder_revision'))
     settings = BOX / 'irodori-tts' / 'editor-settings.json'
     # 新しく入れたときのエディタの既定モデル（初回の「設定を適用」で取得する）。models/model.safetensors の
-    # v4.1 Small は CLI と TensorRT のセットアップが使う。Blockwise は Radeon（DirectML）で使えないので、
-    # Radeon では v4.1 Small のまま。設定が既にあれば、そのモデルを使い続ける。
+    # v4.1 Small は CLI と TensorRT のセットアップが使う。Radeon（DirectML）では Blockwise の
+    # 「前のセリフから続けて生成」が使えない（読み込み・単独の生成はできる）ので、Radeon では v4.1 Small のまま。
+    # 設定が既にあれば、そのモデルを使い続ける。
     default_model = 'model.safetensors' if args.backend == 'radeon' else EDITOR_DEFAULT_MODEL
     value = dict(backend=args.backend, model=default_model, steps=8, seed=1001, seconds=None)
     if settings.exists():

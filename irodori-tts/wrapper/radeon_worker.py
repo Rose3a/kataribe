@@ -49,12 +49,14 @@ try:
         # to FP32.  The Radeon opt-in path deliberately keeps their activations
         # in FP16; masks remain bool and are never cast to FP16.
         def fp16_timestep(timestep, dim):
+            # 角度は 1000*t まで大きくなり、FP16（1000 付近の刻みは 0.5）では cos/sin が意味を失う。
+            # [batch, dim] の小さな計算なので FP32 で求めてから FP16 にする。
             half = dim // 2
             freqs = 1000.0 * torch.exp(
-                -torch.log(torch.tensor(10000.0, device=timestep.device, dtype=torch.float16))
-                * torch.arange(half, device=timestep.device, dtype=torch.float16) / half)
-            args_ = timestep[:, None] * freqs[None, :]
-            return torch.cat([torch.cos(args_), torch.sin(args_)], dim=-1)
+                -torch.log(torch.tensor(10000.0, device=timestep.device, dtype=torch.float32))
+                * torch.arange(half, device=timestep.device, dtype=torch.float32) / half)
+            args_ = timestep[:, None].float() * freqs[None, :]
+            return torch.cat([torch.cos(args_), torch.sin(args_)], dim=-1).to(timestep.dtype)
 
         def fp16_rope(x, freqs):
             pair = x.reshape(*x.shape[:3], -1, 2)
@@ -63,16 +65,21 @@ try:
             a, b = pair[..., 0], pair[..., 1]
             return torch.stack((a * c - b * s, a * s + b * c), dim=-1).reshape_as(x)
 
+        # 残差の値は 256 を超えることがあり、FP16 の x*x はあふれて ∞ になる（正規化後が 0 になり、
+        # 出力が out_proj のバイアスだけになって音声にならない）。二乗平均だけは FP32 で求める。
+        def fp16_inv_rms(x, eps):
+            return torch.rsqrt(x.float().square().mean(dim=-1, keepdim=True) + eps).to(x.dtype)
+
         def fp16_rms(self, x):
-            return (x * torch.rsqrt((x * x).mean(dim=-1, keepdim=True) + self.eps)
-                    * self.weight).to(dtype=x.dtype)
+            return (x * fp16_inv_rms(x, self.eps) * self.weight).to(dtype=x.dtype)
 
         def fp16_adaln(self, x, cond_embed):
+            # model.LowRankAdaLN と同じく SiLU は down の前（逆にすると別の関数になり、音声にならない）。
             shift, scale, gate = cond_embed.chunk(3, dim=-1)
-            shift = self.shift_up(torch.nn.functional.silu(self.shift_down(shift))) + shift
-            scale = self.scale_up(torch.nn.functional.silu(self.scale_down(scale))) + scale
-            gate = self.gate_up(torch.nn.functional.silu(self.gate_down(gate))) + gate
-            x = x * torch.rsqrt((x * x).mean(dim=-1, keepdim=True) + self.eps)
+            shift = self.shift_up(self.shift_down(torch.nn.functional.silu(shift))) + shift
+            scale = self.scale_up(self.scale_down(torch.nn.functional.silu(scale))) + scale
+            gate = self.gate_up(self.gate_down(torch.nn.functional.silu(gate))) + gate
+            x = x * fp16_inv_rms(x, self.eps)
             return x * (1.0 + scale) + shift, torch.tanh(gate)
 
         im.get_timestep_embedding = fp16_timestep
@@ -103,11 +110,12 @@ try:
                 cond = cond + self.delta_cond_module(delta_embed)[:, None, :]
             h = self.in_proj(x)
             for i, block in enumerate(self.blocks):
-                kv = context["kv"][i]
-                h = block(x=h, cond_embed=cond, text_state=kv[0], text_mask=context["text_mask"],
-                          speaker_state=kv[2], speaker_mask=context["speaker_mask"],
-                          caption_state=kv[4], caption_mask=context["caption_mask"],
-                          freqs_cis=freqs, self_mask=latent_mask, context_kv=kv)
+                # context_kv があれば条件の state は使われない。K/V の数はモデルの条件で変わる
+                # （500M v3 は caption が無く4つ）ので、位置で取り出さない。
+                h = block(x=h, cond_embed=cond, text_state=None, text_mask=context["text_mask"],
+                          speaker_state=None, speaker_mask=context["speaker_mask"],
+                          caption_state=None, caption_mask=context["caption_mask"],
+                          freqs_cis=freqs, self_mask=latent_mask, context_kv=context["kv"][i])
             return self.out_proj(self.out_norm(h))
 
     names = [torch_directml.device_name(i).rstrip("\0") for i in range(torch_directml.device_count())]
@@ -118,7 +126,9 @@ try:
         cfg = ModelConfig(**{k: v for k, v in config.items()
                              if k in {field.name for field in fields(ModelConfig)}})
         prefixes = ("cond_module.", "delta_cond_module.", "in_proj.", "blocks.", "out_norm.", "out_proj.")
-        state = {k: f.get_tensor(k) for k in f.keys() if k.startswith(prefixes)}
+        # DirectML は BFloat16 を扱えず、プロセスごと落ちる（Blockwise の bf16 版など）。FP32 で読む。
+        state = {k: (t.float() if t.dtype == torch.bfloat16 else t)
+                 for k in f.keys() if k.startswith(prefixes) for t in (f.get_tensor(k),)}
     with torch.device("meta"):
         core = Core(cfg)
     if any(key.startswith("delta_cond_module.") for key in state):
