@@ -212,6 +212,8 @@ LOOKAHEAD_SEARCH_SECONDS = 0.8
 LOOKAHEAD_MIN_GAP_SECONDS = 0.15
 # 話し終わりで切るときに残す、声の減衰ぶん（秒）
 LOOKAHEAD_DECAY_SECONDS = 0.04
+# 長さの上限（duration_edge_cap_frames）で文末の記号とみなす文字。文中の記号（読点など）には上限を掛けない
+DURATION_EDGE_PUNCT = frozenset("。．.！!？?…、,〜~‥")
 
 
 class LookaheadNoGap(RuntimeError):
@@ -347,6 +349,10 @@ class SamplingRequest:
     # 末尾の無音の上限（秒）。None なら find_flattening_point の切り方だけ。呼び出し側が
     # blockwise のときに指定する（次の行との間をそろえるため）。
     tail_silence_max: float | None = None
+    # 長さの予測で、文頭 <s> と文末の記号のトークンが足すフレーム数の合計の上限（25 フレーム/秒）。None なら
+    # 上限なし。token_sum の時間予測は学習データの前後の無音ぶんをここに乗せ、短い文ほど長さが余っていた
+    # （model.cap_edge_frames）。中身のトークンの長さは変えない。呼び出し側が blockwise のときに指定する。
+    duration_edge_cap_frames: float | None = None
     # 次の行も読む（先読み）: 「この行＋次の行」をまとめて作り、この行の話し終わりで切って返す。
     # 行末が「ここで終わるボイス」の言い切りにならないよう、続きがあることをモデルに見せる。
     # 境目は長さ予測（この行だけ／まとめて）の比で見積もり、その近くのいちばん長い無音で探す。
@@ -1269,6 +1275,29 @@ class InferenceRuntime:
         )
         return state, mask, freqs
 
+    def _duration_edge_mask(self, ids: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        """長さの上限（duration_edge_cap_frames）を掛けるトークンの位置: 文頭の BOS と、文末に続く記号だけの
+        トークン（。！？…、 など）。ids, mask: (B, S)。戻りは同じ形の bool（ids と同じデバイス）。"""
+        punct_ids = getattr(self, "_edge_punct_ids", None)
+        if punct_ids is None:
+            vocab = self.tokenizer.tokenizer.get_vocab()
+            punct_ids = {i for tok, i in vocab.items()
+                         if tok.replace("▁", "") and all(ch in DURATION_EDGE_PUNCT for ch in tok.replace("▁", ""))}
+            self._edge_punct_ids = punct_ids
+        ids_cpu, mask_cpu = ids.detach().cpu(), mask.detach().cpu().bool()
+        edge = torch.zeros_like(mask_cpu)
+        for b in range(ids_cpu.shape[0]):
+            n = int(mask_cpu[b].sum())
+            if n <= 0:
+                continue
+            if self.tokenizer.add_bos:
+                edge[b, 0] = True
+            j = n - 1
+            while j > 0 and int(ids_cpu[b, j]) in punct_ids:
+                edge[b, j] = True
+                j -= 1
+        return edge.to(ids.device)
+
     def _edge_silence_seconds(self, latent: torch.Tensor, at_end: bool) -> float:
         """latent (T, D) の先頭（at_end なら末尾）の無音の秒数。その側の 2 秒だけを先にデコードして測る
         （ストリーミング再生の窓より前に切れるよう、デコード前の latent で切るため）。"""
@@ -1630,6 +1659,15 @@ class InferenceRuntime:
                         _duration_caption_state,
                         _duration_caption_mask,
                     )
+                    edge = {}
+                    if (req.duration_edge_cap_frames is not None
+                            and getattr(self.model.duration_predictor, "token_out_proj", None) is not None
+                            and duration_text_state.shape[1] == ids.shape[1]):
+                        edge = {
+                            "edge_mask": self._duration_edge_mask(ids, mask),
+                            "edge_cap_frames": torch.full((num_candidates,), float(req.duration_edge_cap_frames),
+                                                          dtype=torch.float32, device=self.model_device),
+                        }
                     pred_log_frames = self.model.predict_duration_log_frames(
                         text_state=duration_text_state,
                         text_mask=duration_text_mask,
@@ -1647,6 +1685,7 @@ class InferenceRuntime:
                         )
                         if self.model_cfg.use_caption_condition
                         else None,
+                        **edge,
                     )
                     return conditions, torch.expm1(pred_log_frames).float().mean().item()
 

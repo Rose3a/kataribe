@@ -39,6 +39,11 @@ DEFAULT_CACHE_DIR = BOX_ROOT / ".cache" / "irodori-tts-cache"
 MAX_HTTP_BODY = 16 * 1024 * 1024
 # blockwise 対応モデルで、セリフの末尾に残す無音の上限（秒）
 BLOCKWISE_TAIL_SILENCE_MAX = 0.3
+# blockwise 対応モデルで、長さの予測のうち文頭 <s> と文末の記号のトークンが足すフレーム数の合計の上限
+# （25 フレーム/秒）。時間予測はトークンごとの長さの和で、<s> が毎回約 0.85 秒、短い言い切りの文では文末の「。」も
+# 1〜1.7 秒を足し、短い文ほど長さが余って繰り返しや余計な発言で埋めていた。中身の言葉の長さはそのまま使う。
+# 一律に長さを縮める（以前の ×0.91）より短い文だけが縮む。8・12・16 を聞き比べ、12 が自然という判断。
+BLOCKWISE_EDGE_CAP_FRAMES = 12.0
 
 
 def parse_radeon_precision(value: str | None = None) -> str:
@@ -967,6 +972,14 @@ class IrodoriTTS:
             return getattr(self.backend, "prefix_capable", False) is True
         return name == "torch" and bool(getattr(runtime, "supports_prefix", False))
 
+    def _apply_blockwise_defaults(self, request) -> None:
+        """前のセリフから続けて生成できるモデルでは、末尾に残った長い無音を切り（次の行との間がそろう）、
+        長さの予測で文頭・文末の記号が足す長さを BLOCKWISE_EDGE_CAP_FRAMES までにする（速さの指定はそのまま）。"""
+        if not self.supports_prefix:
+            return
+        request.tail_silence_max = BLOCKWISE_TAIL_SILENCE_MAX
+        request.duration_edge_cap_frames = BLOCKWISE_EDGE_CAP_FRAMES
+
     def speaker_dim(self) -> Optional[int]:
         """Speaker embedding width of the loaded model (768 for v4.1 Small)."""
         runtime = getattr(self.backend, "runtime", None)
@@ -1099,11 +1112,9 @@ class IrodoriTTS:
             request.no_ref = True
         if watermark:
             request.watermark = True
-        if self.supports_prefix:
-            # 前のセリフから続けて生成できるモデルでは、末尾に残った長い無音を切る（次の行との間がそろう）
-            request.tail_silence_max = BLOCKWISE_TAIL_SILENCE_MAX
-            if lookahead_text and lookahead_text.strip():
-                request.lookahead_text = lookahead_text
+        self._apply_blockwise_defaults(request)
+        if self.supports_prefix and lookahead_text and lookahead_text.strip():
+            request.lookahead_text = lookahead_text
         if prefix_latent is not None:
             if self.supports_prefix:
                 request.prefix_latent = prefix_latent

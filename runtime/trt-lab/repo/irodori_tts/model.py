@@ -523,6 +523,26 @@ class SwiGLU(nn.Module):
         return self.w2(F.silu(self.w1(x)) * self.w3(x))
 
 
+def cap_edge_frames(
+    frames: torch.Tensor,
+    text_mask: torch.Tensor,
+    edge_mask: torch.Tensor,
+    edge_cap_frames: torch.Tensor,
+) -> torch.Tensor:
+    """token_sum の時間予測で、文頭 <s> と文末の記号（edge_mask）が足すフレーム数を合わせて上限までにする。
+
+    学習データの前後の無音ぶんと思われる長さがここに乗り、文頭 <s> は毎回約 21〜23 フレーム、短い言い切りの文
+    では文末の「。」も 24〜43 フレームを足していた（中身は 1 モーラ約 3.4 フレーム）。短い文ほど長さが余り、
+    余りを繰り返しや余計な発言で埋めていた。edge のトークンを同じ割合で縮めるだけで、中身のトークンは変えない。
+    CUDA Graph で記録・再生されるので、ホストと同期する分岐は使わない。
+    frames, text_mask, edge_mask: (B, S)。edge_cap_frames: (B,)。
+    """
+    edge = edge_mask.to(dtype=torch.bool) & text_mask.to(dtype=torch.bool)
+    edge_total = (frames * edge.to(dtype=frames.dtype)).sum(dim=1)
+    scale = (edge_cap_frames.to(dtype=frames.dtype) / edge_total.clamp_min(1e-6)).clamp(max=1.0)
+    return torch.where(edge, frames * scale[:, None], frames)
+
+
 def _safe_attention_mask(
     x: torch.Tensor,
     mask: torch.Tensor,
@@ -1396,6 +1416,8 @@ class DurationPredictor(nn.Module):
         caption_state: torch.Tensor | None = None,
         caption_mask: torch.Tensor | None = None,
         has_caption: torch.Tensor | None = None,
+        edge_mask: torch.Tensor | None = None,
+        edge_cap_frames: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if text_state.ndim != 3 or text_state.shape[-1] != self.text_dim:
             raise ValueError(
@@ -1470,6 +1492,8 @@ class DurationPredictor(nn.Module):
                 h = block(h, cond=speaker_vec, caption_cond=caption_vec)
             token_logits = self.token_out_proj(self.token_out_norm(h)).squeeze(-1)
             token_frames = F.softplus(token_logits.float())
+            if edge_mask is not None and edge_cap_frames is not None:
+                token_frames = cap_edge_frames(token_frames, text_mask, edge_mask, edge_cap_frames)
             total_frames = (token_frames * text_mask.to(dtype=token_frames.dtype)).sum(dim=1)
             return torch.log1p(total_frames.clamp_min(0.0))
 
@@ -2361,7 +2385,11 @@ class TextToLatentRFDiT(nn.Module):
         caption_mask: torch.Tensor | None = None,
         has_caption: torch.Tensor | None = None,
         detach_condition: bool = True,
+        edge_mask: torch.Tensor | None = None,
+        edge_cap_frames: torch.Tensor | None = None,
     ) -> torch.Tensor:
+        """edge_mask / edge_cap_frames: token_sum の予測で文頭・文末のトークンが足す長さの上限（cap_edge_frames）。
+        token_sum 以外の構造では使わない。"""
         if self.duration_predictor is None:
             raise RuntimeError("Duration predictor is disabled for this model.")
         if duration_features.ndim != 2:
@@ -2393,6 +2421,7 @@ class TextToLatentRFDiT(nn.Module):
             caption_state=duration_caption_state,
             caption_mask=caption_mask,
             has_caption=has_caption,
+            **({"edge_mask": edge_mask, "edge_cap_frames": edge_cap_frames} if edge_mask is not None else {}),
         )
         return pred.float()
 

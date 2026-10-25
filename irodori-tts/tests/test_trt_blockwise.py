@@ -149,6 +149,23 @@ class SupportsPrefixTest(unittest.TestCase):
         self.assertTrue(self.tts(types.SimpleNamespace(name="torch", runtime=runtime)).supports_prefix)
         self.assertFalse(self.tts(types.SimpleNamespace(name="radeon", runtime=runtime)).supports_prefix)
 
+    def test_blockwise_defaults_cap_the_edges(self):
+        runtime = types.SimpleNamespace(supports_prefix=True)
+        request = types.SimpleNamespace(duration_scale=1 / 1.2, tail_silence_max=None, duration_edge_cap_frames=None)
+        self.tts(types.SimpleNamespace(name="torch", runtime=runtime))._apply_blockwise_defaults(request)
+        # 速さの指定（1.2 → 1/1.2）はそのまま、文頭・文末の長さに上限
+        self.assertAlmostEqual(request.duration_scale, 1 / 1.2)
+        self.assertEqual(request.duration_edge_cap_frames, tts_cli.BLOCKWISE_EDGE_CAP_FRAMES)
+        self.assertEqual(request.tail_silence_max, tts_cli.BLOCKWISE_TAIL_SILENCE_MAX)
+
+    def test_other_models_keep_the_length(self):
+        runtime = types.SimpleNamespace(supports_prefix=False)
+        request = types.SimpleNamespace(duration_scale=1.0, tail_silence_max=None, duration_edge_cap_frames=None)
+        self.tts(types.SimpleNamespace(name="torch", runtime=runtime))._apply_blockwise_defaults(request)
+        self.assertEqual(request.duration_scale, 1.0)
+        self.assertIsNone(request.duration_edge_cap_frames)
+        self.assertIsNone(request.tail_silence_max)
+
 
 class VramTrimTest(unittest.TestCase):
     def test_prefix_projection_stays_on_gpu(self):
