@@ -10,6 +10,7 @@ Web ページ・Word・PDF からコピーしたセリフには、改行・見�
 - 意味のない記号（見えない文字・行頭の箇条書き・飾り）は消す。
 - 改行は、連続をまとめて「、」の間にする（直前が句読点なら消すだけ）。
 - モデルがもともと読める記号（〜 の範囲、1/2、♪、【】、Q&A など）は触らない。
+- 他の TTS の演技タグ（[laughing]・<sigh>・(laughs)）と笑いの w は絵文字にする（acting_tags.py）。
 読み辞書（reading_dictionary）より前に当てる。
 """
 from __future__ import annotations
@@ -18,6 +19,7 @@ import html
 import re
 import unicodedata
 
+from acting_tags import replace_acting_tags, replace_laugh_w
 from reading_dictionary import normalize_width
 
 # 見えない文字（方向制御・ゼロ幅・BOM・ソフトハイフンなど）。U+2063 は語彙分割の区切りなので残す。
@@ -215,11 +217,18 @@ def _compat(text: str) -> str:
     return unicodedata.normalize("NFKC", text.translate(_KEEP_ELLIPSIS)).translate(_RESTORE_ELLIPSIS)
 
 
-def clean_pasted_text(text: str) -> str:
+def clean_pasted_text(text: str, acting_tags: bool = True) -> str:
+    """acting_tags: 他の TTS の演技タグを絵文字にするか（全体の設定 acting_tags）。"""
     text = _STRAY_ZWJ.sub("", _INVISIBLE.sub("", text))
     text = _RUBY_BAR.sub(r"\2", text)
     text = _RUBY_KANJI.sub(r"\1", text)
+    if acting_tags:
+        # 英単語のカナ化・NFKC より前に（[laughing] が [ラフィング] になる前に）当てる
+        text = replace_acting_tags(text)
     text = normalize_width(_compat(text))
+    if acting_tags:
+        # 全角の ｗ をそろえた後に（オフなら下の規則で w を消すだけ）
+        text = replace_laugh_w(text)
     text = _OTHER_BREAKS.sub("\n", text)
     text = _HTML_BREAK.sub("\n", text)
     if "&" in text:

@@ -147,8 +147,8 @@ class ReadingFixTest(unittest.TestCase):
     def test_title_cross_and_laughter(self):
         self.assertEqual(clean("HUNTER×HUNTERを見た"), "HUNTER HUNTERを見た")
         self.assertEqual(clean("3×4"), "3かける4")
-        self.assertEqual(clean("草www"), "草")
-        self.assertEqual(clean("それなｗ"), "それな")
+        self.assertEqual(clean("草www", acting_tags=False), "草")
+        self.assertEqual(clean("それなｗ", acting_tags=False), "それな")
         self.assertEqual(clean("www.example.com"), "www.example.com")
 
 
