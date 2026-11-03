@@ -125,7 +125,7 @@ export function previousLineContext(
   const id = lastAudioIds.get(previousKey);
   if (id == undefined) return undefined;
   const blob = getCachedAudio(id);
-  return blob == undefined ? undefined : { id, blob };
+  return blob == undefined ? undefined : { id, blob, text: previous.text };
 }
 
 /**
@@ -174,6 +174,7 @@ function synthesisParams(
   engineAudioQuery: ReturnType<typeof convertAudioQueryFromEditorToEngine>,
   irodoriContextAudio?: { dataUrl: string },
   irodoriNextText?: string,
+  irodoriPrevText?: string,
 ) {
   const speaker = audioItem.voice.styleId;
   const effectiveSeed =
@@ -220,6 +221,7 @@ function synthesisParams(
       irodoriReferenceAudio: audioItem.irodori?.referenceAudio,
       irodoriContextAudio,
       irodoriNextText,
+      irodoriPrevText,
     },
     speaker,
     enableInterrogativeUpspeak:
@@ -288,6 +290,7 @@ export async function fetchAudioFromAudioItem(
         engineAudioQuery,
         await contextAudio(context),
         nextText,
+        context?.text,
       ),
     );
   }
@@ -348,6 +351,7 @@ export async function streamAudioFromAudioItem(
     ),
     await contextAudio(context),
     nextText,
+    context?.text,
   );
   const revision = audioCacheRevision;
   const response = await irodoriRequest(

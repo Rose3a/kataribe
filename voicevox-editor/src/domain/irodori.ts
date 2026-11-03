@@ -28,9 +28,10 @@ export const IRODORI_DEFAULT_ENGLISH_SPACING: IrodoriEnglishSpacing = "keep";
 export const IRODORI_DEFAULT_TOKEN_SPLIT: IrodoriTokenSplit = "on";
 export const IRODORI_DEFAULT_CFG_TEXT = 3;
 export const IRODORI_DEFAULT_CFG_CAPTION = 3;
-export const IRODORI_DEFAULT_CFG_SPEAKER = 5;
+export const IRODORI_DEFAULT_CFG_SPEAKER = 3;
 // CFG をかけるステップの範囲。1 で従来どおり、0 で CFG なし（エンジンが cfg_min_t に換算する）。
-export const IRODORI_DEFAULT_CFG_RANGE = 1;
+// 0.75（cfg_min_t 0.625）でも聞いて問題なく、1 より速いので既定にする。
+export const IRODORI_DEFAULT_CFG_RANGE = 0.75;
 export const IRODORI_DEFAULT_CAPTION_STRENGTH = 1;
 export const IRODORI_DEFAULT_REFERENCE_STRENGTH = 1;
 export const IRODORI_DEFAULT_SPEAKER_STRENGTH = 1;
@@ -150,6 +151,8 @@ export type IrodoriSettings = {
   audio_cache_mb?: number;
   /** 省VRAM（TensorRT・CUDA。codec の窓デコード・テキストエンコーダや参照音声用の部品を CPU に置く・待機中の VRAM をすぐ返す。TensorRT では CUDA Graph も使わず、30 秒の待機でエンジンも解放する）。古いエンジンは返さない。 */
   low_vram?: boolean;
+  /** 他の TTS の演技タグ（[laughing]・<sigh>・(laughs) など）を絵文字にする。既定オン。古いエンジンは返さない。 */
+  acting_tags?: boolean;
 };
 
 /** 選択中モデルの情報。 */
@@ -198,6 +201,8 @@ export type IrodoriProgress = {
 export type IrodoriStatus = {
   settings: IrodoriSettings;
   loaded: boolean;
+  /** models フォルダ内のローカルモデル（フォルダからの相対パス） */
+  models?: string[];
   modelFolder: string;
   speakerFolder: string;
   availableBackends: Record<string, boolean>;

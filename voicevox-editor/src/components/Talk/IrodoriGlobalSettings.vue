@@ -26,7 +26,7 @@
         fill-input
         hide-selected
         new-value-mode="add-unique"
-        hint="プリセットから選択、または .safetensors の絶対パスを入力"
+        hint="一覧から選択（models フォルダのモデルも出ます）、または .safetensors かモデルフォルダの絶対パスを入力"
         :disable="locked"
         class="q-mb-sm"
         @new-value="setCustomModel"
@@ -126,6 +126,19 @@
         系のモデルにだけ当たり、セリフごとの語彙分割が「使う」のときに効きます。{{
           tokenSplitBunsetsuNote
         }}
+      </div>
+      <QToggle
+        v-model="actingTags"
+        dense
+        label="他の TTS の演技タグを絵文字にする"
+        :disable="locked"
+      />
+      <div class="text-caption q-mb-sm">
+        [laughing]・&lt;sigh&gt;・(laughs)・(笑)
+        のような演技の指示を、Irodori-TTS が分かる絵文字（🤭・😮‍💨
+        など）に置き換えます。[short pause] などの間は ⏸️ の数にします。[] と
+        &lt;&gt; の中で表にないもの（効果音・話者タグなど）は消し、()
+        は表にあるときだけ置き換えます。オフにすると、タグをそのまま読み上げます（トグルを切り替えるとすぐ保存されます）。
       </div>
       <QToggle
         v-model="streamPlayback"
@@ -509,6 +522,25 @@ const tokenSplitBunsetsu = computed<boolean>({
     if (settings.value) settings.value.token_split_bunsetsu = value;
   },
 });
+// 他の TTS の演技タグを絵文字にする（既定オン）。切り替えるとすぐエンジンへ保存する。
+const actingTags = computed<boolean>({
+  get: () => settings.value?.acting_tags !== false,
+  set: (value) => {
+    if (!settings.value) return;
+    settings.value.acting_tags = value;
+    if (appliedSettings.value) appliedSettings.value.acting_tags = value;
+    irodoriRequest(endpoint.value, "/irodori/settings", {
+      method: "POST",
+      body: { acting_tags: value },
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(await response.text());
+      })
+      .catch((cause: unknown) => {
+        error.value = cause instanceof Error ? cause.message : String(cause);
+      });
+  },
+});
 const tokenSplitBunsetsuNote = computed(() =>
   tokenSplit.value?.bunsetsuAvailable === false
     ? "MeCab（fugashi・unidic-lite）が入っていないため使えません。"
@@ -682,6 +714,21 @@ function ensureModelOption(source: string) {
     description: "カスタムモデル",
   });
 }
+// models フォルダにある .safetensors を一覧に足す。model.safetensors はフォルダ名で表示する。
+function addLocalModels(models: string[] | undefined) {
+  for (const path of models ?? []) {
+    if (modelOptions.value.some((option) => option.value === path)) continue;
+    const parts = path.split(/[\\/]/);
+    const name = parts[parts.length - 1];
+    const folder = parts.length > 1 ? parts[parts.length - 2] : "";
+    modelOptions.value.push({
+      label: name === "model.safetensors" && folder ? folder : path,
+      value: path,
+      group: "ローカル（models フォルダ）",
+      description: path,
+    });
+  }
+}
 const selectedModelOption = computed(() =>
   modelOptions.value.find((option) => option.value === settings.value?.model),
 );
@@ -738,6 +785,7 @@ async function run(save: boolean, refreshSpeakers = false) {
     appliedSettings.value = { ...result.settings };
     irodoriStreamPlayback.value = result.settings.stream_playback === true;
     applyAudioCacheMb(result.settings.audio_cache_mb);
+    addLocalModels(result.models);
     ensureModelOption(result.settings.model);
     progress.value = result.progress;
     modelInfo.value = result.modelInfo ?? modelInfo.value;

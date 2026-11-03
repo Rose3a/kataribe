@@ -77,6 +77,8 @@ export interface AudioQuery {
     irodoriContextAudio?: { dataUrl: string };
     /** Next line's text for blockwise models: the line is generated together with it and cut at its end. */
     irodoriNextText?: string;
+    /** Previous line's text for blockwise models: the engine picks the gap padding from how it ends. */
+    irodoriPrevText?: string;
     /**
      * アクセント句のリスト
      * @type {Array<AccentPhrase>}
@@ -203,6 +205,7 @@ export function AudioQueryFromJSONTyped(json: any, ignoreDiscriminator: boolean)
         'irodoriReferenceAudio': !exists(json, 'irodori_reference_audio') ? undefined : json['irodori_reference_audio'],
         'irodoriContextAudio': !exists(json, 'irodori_context_audio') ? undefined : json['irodori_context_audio'],
         'irodoriNextText': !exists(json, 'irodori_next_text') ? undefined : json['irodori_next_text'],
+        'irodoriPrevText': !exists(json, 'irodori_prev_text') ? undefined : json['irodori_prev_text'],
         'accentPhrases': ((json['accent_phrases'] as Array<any>).map(AccentPhraseFromJSON)),
         'speedScale': json['speedScale'],
         'pitchScale': json['pitchScale'],
@@ -249,6 +252,7 @@ export function AudioQueryToJSON(value?: AudioQuery | null): any {
         'irodori_reference_audio': value.irodoriReferenceAudio,
         'irodori_context_audio': value.irodoriContextAudio,
         'irodori_next_text': value.irodoriNextText,
+        'irodori_prev_text': value.irodoriPrevText,
         'accent_phrases': ((value.accentPhrases as Array<any>).map(AccentPhraseToJSON)),
         'speedScale': value.speedScale,
         'pitchScale': value.pitchScale,

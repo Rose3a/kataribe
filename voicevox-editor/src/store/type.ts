@@ -143,6 +143,8 @@ export type FetchAudioResult = {
 export type IrodoriLineContext = {
   id: string;
   blob: Blob;
+  /** 直前のセリフの文（エンジンが行間の余白を決めるのに使う） */
+  text?: string;
 };
 
 export type Command = {

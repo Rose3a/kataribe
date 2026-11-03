@@ -40,6 +40,33 @@ let volumeEnvelope: Float32Array | undefined;
 let envelopeVersion = 0;
 let audioDurationSeconds = 0;
 
+// 連続再生（WebAudio の時刻予約）で鳴っている行の時計。audio 要素の代わりに、
+// 再生位置（アクセント句の強調）と口パクの音量に使う。
+let scheduledClock: { now: () => number; startAt: number } | undefined;
+
+function scheduledSeconds(): number | undefined {
+  if (scheduledClock == undefined) return undefined;
+  return Math.max(0, scheduledClock.now() - scheduledClock.startAt);
+}
+
+/** 連続再生で次の行が鳴り始めた。startAt は行の頭に当たる now() の時刻。 */
+export function startScheduledPlayback(params: {
+  blob: Blob;
+  buffer: AudioBuffer;
+  now: () => number;
+  startAt: number;
+}) {
+  envelopeVersion++;
+  playbackBlob = params.blob;
+  volumeEnvelope = createVolumeEnvelope(params.buffer);
+  audioDurationSeconds = params.buffer.duration;
+  scheduledClock = { now: params.now, startAt: params.startAt };
+}
+
+export function endScheduledPlayback() {
+  scheduledClock = undefined;
+}
+
 /** 直近に読み込んだ音声の長さ(秒)。口パクの母音タイムライン配分に使う。 */
 export function getAudioDurationSeconds(): number {
   return audioDurationSeconds;
@@ -74,13 +101,17 @@ export const audioPlayerStore = createPartialStore<AudioPlayerStoreTypes>({
     getter: (state) => {
       return () =>
         state._activeAudioKey != undefined
-          ? getAudioElement().currentTime
+          ? (scheduledSeconds() ?? getAudioElement().currentTime)
           : undefined;
     },
   },
 
   AUDIO_PLAYBACK_VOLUME: {
     getter: () => () => {
+      const scheduled = scheduledSeconds();
+      if (scheduled != undefined) {
+        return volumeEnvelope?.[Math.floor(scheduled / ENVELOPE_SECONDS)] ?? 0;
+      }
       const audio = getAudioElement();
       if (audio.paused || audio.ended || audio.muted || audio.readyState < 3)
         return 0;
@@ -113,6 +144,7 @@ export const audioPlayerStore = createPartialStore<AudioPlayerStoreTypes>({
   SET_AUDIO_SOURCE: {
     mutation(_, { audioBlob }: { audioBlob: Blob }) {
       playbackBlob = audioBlob;
+      scheduledClock = undefined;
       getAudioElement().src = URL.createObjectURL(audioBlob);
       void prepareVolumeEnvelope(audioBlob);
     },

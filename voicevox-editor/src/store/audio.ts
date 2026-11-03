@@ -1,4 +1,5 @@
 import { toBase64 } from "fast-base64";
+import { nextTick } from "vue";
 import { createUILockAction, withProgress } from "./ui";
 import {
   type AudioItem,
@@ -45,7 +46,12 @@ import {
 } from "@/domain/irodori";
 import { createEngineUrl } from "@/domain/url";
 import { PcmStreamPlayer } from "@/helpers/pcmStreamPlayer";
-import { setActiveAudioStream } from "./audioPlayer";
+import { GaplessPlayer } from "@/helpers/gaplessPlayer";
+import {
+  endScheduledPlayback,
+  setActiveAudioStream,
+  startScheduledPlayback,
+} from "./audioPlayer";
 import {
   ContinuousPlayer,
   filterNonEmptyAudioKeys,
@@ -2104,18 +2110,59 @@ export const audioStore = createPartialStore<AudioStoreTypes>({
           state.audioKeys.slice(index),
           state.audioItems,
         );
+        // 行どうしを WebAudio の時刻予約で隙間なくつなぐ（audio 要素の鳴らし直しだと
+        // 切り替えごとに約 60ms 途切れる）。表示の切り替えは実際に鳴り始めたときに行う。
+        const output = new GaplessPlayer(state.savingSetting.audioOutputDevice);
+        setActiveAudioStream(output);
+        let playingAudioKey: AudioKey | undefined;
+        const startLine = async (
+          audioKey: AudioKey,
+          audioBlob: Blob,
+          buffer: AudioBuffer,
+          startAt: number,
+        ) => {
+          if (currentAudioKey !== audioKey) {
+            mutations.SET_AUDIO_PLAY_START_POINT({ startPoint: undefined });
+          }
+          startScheduledPlayback({
+            blob: audioBlob,
+            buffer,
+            now: () => output.now(),
+            startAt,
+          });
+          if (playingAudioKey != undefined) {
+            mutations.SET_AUDIO_NOW_PLAYING({
+              audioKey: playingAudioKey,
+              nowPlaying: false,
+            });
+          }
+          mutations.SET_ACTIVE_AUDIO_KEY({ audioKey });
+          playingAudioKey = audioKey;
+          // 再生中の表示（アクセント句の強調）が新しい行で作り直されるよう、一度描画を挟む
+          await nextTick();
+          if (playingAudioKey !== audioKey) return;
+          mutations.SET_AUDIO_NOW_PLAYING({ audioKey, nowPlaying: true });
+        };
         const player = new ContinuousPlayer(generationQueue, {
           generateAudio: ({ audioKey }) =>
             actions.FETCH_AUDIO({ audioKey }).then((result) => result.blob),
-          playAudioBlob: ({ audioBlob, audioKey }) => {
-            if (currentAudioKey !== audioKey) {
-              mutations.SET_AUDIO_PLAY_START_POINT({ startPoint: undefined });
+          playAudioBlob: async ({ audioBlob, audioKey }) => {
+            // 途中のアクセント句からの再生は、最初の行だけ
+            let offset = 0;
+            const startPoint =
+              currentAudioKey === audioKey ? getters.AUDIO_PLAY_START_POINT : 0;
+            if (startPoint != undefined && startPoint !== 0) {
+              const offsets = await actions.GET_AUDIO_PLAY_OFFSETS({
+                audioKey,
+              });
+              offset = offsets[startPoint] ?? 0;
             }
-            return actions.PLAY_AUDIO_BLOB({ audioBlob, audioKey });
+            return output.play(audioBlob, {
+              offset,
+              onStart: (buffer, startAt) =>
+                void startLine(audioKey, audioBlob, buffer, startAt),
+            });
           },
-        });
-        player.addEventListener("playstart", (e) => {
-          mutations.SET_ACTIVE_AUDIO_KEY({ audioKey: e.audioKey });
         });
         player.addEventListener("waitstart", (e) => {
           void actions.START_PROGRESS();
@@ -2146,7 +2193,22 @@ export const audioStore = createPartialStore<AudioStoreTypes>({
 
         mutations.SET_NOW_PLAYING_CONTINUOUSLY({ nowPlaying: true });
 
-        await player.playUntilComplete();
+        try {
+          await player.playUntilComplete();
+          // 最後の行は終わる少し前に「鳴り終わった」と返るので、鳴り終えるまで待つ
+          await output.idle();
+        } finally {
+          output.close();
+          setActiveAudioStream(undefined, output);
+          endScheduledPlayback();
+          if (playingAudioKey != undefined) {
+            mutations.SET_AUDIO_NOW_PLAYING({
+              audioKey: playingAudioKey,
+              nowPlaying: false,
+            });
+          }
+          playingAudioKey = undefined;
+        }
 
         mutations.SET_ACTIVE_AUDIO_KEY({ audioKey: currentAudioKey });
         mutations.SET_AUDIO_PLAY_START_POINT({
