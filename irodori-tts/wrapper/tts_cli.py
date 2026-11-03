@@ -497,18 +497,26 @@ class TorchBackend:
                   file=sys.stderr, flush=True)
         self.idle_release = vram_trim.IdleRelease(self.busy, delay=1.0 if low_vram else 5.0)
 
-    def synthesize(self, request, speaker_tensor: torch.Tensor, out_wav, log_fn=None) -> dict:
+    def synthesize(self, request, speaker_tensor: torch.Tensor, out_wav, log_fn=None,
+                   length_check: str = "off") -> dict:
         # IrodoriTTS.synthesize has already put the speaker tensor on the request.
         try:
             with self.busy:
-                result = self._worker.run(lambda: self.runtime.synthesize(request, log_fn=log_fn))
+                if length_check == "on":
+                    # 長さの測り直し（2 パス）。TensorRT には無い（中の注意を取り出せない）
+                    import length_check as lc
+                    result, info = self._worker.run(lambda: lc.synthesize(
+                        self.runtime, request, log_fn=log_fn, stream_decoder=self.stream_decoder))
+                else:
+                    result, info = self._worker.run(
+                        lambda: self.runtime.synthesize(request, log_fn=log_fn)), {}
         finally:
             if self.idle_release is not None:
                 self.idle_release.touch()
         write_wav(out_wav, result.audio, result.sample_rate)
         return {"backend": self.name, "wall_s": result.total_to_decode,
                 "audio_s": result.audio.shape[-1] / result.sample_rate,
-                "latent": result.latents[0] if result.latents else None}
+                "latent": result.latents[0] if result.latents else None, **info}
 
 
 class _ResidentWorker:
@@ -1025,7 +1033,8 @@ class IrodoriTTS:
                    prefix_latent: Optional[torch.Tensor] = None,
                    prefix_tail_seconds: float = 0.0,
                    lookahead_text: Optional[str] = None,
-                   watermark: bool = False) -> dict:
+                   watermark: bool = False,
+                   length_check: str = "off") -> dict:
         """prefix_latent: 前のセリフの latent（blockwise 対応モデルのときだけ使う）。
         prefix_tail_seconds: 前のセリフの末尾の無音の秒数（行の間をそろえるのに使う）。
         lookahead_text: 次のセリフの文。「この行＋次の行」をまとめて作り、この行の部分だけ返す（blockwise 対応モデルだけ）。
@@ -1139,9 +1148,12 @@ class IrodoriTTS:
         decoder = getattr(self.backend, "stream_decoder", None)
         if stream is not None and decoder is not None and ref_wav is None:
             decoder.begin(stream)
+        # 長さの測り直し（2 パス）は PyTorch の CUDA / CPU だけ（length_check.py）
+        extra = ({"length_check": "on"}
+                 if length_check == "on" and isinstance(self.backend, TorchBackend) else {})
         try:
             try:
-                result = self.backend.synthesize(request, speaker_tensor, out_wav, log_fn=log_fn)
+                result = self.backend.synthesize(request, speaker_tensor, out_wav, log_fn=log_fn, **extra)
             except Exception as exc:  # noqa: BLE001 - 先読みの境目が見つからないときだけ作り直す
                 if not getattr(exc, "lookahead_no_gap", False):
                     raise
@@ -1149,7 +1161,7 @@ class IrodoriTTS:
                 console_ui.notice("irodori", "次のセリフとの切れ目がはっきりしないので、このセリフだけで作り直します",
                                   stderr=True, style="dim")
                 request.lookahead_text = None
-                result = self.backend.synthesize(request, speaker_tensor, out_wav, log_fn=log_fn)
+                result = self.backend.synthesize(request, speaker_tensor, out_wav, log_fn=log_fn, **extra)
         finally:
             if decoder is not None:
                 decoder.end()
@@ -1165,6 +1177,7 @@ class IrodoriTTS:
             # 返した音声の latent（PyTorch・TensorRT のバックエンド）。次のセリフの prefix に使う。
             "latent": result.get("latent"),
             "watermarked": bool(request.watermark),
+            "length_check": result.get("length_check", "off"),
         }
 
     def close(self) -> None:

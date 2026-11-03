@@ -119,6 +119,7 @@ JSON のキーは snake_case で指定します。`irodoriSteps` のような ca
 | `irodori_english_spacing` | string | `keep`（既定） / `join` | 変換した英語の前後の空白。`join` なら詰めてつなげて読む（`アイ ラブ ユー.` → `アイラブユー.`）。`off` のときは使わない |
 | `irodori_kana_style` | string | `katakana`（既定） / `hiragana` | `hiragana` なら文中のカタカナをひらがなにして読ませる |
 | `irodori_token_split` | string | `on`（既定） / `off` | 語彙分割。4文字以上で出現度が境目以下のまとまりトークン（`浦和レッズ` など）を避けて、細かいトークンで読ませる（`docs/TOKEN_SPLIT.md`） |
+| `irodori_length_check` | string | `on`（既定） / `off` | 長さの測り直し。時間予測が長すぎたとき（末尾の余計な発話・ループの原因）に、1 回目の合成の注意から読み終えた位置を測り、同じシードで短く作り直す。PyTorch の CUDA / CPU で v4.1 Small 系の RF モデルのときだけ効く（TensorRT・MeanFlow・Large・`irodori_seconds` 指定時・前のセリフからの続き／先読みのときは何もしない。ストリーミング再生では、作り直さなかったときも 1 回目の音声は流さず最後にまとめて送る） |
 | `speedScale` | number | 0.25〜4.0、既定 1 | 話速（VOICEVOX と同じ名前） |
 
 - `irodori_text` は元の文章として保持してください。`kana` だけを置き換えると、合成時
@@ -127,6 +128,10 @@ JSON のキーは snake_case で指定します。`irodoriSteps` のような ca
   はセリフごとの設定です。Editor の「セリフの設定」→「読み方」で選んだ値がそのまま送られます。
 - `irodori_english_spacing=join` は、変換した語とユーザー辞書の読みの前後の空白を詰めます。
   空白があると Irodori は語ごとに区切って読むためです。改行は詰めません。
+- `irodori_length_check=on` では、モデルが自分の速さで読み終えたあとの余りを削るので、
+  `speedScale` を 1 より小さくしても（ゆっくりにしても）音声はほぼ通常の長さになります。
+  モデルはもともと長さを伸ばしてもゆっくり話さず、余った時間に台本に無い発話をしていました。
+  速くする側（`speedScale` > 1）は変わりません。
 - `pitchScale` や `accent_phrases` などの VOICEVOX の韻律フィールドは、互換のため受け付けますが
   使いません（Irodori は文章から直接合成します）。
 

@@ -46,6 +46,7 @@ from reading_dictionary import (ENGLISH_READINGS, ENGLISH_SPACINGS, KANA_STYLES,
                                 READING_DICTIONARY, make_word)
 from process_job import tie_children_to_this_process  # noqa: E402
 from synthesis_queue import ClientGone, QueueFull, SynthesisQueue, connection_closed  # noqa: E402
+from length_check import LENGTH_CHECKS
 from token_split import (DEFAULT_TOKEN_SPLIT_THRESHOLD, TOKEN_SPLITS, active_threshold,
                          describe_tokens, threshold_value, token_split_applies)
 from text_cleanup import clean_pasted_text
@@ -296,6 +297,13 @@ IRODORI_QUERY_FIELDS: dict[str, dict] = {
     "irodori_token_split": {
         "type": "string", "enum": list(TOKEN_SPLITS), "default": "on",
         "description": "語彙分割（セリフごと）。on なら、4文字以上で出現度が境目以下のまとまりトークン（浦和レッズ など）を使わず、細かいトークンに分けて読ませる。境目は全体の設定（token_split_threshold、既定 -13。none ならどのセリフにも当たらない）。v4 Small 系（modernbert-ja のトークナイザ）のモデルにだけ当たる",
+    },
+    "irodori_length_check": {
+        "type": "string", "enum": list(LENGTH_CHECKS), "default": "on",
+        "description": "長さの測り直し（セリフごと）。on なら、時間予測が長すぎたとき（末尾の余計な発話・ループの原因）に、"
+                       "1 回目の合成の注意から読み終えた位置を測って短く作り直す。PyTorch の CUDA / CPU で、"
+                       "v4.1 Small 系の RF モデルのときだけ効く（TensorRT・MeanFlow・Large では何もしない）。"
+                       "音声長（irodori_seconds）を指定したときも何もしない",
     },
     "irodori_secondary_speaker_style_id": {
         "type": "integer", "nullable": True, "deprecated": True,
@@ -987,6 +995,7 @@ class VoicevoxAdapter:
                     prefix_tail_seconds=prefix_tail,
                     lookahead_text=next_text,
                     watermark=context_watermark,
+                    length_check=query.get("irodori_length_check", "on"),
                 )
                 data = wav.getvalue()
                 if self.supports_prefix:
