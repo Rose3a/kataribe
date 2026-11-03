@@ -8,6 +8,12 @@ from .model import TextToLatentRFDiT
 from .speaker_inversion import SPEAKER_INVERSION_UNCOND_MODES
 
 
+# 実験用: prefix ガイダンス。>0 のとき v += s*(v_prefixあり − v_prefixなし)。
+PREFIX_CFG_SCALE = 0.0
+PREFIX_CFG_RESCALE = False  # 足したあと v のノルムを v_cond に戻す
+PREFIX_CFG_TMIN = 0.0  # t（1=ノイズ→0）がこれ以上の間だけ効かせる
+
+
 def _make_rng(seed: int, device: torch.device) -> tuple[torch.Generator, torch.device]:
     # MPS generators are not available on some PyTorch builds; use CPU generator as fallback.
     try:
@@ -504,6 +510,15 @@ def sample_euler_rf_cfg(
             )
     speaker_kv_active = speaker_kv_scale is not None
 
+    prefix_guide = float(PREFIX_CFG_SCALE) if prefix_state is not None else 0.0
+    context_kv_noprefix = None
+    if prefix_guide > 0:
+        context_kv_noprefix = model.build_context_kv_cache(
+            text_state=text_state_cond,
+            speaker_state=speaker_state_cond,
+            caption_state=caption_state_cond,
+        )
+
     for i in range(num_steps):
         t = t_schedule[i]
         t_next = t_schedule[i + 1]
@@ -528,6 +543,7 @@ def sample_euler_rf_cfg(
                 )
                 chunks = v_out.chunk(cfg_batch_mult, dim=0)
                 v = chunks[0]
+                v_cond_ref = chunks[0]
                 for name, chunk in zip(independent_names[1:], chunks[1:], strict=True):
                     v = v + cfg_scales[name] * (chunks[0] - chunk)
             else:
@@ -543,6 +559,7 @@ def sample_euler_rf_cfg(
                     context_kv_cache=context_kv_cond,
                     **_prefix_mask(1),
                 )
+                v_cond_ref = v_cond
                 if use_joint_cfg:
                     if len(enabled_cfg_names) > 1:
                         joint_scales = [cfg_scales[name] for name in enabled_cfg_names]
@@ -596,6 +613,28 @@ def sample_euler_rf_cfg(
                 context_kv_cache=context_kv_cond,
                 **_prefix_mask(1),
             )
+            v_cond_ref = v
+
+        if prefix_guide > 0:
+            v_np = model.forward_with_encoded_conditions(
+                x_t=x_t.to(dtype),
+                t=tt,
+                text_state=text_state_cond,
+                text_mask=text_mask_cond,
+                speaker_state=speaker_state_cond,
+                speaker_mask=speaker_mask_cond,
+                caption_state=caption_state_cond,
+                caption_mask=caption_mask_cond,
+                context_kv_cache=context_kv_noprefix,
+            )
+            if float(t) >= PREFIX_CFG_TMIN:
+                v_new = v + prefix_guide * (v_cond_ref - v_np)
+                if PREFIX_CFG_RESCALE:
+                    dims = tuple(range(1, v.ndim))
+                    n_old = v.float().norm(dim=dims, keepdim=True)
+                    n_new = v_new.float().norm(dim=dims, keepdim=True).clamp_min(1e-6)
+                    v_new = (v_new * (n_old / n_new)).to(v.dtype)
+                v = v_new
 
         if rescale_k is not None and rescale_sigma is not None:
             v = temporal_score_rescale(

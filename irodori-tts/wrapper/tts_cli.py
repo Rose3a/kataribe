@@ -44,6 +44,22 @@ BLOCKWISE_TAIL_SILENCE_MAX = 0.3
 # 1〜1.7 秒を足し、短い文ほど長さが余って繰り返しや余計な発言で埋めていた。中身の言葉の長さはそのまま使う。
 # 一律に長さを縮める（以前の ×0.91）より短い文だけが縮む。8・12・16 を聞き比べ、12 が自然という判断。
 BLOCKWISE_EDGE_CAP_FRAMES = 12.0
+# 続きの行の先頭に足す余白（フレーム、仮）。前のセリフが言い切って終わるなら長く、読点や句読点なしで続く形なら短く
+BLOCKWISE_LEAD_AFTER_STOP = 20
+BLOCKWISE_LEAD_CONTINUING = 2
+BLOCKWISE_STOP_CHARS = "。！？!?…」』）)"
+
+
+def blockwise_lead_frames(prev_text: Optional[str]) -> int:
+    """前のセリフの終わり方から余白を決める。文が分からないときは言い切りの扱い（従来どおり）。"""
+    last = (prev_text or "").rstrip()[-1:]
+    if not last or last in BLOCKWISE_STOP_CHARS:
+        return BLOCKWISE_LEAD_AFTER_STOP
+    return BLOCKWISE_LEAD_CONTINUING
+
+
+# v2 は prefix を 20 秒まで学習したが、10 秒を超える例は少ないので 15 秒までにする（仮: フォルダ名で判定）
+BLOCKWISE_V2_PREFIX_SECONDS = 15.0
 
 
 def parse_radeon_precision(value: str | None = None) -> str:
@@ -987,6 +1003,10 @@ class IrodoriTTS:
             return
         request.tail_silence_max = BLOCKWISE_TAIL_SILENCE_MAX
         request.duration_edge_cap_frames = BLOCKWISE_EDGE_CAP_FRAMES
+        if "blockwise-v2" in os.environ.get("IRODORI_CHECKPOINT", "").replace("\\", "/").lower():
+            import context_latents
+            request.prefix_seconds = BLOCKWISE_V2_PREFIX_SECONDS
+            context_latents.ENCODE_TAIL_SECONDS = BLOCKWISE_V2_PREFIX_SECONDS + 0.5
 
     def speaker_dim(self) -> Optional[int]:
         """Speaker embedding width of the loaded model (768 for v4.1 Small)."""
@@ -1032,11 +1052,13 @@ class IrodoriTTS:
                    speaker_tensor_override: Optional[torch.Tensor] = None,
                    prefix_latent: Optional[torch.Tensor] = None,
                    prefix_tail_seconds: float = 0.0,
+                   prefix_prev_text: Optional[str] = None,
                    lookahead_text: Optional[str] = None,
                    watermark: bool = False,
                    length_check: str = "off") -> dict:
         """prefix_latent: 前のセリフの latent（blockwise 対応モデルのときだけ使う）。
         prefix_tail_seconds: 前のセリフの末尾の無音の秒数（行の間をそろえるのに使う）。
+        prefix_prev_text: 前のセリフの文。言い切りで終わるかどうかで行頭の余白を変える（blockwise_lead_frames）。
         lookahead_text: 次のセリフの文。「この行＋次の行」をまとめて作り、この行の部分だけ返す（blockwise 対応モデルだけ）。
         watermark: 出力に透かしを入れる（参照音声を使うときは指定が無くても入れる）。"""
         if not text.strip():
@@ -1128,6 +1150,7 @@ class IrodoriTTS:
             if self.supports_prefix:
                 request.prefix_latent = prefix_latent
                 request.prefix_tail_seconds = float(prefix_tail_seconds)
+                request.prefix_lead_frames = blockwise_lead_frames(prefix_prev_text)
             else:
                 print("[irodori] this model/backend cannot continue from the previous line; "
                       "generating it on its own", file=sys.stderr, flush=True)

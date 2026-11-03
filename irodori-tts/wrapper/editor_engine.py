@@ -104,7 +104,7 @@ class EditorAdapter:
                             token_split_bunsetsu=False,
                             stream_playback=False, blockwise=False, blockwise_lookahead=False,
                             default_steps=DEFAULT_STEPS_RF,
-                            audio_cache_mb=DEFAULT_AUDIO_CACHE_MB, low_vram=False)
+                            audio_cache_mb=DEFAULT_AUDIO_CACHE_MB, low_vram=False, acting_tags=True)
 
     def __init__(self):
         self.backend_name = "editor"
@@ -140,7 +140,7 @@ class EditorAdapter:
                             token_split_bunsetsu=False,
                             stream_playback=False, blockwise=False, blockwise_lookahead=False,
                             default_steps=DEFAULT_STEPS_RF,
-                            audio_cache_mb=DEFAULT_AUDIO_CACHE_MB, low_vram=False)
+                            audio_cache_mb=DEFAULT_AUDIO_CACHE_MB, low_vram=False, acting_tags=True)
         try:
             saved = json.loads(self.config_path.read_text(encoding="utf-8"))
             if isinstance(saved, dict):
@@ -210,6 +210,9 @@ class EditorAdapter:
             candidate = Path(model).expanduser().resolve() if Path(model).is_absolute() else (MODEL_DIR.resolve() / model).resolve()
         except OSError:
             return None
+        if (candidate.is_dir() and candidate != MODEL_DIR.resolve()
+                and (candidate / "model.safetensors").is_file()):
+            candidate = candidate / "model.safetensors"  # フォルダを指定したら中の model.safetensors
         if not candidate.is_file() or candidate.suffix != ".safetensors":
             return None
         if not Path(model).is_absolute() and MODEL_DIR.resolve() not in candidate.parents:
@@ -437,6 +440,8 @@ class EditorAdapter:
             raise ValueError("blockwise_lookahead は true か false を指定してください")
         if not isinstance(value.get("low_vram", False), bool):
             raise ValueError("low_vram は true か false を指定してください")
+        if not isinstance(value.get("acting_tags", True), bool):
+            raise ValueError("acting_tags は true か false を指定してください")
         cache_mb = value.get("audio_cache_mb", DEFAULT_AUDIO_CACHE_MB)
         if isinstance(cache_mb, bool) or not isinstance(cache_mb, int) or not 0 <= cache_mb <= 1024:
             raise ValueError("audio_cache_mb は0〜1024の整数で指定してください")
@@ -462,10 +467,10 @@ class EditorAdapter:
 
     @staticmethod
     def _line_cfg_range(query):
-        """CFG をかける範囲（0〜1、既定 1）。cfg_min_t への換算は voicevox_engine._cfg_min_t。"""
-        raw = query.get("irodori_cfg_range", 1.0)
+        """CFG をかける範囲（0〜1、既定 0.75）。cfg_min_t への換算は voicevox_engine._cfg_min_t。"""
+        raw = query.get("irodori_cfg_range", 0.75)
         try:
-            value = float(1.0 if raw is None else raw)
+            value = float(0.75 if raw is None else raw)
         except (TypeError, ValueError) as exc:
             raise ValueError("irodori_cfg_range must be a number") from exc
         if not math.isfinite(value) or not 0.0 <= value <= 1.0:
@@ -1000,7 +1005,7 @@ class EditorAdapter:
                     text=text.strip(), speaker="", out_wav=output,
                     seed=int(self.settings["seed"]),
                     num_steps=self._default_steps(),
-                    cfg_scale_text=3.0, cfg_scale_speaker=5.0,
+                    cfg_scale_text=3.0, cfg_scale_speaker=3.0,
                     cfg_scale_caption=3.0,
                     speaker_tensor_override=tensor,
                 )
@@ -1267,7 +1272,7 @@ class EditorAdapter:
             query.update(irodori_steps=line_steps,
                          irodori_seconds=line_seconds,
                          irodori_cfg_text=self._line_cfg(query, "irodori_cfg_text", 3.0),
-                         irodori_cfg_speaker=self._line_cfg(query, "irodori_cfg_speaker", 5.0),
+                         irodori_cfg_speaker=self._line_cfg(query, "irodori_cfg_speaker", 3.0),
                          irodori_cfg_caption=self._line_cfg(query, "irodori_cfg_caption", 3.0),
                          irodori_cfg_range=self._line_cfg_range(query),
                          irodori_schedule=line_schedule,
@@ -1283,6 +1288,8 @@ class EditorAdapter:
             self.delegate.token_split_threshold = self.settings.get(
                 "token_split_threshold", DEFAULT_TOKEN_SPLIT_THRESHOLD)
             self.delegate.token_split_bunsetsu = bool(self.settings.get("token_split_bunsetsu", False))
+            # 他の TTS の演技タグ（[laughing] など）を絵文字にするか（acting_tags.py）
+            self.delegate.acting_tags = bool(self.settings.get("acting_tags", True))
             started = time.perf_counter()
             try:
                 result = self.delegate.synthesize(query, sid)

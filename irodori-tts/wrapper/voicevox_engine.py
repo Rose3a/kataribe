@@ -237,11 +237,11 @@ IRODORI_QUERY_FIELDS: dict[str, dict] = {
         "description": "MeanFlow モデルでは無視される",
     },
     "irodori_cfg_speaker": {
-        "type": "number", "minimum": 0.0, "maximum": 20.0, "default": 5.0,
+        "type": "number", "minimum": 0.0, "maximum": 20.0, "default": 3.0,
         "description": "MeanFlow モデルでは無視される",
     },
     "irodori_cfg_range": {
-        "type": "number", "minimum": 0.0, "maximum": 1.0, "default": 1.0,
+        "type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.75,
         "description": "CFG をかけるステップの範囲。1 で従来どおり、下げるとノイズ側の数ステップだけになり、0 で CFG なし。MeanFlow モデルでは無視される",
     },
     "irodori_additional_speakers": {
@@ -277,6 +277,11 @@ IRODORI_QUERY_FIELDS: dict[str, dict] = {
         "type": "string", "nullable": True,
         "description": "次のセリフの文（同じ話者）。blockwise 対応モデルでは「この行＋次の行」をまとめて作り、"
                        "この行の話し終わりで切って返す（行末が言い切りにならない）。それ以外のモデル・エンジンでは無視する",
+    },
+    "irodori_prev_text": {
+        "type": "string", "nullable": True,
+        "description": "前のセリフの文。blockwise 対応モデルで、前のセリフが句点などで言い切っていれば行頭の余白を長く、"
+                       "言い切らず続く形（読点や句読点なし）で終わっていれば短くする。それ以外のモデル・エンジンでは無視する",
     },
     "irodori_sway_coeff": {
         "type": "number",
@@ -437,9 +442,9 @@ def _cfg_min_t(query: dict) -> float:
     t は 1（ノイズ）→0 へ進み、cfg_min_t 以上の t だけ CFG がかかる。範囲 1 を従来の 0.5、
     0.5 を 0.75 に当てる。0 は CFG なしにするため、どのステップの t（最大 1.0）よりも大きくする。
     """
-    raw = query.get("irodori_cfg_range", 1.0)
+    raw = query.get("irodori_cfg_range", 0.75)
     try:
-        value = float(1.0 if raw is None else raw)
+        value = float(0.75 if raw is None else raw)
     except (TypeError, ValueError) as exc:
         raise ValueError("irodori_cfg_range must be a number") from exc
     if not math.isfinite(value) or not 0.0 <= value <= 1.0:
@@ -530,7 +535,7 @@ def _sampling_settings(flow_parameterization: str, default_steps: int, query: di
     return {
         "num_steps": num_steps,
         "cfg_scale_text": _cfg_value(query, "irodori_cfg_text", 3.0),
-        "cfg_scale_speaker": _cfg_value(query, "irodori_cfg_speaker", 5.0),
+        "cfg_scale_speaker": _cfg_value(query, "irodori_cfg_speaker", 3.0),
         "cfg_scale_caption": _cfg_value(query, "irodori_cfg_caption", 3.0),
         "cfg_min_t": _cfg_min_t(query),
         "t_schedule_mode": str(query.get("irodori_schedule", "sway")),
@@ -806,6 +811,8 @@ class VoicevoxAdapter:
         self.token_split_threshold = DEFAULT_TOKEN_SPLIT_THRESHOLD
         # 文節の頭でも分けるか（全体の設定 token_split_bunsetsu。bunsetsu.py）
         self.token_split_bunsetsu = False
+        # 他の TTS の演技タグ（[laughing] など）を絵文字にするか（全体の設定 acting_tags。acting_tags.py）
+        self.acting_tags = True
         model_cfg = getattr(getattr(self.tts.backend, "runtime", None), "model_cfg", None)
         self.text_tokenizer_repo = getattr(model_cfg, "text_tokenizer_repo", None)
         # 前のセリフから続けて生成（blockwise）するための、返した音声の latent（context_latents.py）
@@ -878,7 +885,8 @@ class VoicevoxAdapter:
 
     def _synthesize(self, query: dict, speaker_id: int, options: dict) -> bytes:
         # コピーした文の改行・見えない文字・記号を整えてから読み辞書へ（text_cleanup.py）
-        text = clean_pasted_text(str(query.get("irodori_text") or query.get("kana") or ""))
+        acting_tags = bool(getattr(self, "acting_tags", True))
+        text = clean_pasted_text(str(query.get("irodori_text") or query.get("kana") or ""), acting_tags)
         text = READING_DICTIONARY.convert(text, **options)
         if not text:
             raise ValueError("audio query does not contain text (irodori_text/kana)")
@@ -886,7 +894,8 @@ class VoicevoxAdapter:
         next_text = None
         if query.get("irodori_next_text") and self.supports_prefix:
             next_text = READING_DICTIONARY.convert(
-                clean_pasted_text(str(query["irodori_next_text"]))[:MAX_TEXT_CHARS], **options) or None
+                clean_pasted_text(str(query["irodori_next_text"]), acting_tags)[:MAX_TEXT_CHARS],
+                **options) or None
         if len(text) > MAX_TEXT_CHARS:
             raise ValueError(
                 f"セリフが長すぎます（{len(text)}文字 / 上限{MAX_TEXT_CHARS}文字）。"
@@ -993,6 +1002,8 @@ class VoicevoxAdapter:
                     log_fn=self.progress_callback,
                     prefix_latent=prefix_latent,
                     prefix_tail_seconds=prefix_tail,
+                    prefix_prev_text=(clean_pasted_text(str(query.get("irodori_prev_text") or ""), acting_tags)
+                                      or None),
                     lookahead_text=next_text,
                     watermark=context_watermark,
                     length_check=query.get("irodori_length_check", "on"),

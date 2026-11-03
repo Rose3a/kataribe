@@ -52,7 +52,7 @@ class SamplingSettingsTests(unittest.TestCase):
         self.assertEqual(settings["num_steps"], 8)
         self.assertEqual(settings["cfg_scale_text"], 3.0)
         self.assertEqual(settings["cfg_scale_caption"], 3.0)
-        self.assertEqual(settings["cfg_scale_speaker"], 5.0)
+        self.assertEqual(settings["cfg_scale_speaker"], 3.0)
         self.assertEqual(settings["t_schedule_mode"], "sway")
         self.assertEqual(settings["sway_coeff"], -1.0)
 
@@ -69,8 +69,8 @@ class SamplingSettingsTests(unittest.TestCase):
         self.assertEqual(settings["sway_coeff"], -2.0)
 
     def test_cfg_range_maps_to_cfg_min_t(self):
-        # 既定 1 は従来の cfg_min_t 0.5、0.5 は試験で使った 0.75、0 はどの t（最大 1.0）にもかからない
-        for value, expected in ((None, 0.5), (1.0, 0.5), (0.5, 0.75)):
+        # 既定 0.75 は cfg_min_t 0.625、1 は従来の 0.5、0.5 は試験で使った 0.75、0 はどの t（最大 1.0）にもかからない
+        for value, expected in ((None, 0.625), (1.0, 0.5), (0.75, 0.625), (0.5, 0.75)):
             query = {} if value is None else {"irodori_cfg_range": value}
             self.assertAlmostEqual(_sampling_settings("rf_velocity", 8, query)["cfg_min_t"], expected)
         self.assertGreater(
@@ -164,7 +164,7 @@ class AdapterRequestTests(unittest.TestCase):
             adapter.synthesize({"irodori_text": "こんにちは"}, 1)
         self.assertEqual(captured["num_steps"], 8)
         self.assertEqual(captured["cfg_scale_text"], 3.0)
-        self.assertEqual(captured["cfg_scale_speaker"], 5.0)
+        self.assertEqual(captured["cfg_scale_speaker"], 3.0)
         self.assertEqual(captured["t_schedule_mode"], "sway")
 
     def test_explicit_steps_still_reach_the_runtime(self):

@@ -167,6 +167,17 @@ class SupportsPrefixTest(unittest.TestCase):
         self.assertIsNone(request.tail_silence_max)
 
 
+class LeadFramesTest(unittest.TestCase):
+    def test_lead_depends_on_how_previous_line_ends(self):
+        f = tts_cli.blockwise_lead_frames
+        for text in ("今日は晴れです。", "本当に？", "行くぞ！", "「いつものですか」", "待って…"):
+            self.assertEqual(f(text), tts_cli.BLOCKWISE_LEAD_AFTER_STOP, text)
+        for text in ("それでね、", "あの人が言うには", "来週の月曜日までに、 "):
+            self.assertEqual(f(text), tts_cli.BLOCKWISE_LEAD_CONTINUING, text)
+        self.assertEqual(f(None), tts_cli.BLOCKWISE_LEAD_AFTER_STOP)
+        self.assertEqual(f(""), tts_cli.BLOCKWISE_LEAD_AFTER_STOP)
+
+
 class VramTrimTest(unittest.TestCase):
     def test_prefix_projection_stays_on_gpu(self):
         self.assertIn("wk_prefix", vram_trim.KV_PROJECTION)
