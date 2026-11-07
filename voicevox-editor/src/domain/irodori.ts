@@ -14,6 +14,11 @@ export type IrodoriEnglishSpacing = "keep" | "join";
 /** 語彙分割。on なら学習の少ないまとまりトークン（浦和レッズ など）を分けて読ませる。 */
 export type IrodoriTokenSplit = "on" | "off";
 /**
+ * 長さの測り直し。on なら、時間予測が長すぎたとき（末尾の余計な発話・ループの原因）に、
+ * 読み終えた位置を測って短く作り直す（遅い話速で効く。v4.1 Small 系を PyTorch か TensorRT の adaLN 版の plan で動かすときのみ）。
+ */
+export type IrodoriLengthCheck = "on" | "off";
+/**
  * 語彙分割で避けるトークンの出現度の境目（全体の設定）。4文字以上で出現度がこれ以下の
  * トークンを使わない。0 に近い（-10）ほど分ける語が増える。none ならどのセリフにも当てない。
  * 出現度の尺度は modernbert-ja のものなので、v4 Small 系のモデルにだけ当たる。
@@ -26,6 +31,7 @@ export const IRODORI_DEFAULT_ENGLISH_READING: IrodoriEnglishReading =
 export const IRODORI_DEFAULT_KANA_STYLE: IrodoriKanaStyle = "katakana";
 export const IRODORI_DEFAULT_ENGLISH_SPACING: IrodoriEnglishSpacing = "keep";
 export const IRODORI_DEFAULT_TOKEN_SPLIT: IrodoriTokenSplit = "on";
+export const IRODORI_DEFAULT_LENGTH_CHECK: IrodoriLengthCheck = "on";
 export const IRODORI_DEFAULT_CFG_TEXT = 3;
 export const IRODORI_DEFAULT_CFG_CAPTION = 3;
 export const IRODORI_DEFAULT_CFG_SPEAKER = 3;

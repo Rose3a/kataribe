@@ -349,6 +349,18 @@
             :disable="locked"
             @update:model-value="saveTokenSplit"
           />
+          <QSelect
+            v-model="lengthCheckValue"
+            outlined
+            dense
+            label="長さの測り直し"
+            :options="lengthChecks"
+            emit-value
+            map-options
+            hint="時間予測が長すぎたとき、読み終えた位置を測って短く作り直します（遅い話速で効きます。作り直すと TensorRT で約1.5倍、PyTorch で約1.7倍の時間。INT4・MeanFlow・Large では何もしません）"
+            :disable="locked"
+            @update:model-value="saveLengthCheck"
+          />
         </div>
       </QCard>
 
@@ -613,10 +625,12 @@ import {
   IRODORI_DEFAULT_ENGLISH_READING,
   IRODORI_DEFAULT_KANA_STYLE,
   IRODORI_DEFAULT_ENGLISH_SPACING,
+  IRODORI_DEFAULT_LENGTH_CHECK,
   IRODORI_DEFAULT_TOKEN_SPLIT,
   type IrodoriEnglishReading,
   type IrodoriEnglishSpacing,
   type IrodoriKanaStyle,
+  type IrodoriLengthCheck,
   type IrodoriTokenSplit,
   irodoriDefaultSteps,
   irodoriMeanflow,
@@ -711,6 +725,7 @@ const irodori = computed(() => {
     kanaStyle: value?.kanaStyle ?? IRODORI_DEFAULT_KANA_STYLE,
     englishSpacing: value?.englishSpacing ?? IRODORI_DEFAULT_ENGLISH_SPACING,
     tokenSplit: value?.tokenSplit ?? IRODORI_DEFAULT_TOKEN_SPLIT,
+    lengthCheck: value?.lengthCheck ?? IRODORI_DEFAULT_LENGTH_CHECK,
     seconds: value?.seconds ?? null,
     cfgText: value?.cfgText ?? IRODORI_DEFAULT_CFG_TEXT,
     cfgCaption: value?.cfgCaption ?? IRODORI_DEFAULT_CFG_CAPTION,
@@ -798,6 +813,7 @@ const englishSpacingValue = ref<IrodoriEnglishSpacing>(
   IRODORI_DEFAULT_ENGLISH_SPACING,
 );
 const tokenSplitValue = ref<IrodoriTokenSplit>(IRODORI_DEFAULT_TOKEN_SPLIT);
+const lengthCheckValue = ref<IrodoriLengthCheck>(IRODORI_DEFAULT_LENGTH_CHECK);
 const secondsValue = ref<number | null>(null);
 const captionText = ref("");
 const cfgTextText = ref("");
@@ -818,6 +834,7 @@ watch(
     kanaStyleValue.value = value.kanaStyle;
     englishSpacingValue.value = value.englishSpacing;
     tokenSplitValue.value = value.tokenSplit;
+    lengthCheckValue.value = value.lengthCheck;
     secondsValue.value = value.seconds;
     captionText.value = value.caption ?? "";
     cfgTextText.value = String(value.cfgText);
@@ -914,6 +931,14 @@ function saveTokenSplit(value: IrodoriTokenSplit | null) {
   void store.actions.COMMAND_SET_IRODORI_SETTINGS({
     audioKey: props.activeAudioKey,
     irodori: { ...irodori.value, tokenSplit: value },
+  });
+}
+function saveLengthCheck(value: IrodoriLengthCheck | null) {
+  if (value == null || !lengthChecks.some((o) => o.value === value)) return;
+  lengthCheckValue.value = value;
+  void store.actions.COMMAND_SET_IRODORI_SETTINGS({
+    audioKey: props.activeAudioKey,
+    irodori: { ...irodori.value, lengthCheck: value },
   });
 }
 function saveSeconds(value: number | null) {
@@ -1399,6 +1424,10 @@ const kanaStyles: { label: string; value: IrodoriKanaStyle }[] = [
 const tokenSplits: { label: string; value: IrodoriTokenSplit }[] = [
   { label: "使う", value: "on" },
   { label: "使わない", value: "off" },
+];
+const lengthChecks: { label: string; value: IrodoriLengthCheck }[] = [
+  { label: "測り直す", value: "on" },
+  { label: "測り直さない", value: "off" },
 ];
 const locked = computed(() => store.getters.UI_LOCKED);
 const showStepsQualityWarning = computed(

@@ -27,6 +27,11 @@ class Engine:
         if 'delta_t' in self.names and 'delta_t' not in self.input_names:
             self.input_names.append('delta_t')
         self.output_name = output_name
+        # 長さの測り直し用に、層0のポインタ（各音声フレームが見ているテキスト位置）を出す plan
+        # （adaln_builder.py）。直近の呼び出しの値を last_pointer に残す。無い plan では None のまま。
+        self.pointer_name = 'pointer' if 'pointer' in self.names else None
+        self.last_pointer = None
+        self.last_text_mask = None
         self.max_batch = self.engine.get_tensor_profile_shape(self.input_names[0], 0)[2][0]
         self.dtype_map = {trt.float32: torch.float32, trt.float16: torch.float16,
                           trt.bfloat16: torch.bfloat16, trt.bool: torch.bool,
@@ -95,6 +100,13 @@ class Engine:
             self.outputs[shape] = torch.empty(shape, device='cuda', dtype=self.dtype_map[self.engine.get_tensor_dtype(self.output_name)])
         output = self.outputs[shape]
         self.context.set_tensor_address(self.output_name, output.data_ptr())
+        if self.pointer_name:
+            pshape = tuple(self.context.get_tensor_shape(self.pointer_name))
+            if ('pointer', pshape) not in self.outputs:
+                self.outputs[('pointer', pshape)] = torch.empty(
+                    pshape, device='cuda', dtype=self.dtype_map[self.engine.get_tensor_dtype(self.pointer_name)])
+            self.last_pointer = self.outputs[('pointer', pshape)]
+            self.context.set_tensor_address(self.pointer_name, self.last_pointer.data_ptr())
         if not self.context.execute_async_v3(torch.cuda.current_stream().cuda_stream):
             raise RuntimeError('TensorRT execution failed')
         return output
@@ -118,10 +130,16 @@ class Adapter:
             if len(self.prepared) > 2:
                 self.prepared.popitem(last=False)
         self.calls += 1
+        self.engine.last_text_mask = kw.get('text_mask')
         delta = (kw['delta_t'].contiguous(),) if 'delta_t' in self.engine.input_names else ()
         if self.model.delta_cond_module is not None and not delta:
             raise ValueError('MeanFlow requires a plan with delta_t input')
-        return self.run((kw['x_t'].contiguous(), kw['t'].contiguous(), *self.prepared[key][1], *delta))
+        out = self.run((kw['x_t'].contiguous(), kw['t'].contiguous(), *self.prepared[key][1], *delta))
+        # 長さの測り直し（length_check.EnginePointer）が呼び出しごとにポインタを見る。例外で合成を止めることがある
+        notify = getattr(self.engine, 'on_pointer', None)
+        if notify is not None:
+            notify()
+        return out
 
     def run(self, xs):
         # Independent CFG with text, speaker and caption needs batch 4, one
@@ -144,6 +162,11 @@ class Adapter:
                     piece.append(x[start:start + limit].contiguous())
             # The engine reuses its output buffer per shape; copy each slice out.
             parts.append(self.engine(tuple(piece)).clone())
+            if start == 0 and self.engine.last_pointer is not None:
+                # ポインタは cond の行（先頭の行）のもの。後ろのスライスの値で上書きされないよう残す
+                first_pointer = self.engine.last_pointer.clone()
+        if self.engine.pointer_name:
+            self.engine.last_pointer = first_pointer
         return torch.cat(parts)
 
 

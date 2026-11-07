@@ -22,6 +22,7 @@ import {
   IRODORI_DEFAULT_SCHEDULE,
   IRODORI_DEFAULT_ENGLISH_READING,
   IRODORI_DEFAULT_KANA_STYLE,
+  IRODORI_DEFAULT_LENGTH_CHECK,
   IRODORI_DEFAULT_TOKEN_SPLIT,
   IRODORI_DEFAULT_ENGLISH_SPACING,
   IRODORI_DEFAULT_AUDIO_CACHE_MB,
@@ -198,6 +199,8 @@ function synthesisParams(
         audioItem.irodori?.englishSpacing ?? IRODORI_DEFAULT_ENGLISH_SPACING,
       irodoriTokenSplit:
         audioItem.irodori?.tokenSplit ?? IRODORI_DEFAULT_TOKEN_SPLIT,
+      irodoriLengthCheck:
+        audioItem.irodori?.lengthCheck ?? IRODORI_DEFAULT_LENGTH_CHECK,
       irodoriSeconds: audioItem.irodori?.seconds ?? null,
       irodoriCaption: audioItem.irodori?.caption,
       irodoriCaptionStrength:

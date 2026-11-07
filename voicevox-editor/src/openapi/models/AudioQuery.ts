@@ -47,6 +47,8 @@ export interface AudioQuery {
     irodoriEnglishSpacing?: 'keep' | 'join';
     /** Per-item token split dictionary: on splits rare merged tokens (e.g. 浦和レッズ) without a pause. */
     irodoriTokenSplit?: 'on' | 'off';
+    /** Per-item length check: on re-synthesizes with a measured length when the predicted duration is too long. */
+    irodoriLengthCheck?: 'on' | 'off';
     /** Per-item Irodori target duration in seconds; null uses automatic duration. */
     irodoriSeconds?: number | null;
     /** Per-item Irodori caption. */
@@ -189,6 +191,7 @@ export function AudioQueryFromJSONTyped(json: any, ignoreDiscriminator: boolean)
         'irodoriEnglishReading': !exists(json, 'irodori_english_reading') ? undefined : json['irodori_english_reading'],
         'irodoriKanaStyle': !exists(json, 'irodori_kana_style') ? undefined : json['irodori_kana_style'],
         'irodoriTokenSplit': !exists(json, 'irodori_token_split') ? undefined : json['irodori_token_split'],
+        'irodoriLengthCheck': !exists(json, 'irodori_length_check') ? undefined : json['irodori_length_check'],
         'irodoriEnglishSpacing': !exists(json, 'irodori_english_spacing') ? undefined : json['irodori_english_spacing'],
         'irodoriSeconds': !exists(json, 'irodori_seconds') ? undefined : json['irodori_seconds'],
         'irodoriCaption': !exists(json, 'irodori_caption') ? undefined : json['irodori_caption'],
@@ -236,6 +239,7 @@ export function AudioQueryToJSON(value?: AudioQuery | null): any {
         'irodori_english_reading': value.irodoriEnglishReading,
         'irodori_kana_style': value.irodoriKanaStyle,
         'irodori_token_split': value.irodoriTokenSplit,
+        'irodori_length_check': value.irodoriLengthCheck,
         'irodori_english_spacing': value.irodoriEnglishSpacing,
         'irodori_seconds': value.irodoriSeconds,
         'irodori_caption': value.irodoriCaption,

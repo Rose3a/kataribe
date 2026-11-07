@@ -682,14 +682,20 @@ class TrtBackend:
             print(f"[trt] moved {moved / 2**20:.0f} MB of plan-duplicated weights to CPU RAM",
                   file=sys.stderr, flush=True)
 
-    def _synthesize_on_stream(self, request, log_fn):
+    def _synthesize_on_stream(self, request, log_fn, length_check="off"):
         with torch.cuda.stream(self.stream):
             try:
-                result = self.runtime.synthesize(request, log_fn=log_fn)
+                if length_check == "on":
+                    # 長さの測り直し（2 パス）。ポインタ出力のある plan だけ（無ければ 1 回で済ませる）
+                    import length_check as lc
+                    result, info = lc.synthesize(self.runtime, request, log_fn=log_fn,
+                                                 stream_decoder=self.stream_decoder, engine=self.engine)
+                else:
+                    result, info = self.runtime.synthesize(request, log_fn=log_fn), {}
                 torch.cuda.synchronize()
             finally:
                 self._drop_step_inputs()
-        return result
+        return result, info
 
     def _drop_step_inputs(self):
         """1回の合成の中だけで使い回す plan の入力（文脈 K/V など）を捨てる。
@@ -708,13 +714,14 @@ class TrtBackend:
                 adapter._merged = None
             adapter = vars(adapter).get("adapter")
 
-    def synthesize(self, request, speaker_tensor: torch.Tensor, out_wav, log_fn=None) -> dict:
+    def synthesize(self, request, speaker_tensor: torch.Tensor, out_wav, log_fn=None,
+                   length_check: str = "off") -> dict:
         _cap_reference_seconds(request, self.runtime, getattr(self, "max_ref_seconds", None))
         try:
             with self.busy:
                 # 合成は常駐ワーカー1本で動かす。HTTP のリクエストごとの新スレッドで走らせると、
                 # 参照ありの speaker_encoder などが毎回スレッドの初回コスト（約0.8秒）を払う。
-                result = self._worker.run(self._synthesize_on_stream, request, log_fn)
+                result, info = self._worker.run(self._synthesize_on_stream, request, log_fn, length_check)
         finally:
             # 失敗（VRAM 不足など）で抜けたときも、待機中の VRAM を返すタイマーを掛け直す。
             if self.idle_release is not None:
@@ -722,7 +729,7 @@ class TrtBackend:
         write_wav(out_wav, result.audio, result.sample_rate)
         return {"backend": self.name, "wall_s": result.total_to_decode,
                 "audio_s": result.audio.shape[-1] / result.sample_rate,
-                "latent": result.latents[0] if result.latents else None}
+                "latent": result.latents[0] if result.latents else None, **info}
 
 
 class RadeonBackend:
@@ -1171,9 +1178,9 @@ class IrodoriTTS:
         decoder = getattr(self.backend, "stream_decoder", None)
         if stream is not None and decoder is not None and ref_wav is None:
             decoder.begin(stream)
-        # 長さの測り直し（2 パス）は PyTorch の CUDA / CPU だけ（length_check.py）
+        # 長さの測り直し（2 パス）は PyTorch の CUDA / CPU と、ポインタ出力のある TensorRT の plan（length_check.py）
         extra = ({"length_check": "on"}
-                 if length_check == "on" and isinstance(self.backend, TorchBackend) else {})
+                 if length_check == "on" and isinstance(self.backend, (TorchBackend, TrtBackend)) else {})
         try:
             try:
                 result = self.backend.synthesize(request, speaker_tensor, out_wav, log_fn=log_fn, **extra)

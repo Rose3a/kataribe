@@ -1418,7 +1418,12 @@ class DurationPredictor(nn.Module):
         has_caption: torch.Tensor | None = None,
         edge_mask: torch.Tensor | None = None,
         edge_cap_frames: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+        return_token_frames: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor | None]:
+        """return_token_frames なら (log1p(文の長さ), トークンごとのフレーム数 (B, S)) を返す（上限を掛けた後、
+        詰め物は 0）。token_sum の構造だけが対応し、それ以外の構造では無視して長さだけを返すので、呼び出し側は
+        token_out_proj の有無で確かめる。長さの測り直し（wrapper/length_check.py）が最後の語の長さと文の中身の
+        長さに使う。"""
         if text_state.ndim != 3 or text_state.shape[-1] != self.text_dim:
             raise ValueError(
                 f"text_state must have shape (B, S, {self.text_dim}), got {tuple(text_state.shape)}"
@@ -1494,8 +1499,10 @@ class DurationPredictor(nn.Module):
             token_frames = F.softplus(token_logits.float())
             if edge_mask is not None and edge_cap_frames is not None:
                 token_frames = cap_edge_frames(token_frames, text_mask, edge_mask, edge_cap_frames)
-            total_frames = (token_frames * text_mask.to(dtype=token_frames.dtype)).sum(dim=1)
-            return torch.log1p(total_frames.clamp_min(0.0))
+            token_frames = token_frames * text_mask.to(dtype=token_frames.dtype)
+            total_frames = token_frames.sum(dim=1)
+            log_frames = torch.log1p(total_frames.clamp_min(0.0))
+            return (log_frames, token_frames) if return_token_frames else log_frames
 
         if self.text_pool is None:
             raise RuntimeError("Pooled duration modules are missing.")
@@ -2387,9 +2394,11 @@ class TextToLatentRFDiT(nn.Module):
         detach_condition: bool = True,
         edge_mask: torch.Tensor | None = None,
         edge_cap_frames: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+        return_token_frames: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         """edge_mask / edge_cap_frames: token_sum の予測で文頭・文末のトークンが足す長さの上限（cap_edge_frames）。
-        token_sum 以外の構造では使わない。"""
+        token_sum 以外の構造では使わない。
+        return_token_frames: (log フレーム数, トークンごとのフレーム数) を返す（token_sum の構造だけ）。"""
         if self.duration_predictor is None:
             raise RuntimeError("Duration predictor is disabled for this model.")
         if duration_features.ndim != 2:
@@ -2422,7 +2431,12 @@ class TextToLatentRFDiT(nn.Module):
             caption_mask=caption_mask,
             has_caption=has_caption,
             **({"edge_mask": edge_mask, "edge_cap_frames": edge_cap_frames} if edge_mask is not None else {}),
+            # 渡すときだけ足す（CUDA Graph はキーワード引数ごとに記録するので、いつもの呼び出しは変えない）
+            **({"return_token_frames": True} if return_token_frames else {}),
         )
+        if return_token_frames:
+            log_frames, token_frames = pred
+            return log_frames.float(), token_frames.float()
         return pred.float()
 
     @property

@@ -107,6 +107,7 @@ export type AudioItem = {
     kanaStyle?: "katakana" | "hiragana";
     englishSpacing?: "keep" | "join";
     tokenSplit?: "on" | "off";
+    lengthCheck?: "on" | "off";
     seconds?: number | null;
     caption?: string;
     captionStrength?: number;

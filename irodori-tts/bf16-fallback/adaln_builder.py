@@ -8,12 +8,18 @@ BF16 モデルと W8A8 モデル（int8_builder.py の INT8 Q/DQ）に対応す�
 
 plan の構築は fallback_bf16.py の ``build --label fallback_adaln``。環境変数は fallback_bf16.py と同じ。
 mod の中身と実行時の扱いは wrapper/adaln_pre.py。
+
+長さの測り直し（wrapper/length_check.py）に対応するモデル（v4.1 Small と同じ構造の RF）では、2 つ目の出力
+``pointer``（(S,) int32: cond の 1 行目で、各音声フレームが層 0 のヘッド 2・4 でいちばん強く見ている
+テキスト位置）も出す。層 0 の q はその層の注意の計算と同じもの（_apply_rotary_half の出力）を使うので、
+行列積は増えない。IRODORI_TRT_POINTER=0 で出さない。
 """
 from __future__ import annotations
 
 import argparse
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -23,6 +29,7 @@ sys.path.insert(0, str(SCRIPT_DIR.parents[0] / "wrapper"))
 import fallback_bf16 as fb  # noqa: E402
 import int8_builder as ib  # noqa: E402
 import adaln_pre  # noqa: E402
+import length_check  # noqa: E402
 
 log = logging.getLogger("adaln_builder")
 
@@ -67,31 +74,65 @@ def capture() -> None:
     print("mod shape", list(mod.shape), flush=True)
 
 
+def with_pointer(model_cfg) -> bool:
+    return os.environ.get("IRODORI_TRT_POINTER", "1") != "0" and length_check.supported(model_cfg)
+
+
+def pointer_from(q, k_text, text_mask):
+    """length_check.PointerRecorder._hook と同じ計算。q は RoPE 後の層 0 の q、k_text は層 0 のテキストの K。"""
+    import torch
+    heads = list(length_check.POINTER_HEADS)
+    logits = torch.einsum("bshd,bthd->bhst", q[:1, :, heads].float(), k_text[:1, :, heads].float())
+    logits = logits.masked_fill(~text_mask[:1].bool()[:, None, None, :], float("-inf"))
+    # argmax の結果（int64）の最大を TensorRT で取るため、いったん float にする
+    return logits.argmax(-1).float().amax(1)[0].to(torch.int32)
+
+
 def export(label: str) -> Path:
     import onnx
     import torch
     te, rt, layers = _load_runtime()
     base = te.CachedDiT
+    pointer = with_pointer(rt.model_cfg)
 
     class PreDiT(base):
         def forward(self, x, mod, text_mask, speaker_mask, caption_mask, rope_cos, rope_sin, *kv):
             freqs = torch.stack((rope_cos, rope_sin), dim=-1)
-            h = self.in_proj(x)
-            for i, block in enumerate(self.blocks):
-                cache = tuple(k[i] for k in kv)
-                h = block(h, mod[:, i], cache[0], text_mask, cache[2], speaker_mask,
-                          cache[4], caption_mask, freqs, context_kv=cache)
-            return self.out_proj(self.out_norm(h)).to(x.dtype)
+            held = []
+            if pointer:
+                # 層 0 の注意の中で最初に _apply_rotary_half を通るのが q（次が self の K）
+                attention = self.blocks[length_check.POINTER_LAYER].attention
+                rotary = type(attention)._apply_rotary_half
+
+                def capture(x_, freqs_):
+                    y = rotary(attention, x_, freqs_)
+                    held.append(y)
+                    return y
+                attention._apply_rotary_half = capture
+            try:
+                h = self.in_proj(x)
+                for i, block in enumerate(self.blocks):
+                    cache = tuple(k[i] for k in kv)
+                    h = block(h, mod[:, i], cache[0], text_mask, cache[2], speaker_mask,
+                              cache[4], caption_mask, freqs, context_kv=cache)
+            finally:
+                if pointer:
+                    del attention._apply_rotary_half
+            v = self.out_proj(self.out_norm(h)).to(x.dtype)
+            if not pointer:
+                return v
+            return v, pointer_from(held[0], kv[0][length_check.POINTER_LAYER], text_mask)
 
     adaln_pre.patch_blocks(rt.model.blocks)
     te.CachedDiT = PreDiT
     out = fb.artifact_path(label, ".onnx")
-    record = {}
+    record = {"pointer": pointer}
+    extra = {"pointer": {0: "latent"}} if pointer else None
     if layers is None:
-        source = fb.export(label)
+        source = fb.export(label, extra)
         record["int8_layers"] = 0
     else:
-        source = fb.export(label + "_bf16")
+        source = fb.export(label + "_bf16", extra)
         model = onnx.load(str(source))
         done, missing = ib.rewrite_graph(model, layers)
         if missing:

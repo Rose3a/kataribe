@@ -1275,6 +1275,19 @@ class InferenceRuntime:
         )
         return state, mask, freqs
 
+    def _keep_duration_tokens(self, ids: torch.Tensor, mask: torch.Tensor, token_frames: torch.Tensor) -> None:
+        """1 行目（候補 0）の、時間予測のトークンごとのフレーム数を last_duration_tokens に残す。
+        frames: 詰め物を除いたトークンごとの値（BOS 込み、文頭・文末の上限を掛けた後）。
+        content_frames: 文頭の BOS と文末に続く記号（_duration_edge_mask）を除いた中身の合計。
+        長さの測り直し（wrapper/length_check.py）が、最後の語の長さと、縮めすぎない下限に使う。"""
+        n = int(mask[0].sum())
+        frames = [float(x) for x in token_frames[0, :n].detach().float().cpu()]
+        edge = self._duration_edge_mask(ids[:1], mask[:1])[0, :n].cpu().tolist()
+        self.last_duration_tokens = {
+            "frames": frames,
+            "content_frames": float(sum(f for f, e in zip(frames, edge) if not e)),
+        }
+
     def _duration_edge_mask(self, ids: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         """長さの上限（duration_edge_cap_frames）を掛けるトークンの位置: 文頭の BOS と、文末に続く記号だけの
         トークン（。！？…、 など）。ids, mask: (B, S)。戻りは同じ形の bool（ids と同じデバイス）。"""
@@ -1348,6 +1361,8 @@ class InferenceRuntime:
                 log_fn(msg)
 
         messages: list[str] = []
+        # 前の合成の値を残さない（長さを指定した合成では時間予測を通らない）
+        self.last_duration_tokens = None
         is_meanflow = self.model_cfg.flow_parameterization == "meanflow"
         num_steps = (4 if is_meanflow else 40) if req.num_steps is None else int(req.num_steps)
         if num_steps <= 0:
@@ -1622,8 +1637,9 @@ class InferenceRuntime:
                 elif self.model_cfg.use_speaker_condition_resolved and ref_mask is not None:
                     has_speaker_duration = ref_mask.any(dim=1)
                 has_speaker_duration &= reference_strength > 0.0
-                def predict_frames(text, ids, mask):
-                    """(条件のエンコード結果, 予測フレーム数)。"""
+                def predict_frames(text, ids, mask, keep_tokens=False):
+                    """(条件のエンコード結果, 予測フレーム数)。keep_tokens なら、トークンごとの予測を
+                    last_duration_tokens に残す（token_sum の時間予測だけ）。"""
                     duration_features = build_duration_features(
                         [text] * num_candidates,
                         token_counts=mask.sum(dim=1),
@@ -1668,6 +1684,11 @@ class InferenceRuntime:
                             "edge_cap_frames": torch.full((num_candidates,), float(req.duration_edge_cap_frames),
                                                           dtype=torch.float32, device=self.model_device),
                         }
+                    tokens = (keep_tokens
+                              and getattr(self.model.duration_predictor, "token_out_proj", None) is not None
+                              and duration_text_state.shape[1] == ids.shape[1])
+                    if tokens:
+                        edge["return_token_frames"] = True
                     pred_log_frames = self.model.predict_duration_log_frames(
                         text_state=duration_text_state,
                         text_mask=duration_text_mask,
@@ -1687,10 +1708,14 @@ class InferenceRuntime:
                         else None,
                         **edge,
                     )
+                    if tokens:
+                        pred_log_frames, token_frames = pred_log_frames
+                        self._keep_duration_tokens(ids, mask, token_frames)
                     return conditions, torch.expm1(pred_log_frames).float().mean().item()
 
                 # Reuse the condition encodings during RF sampling.
-                encoded_conditions, pred_frames = predict_frames(normalized_text, text_ids, text_mask)
+                encoded_conditions, pred_frames = predict_frames(normalized_text, text_ids, text_mask,
+                                                                 keep_tokens=True)
                 lookahead_ratio = None
                 if lookahead_line_text is not None:
                     line_ids, line_mask = self.tokenizer.batch_encode(

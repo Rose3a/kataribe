@@ -78,6 +78,20 @@ class EdgeMaskTest(unittest.TestCase):
         self.assertEqual(self.edge([1, 13, 6], 3), [True, False, False])
 
 
+class KeepDurationTokensTest(unittest.TestCase):
+    """長さの測り直しのために、時間予測のトークンごとの値と文の中身の合計を残す（_keep_duration_tokens）。"""
+
+    def test_frames_without_padding_and_content_without_edges(self):
+        runtime = EdgeMaskTest.runtime(None)
+        runtime._duration_edge_mask = lambda ids, mask: InferenceRuntime._duration_edge_mask(runtime, ids, mask)
+        ids = torch.tensor([[1, 10, 11, 12, 3, 0], [1, 13, 3, 0, 0, 0]])  # 2 行目（別の候補）は使わない
+        mask = torch.tensor([[True] * 5 + [False], [True] * 3 + [False] * 3])
+        frames = torch.tensor([[12.0, 10.0, 7.5, 3.5, 4.0, 0.0], [9.0, 9.0, 9.0, 0.0, 0.0, 0.0]])
+        InferenceRuntime._keep_duration_tokens(runtime, ids, mask, frames)
+        self.assertEqual(runtime.last_duration_tokens["frames"], [12.0, 10.0, 7.5, 3.5, 4.0])
+        self.assertAlmostEqual(runtime.last_duration_tokens["content_frames"], 21.0)  # <s> と「。」を除く
+
+
 @unittest.skipUnless(CUDA, "needs CUDA")
 class CudaGraphTest(unittest.TestCase):
     def test_a_new_cap_takes_effect_on_replay(self):
@@ -90,6 +104,25 @@ class CudaGraphTest(unittest.TestCase):
             for cap in (12.0, 12.0, 30.0, 8.0):  # 2 回目から記録した graph の再生
                 out = call(frames, mask, edge, torch.tensor([cap], device="cuda"))
                 self.assertAlmostEqual(float(out[0, 0] + out[0, 4]), cap, places=3)
+        self.assertGreaterEqual(call.replays, 2)
+
+    def test_token_frames_come_back_from_a_replay(self):
+        # 時間予測は return_token_frames のとき (長さ, トークンごとの値) を返す。再生でも両方が新しい値になる
+        import cuda_graphs
+
+        def predict(frames, mask, return_token_frames=False):
+            frames = frames * mask
+            total = torch.log1p(frames.sum(dim=1))
+            return (total, frames) if return_token_frames else total
+
+        call = cuda_graphs.GraphedCall(predict, "duration", log=lambda m: None)
+        mask = torch.tensor([[1.0, 1.0, 0.0]], device="cuda")
+        with torch.no_grad():
+            for scale in (1.0, 1.0, 2.0, 3.0):
+                frames = torch.tensor([[4.0, 6.0, 9.0]], device="cuda") * scale
+                total, tokens = call(frames, mask, return_token_frames=True)
+                self.assertEqual(tokens[0].tolist(), [4.0 * scale, 6.0 * scale, 0.0])
+                self.assertAlmostEqual(float(total[0]), float(torch.log1p(torch.tensor(10.0 * scale))), places=4)
         self.assertGreaterEqual(call.replays, 2)
 
 

@@ -158,7 +158,8 @@ def inspect_export(path: Path) -> dict:
             "comment": "QK BF16; scores/softmax FP32; probabilities, PV, and wo remain BF16."}
 
 
-def export(label: str) -> Path:
+def export(label: str, extra_outputs: dict | None = None) -> Path:
+    """extra_outputs: v の後ろに足す出力の {名前: dynamic_axes}（wrapper はその順のタプルを返す）。"""
     import torch
 
     out = artifact_path(label, ".onnx")
@@ -180,11 +181,15 @@ def export(label: str) -> Path:
         _CAPTURED_SDPA = old_sdpa
         F.scaled_dot_product_attention = primitive_sdpa
         candidate = wrapper(*xs)
-        if not torch.equal(expected, candidate):
+        pairs = (zip(expected, candidate) if isinstance(expected, tuple)
+                 else [(expected, candidate)])
+        if not all(torch.equal(a, b) for a, b in pairs):
             raise RuntimeError("eager primitive wrapper changed output")
         log.info("exporting %s", out)
-        torch.onnx.export(wrapper, xs, str(out), input_names=NAMES, output_names=["v"],
-                          opset_version=18, dynamo=False, dynamic_axes=dynamic_axes(),
+        axes = {**dynamic_axes(), **(extra_outputs or {})}
+        torch.onnx.export(wrapper, xs, str(out), input_names=NAMES,
+                          output_names=["v", *(extra_outputs or {})],
+                          opset_version=18, dynamo=False, dynamic_axes=axes,
                           do_constant_folding=True)
     finally:
         F.scaled_dot_product_attention = old_sdpa
