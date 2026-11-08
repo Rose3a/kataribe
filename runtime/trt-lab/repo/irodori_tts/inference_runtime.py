@@ -1279,13 +1279,16 @@ class InferenceRuntime:
         """1 行目（候補 0）の、時間予測のトークンごとのフレーム数を last_duration_tokens に残す。
         frames: 詰め物を除いたトークンごとの値（BOS 込み、文頭・文末の上限を掛けた後）。
         content_frames: 文頭の BOS と文末に続く記号（_duration_edge_mask）を除いた中身の合計。
-        長さの測り直し（wrapper/length_check.py）が、最後の語の長さと、縮めすぎない下限に使う。"""
+        last_token: 最後のトークンの文字列（整えた後の文の。外側のかぎかっこは外れている）。
+        長さの測り直し（wrapper/length_check.py）が、最後の語の長さと、縮めすぎない下限と、
+        文末が記号かどうかに使う。"""
         n = int(mask[0].sum())
         frames = [float(x) for x in token_frames[0, :n].detach().float().cpu()]
         edge = self._duration_edge_mask(ids[:1], mask[:1])[0, :n].cpu().tolist()
         self.last_duration_tokens = {
             "frames": frames,
             "content_frames": float(sum(f for f, e in zip(frames, edge) if not e)),
+            "last_token": self.tokenizer.tokenizer.convert_ids_to_tokens(int(ids[0, n - 1])) if n else None,
         }
 
     def _duration_edge_mask(self, ids: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:

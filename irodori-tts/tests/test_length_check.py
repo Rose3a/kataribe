@@ -9,6 +9,7 @@ import unittest
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "wrapper"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "runtime" / "trt-lab" / "repo"))  # 文の整え方
 import length_check as lc  # noqa: E402
 
 SMALL = types.SimpleNamespace(flow_parameterization="rf_velocity", num_layers=12, num_heads=20,
@@ -174,6 +175,29 @@ class EstimateTest(unittest.TestCase):
         self.assertEqual(lc.estimated_frames(pointer, 6, 1, 25.0, text="弁当を選ぶようになった"),
                          math.ceil((21 + 0.5 * 25) * lc.MARGIN))
 
+    def test_final_punct_is_judged_on_the_synthesized_tokens(self):
+        # ランタイムは外側のかぎかっこを外してからトークンにする。元の文の「」」で記号とみなすと、
+        # 最後の語（す）の予測を足さずに縮めすぎる（PR の指摘: 103 → 64 フレーム）
+        pointer = [0] * 3 + [1] * 11 + [2] * 6 + [3] * 10 + [4] * 10 + [5] * 30 + [6] * 30
+        plain, bracketed = "今日はいい天気です", "「今日はいい天気です」"
+        frames = [20.0, 10.0, 3.0, 5.0, 3.5, 6.0, 8.0]
+        tokens = {"frames": frames, "content_frames": 35.5, "last_token": "す"}
+        self.assertTrue(lc.ends_with_punct(bracketed))
+        self.assertFalse(lc.last_token_is_punct(bracketed, tokens))
+        expected = lc.estimated_frames(pointer, 7, 1, 25.0, plain, tokens)
+        self.assertEqual(lc.estimated_frames(pointer, 7, 1, 25.0, bracketed, tokens), expected)
+        # 最後のトークンを残さないランタイムでも、整えた後の文で見る
+        old = {"frames": frames, "content_frames": 35.5}
+        self.assertEqual(lc.estimated_frames(pointer, 7, 1, 25.0, bracketed, old), expected)
+        self.assertFalse(lc.last_token_is_punct("そうだね〜"))  # 〜 は ー になる
+        self.assertTrue(lc.last_token_is_punct("胸が痛みます。"))
+        self.assertTrue(lc.last_token_is_punct("彼は「はい」"))  # 文の途中から始まるかっこは外れない
+        # 記号だけのトークンが記号。語とくっついたトークンは中身の語として長さを足す
+        self.assertTrue(lc.last_token_is_punct("x", {"last_token": "▁。"}))
+        self.assertTrue(lc.last_token_is_punct("x", {"last_token": "?!"}))
+        self.assertFalse(lc.last_token_is_punct("す。", {"last_token": "す。"}))
+        self.assertFalse(lc.last_token_is_punct("x", {"last_token": "▁"}))
+
     def test_engine_pointer_reads_the_plan_output(self):
         engine = types.SimpleNamespace(pointer_name="pointer", last_pointer=torch.tensor([1, 2]),
                                        last_text_mask=torch.tensor([[True] * 5 + [False] * 3]))
@@ -301,6 +325,30 @@ class TwoPassTest(unittest.TestCase):
         self.assertEqual(info["length_check"], "fallback")
         first, _, _, third = runtime.requests
         self.assertEqual((third.seconds, third.seed), (None, first.seed))
+
+    def test_bracketed_text_is_resynthesized_like_the_plain_text(self):
+        pointer = torch.tensor([0] * 20 + [3] * 20 + [4] * 160)
+        got = []
+        for text in ("テストです", "「テストです」"):
+            runtime = FakeRuntime(passes=[steps(pointer), steps([0] * 10 + [4] * 30)], text_len=6)
+            runtime.last_duration_tokens = {"frames": [20.0, 5.0, 5.0, 5.0, 30.0, 8.0], "content_frames": 53.0,
+                                            "last_token": "す"}
+            _, info = lc.synthesize(runtime, Request(text=text))
+            got.append((info["length_check"], info["estimated_frames"]))
+        self.assertEqual(got[0], got[1])
+        self.assertEqual(got[0], ("resynthesized", math.ceil((41 + 30.0 + 8.0 + 7.5) * lc.MARGIN)))
+
+    def test_joint_and_alternating_cfg_are_skipped(self):
+        # cond と uncond を別々に呼ぶので、呼び出しの回数で最後のステップが分からない
+        @dataclasses.dataclass
+        class CfgRequest(Request):
+            cfg_guidance_mode: str = "independent"
+
+        pointer = torch.tensor([0] * 20 + [3] * 20 + [4] * 160)
+        for mode, expected in (("joint", "skipped"), ("Alternating", "skipped"), ("independent", "resynthesized")):
+            runtime, _, info = self.run_with_pointer(pointer, 6, request=CfgRequest(cfg_guidance_mode=mode))
+            self.assertEqual(info["length_check"], expected, mode)
+            self.assertEqual(len(runtime.requests), 1 if expected == "skipped" else 2)
 
     def test_manual_seconds_and_other_models_are_skipped(self):
         pointer = torch.tensor([0] * 20 + [4] * 180)

@@ -52,7 +52,9 @@ class CapEdgeFramesTest(unittest.TestCase):
 class EdgeMaskTest(unittest.TestCase):
     def runtime(self, add_bos=True):
         vocab = {"<s>": 1, "胸が": 10, "痛み": 11, "ます": 12, "。": 3, "、": 4, "!?": 5, "▁": 6, "ね": 13}
-        tok = types.SimpleNamespace(tokenizer=types.SimpleNamespace(get_vocab=lambda: vocab), add_bos=add_bos)
+        names = {i: t for t, i in vocab.items()}
+        tok = types.SimpleNamespace(tokenizer=types.SimpleNamespace(
+            get_vocab=lambda: vocab, convert_ids_to_tokens=lambda i: names[i]), add_bos=add_bos)
         return types.SimpleNamespace(tokenizer=tok)
 
     def edge(self, ids, n, add_bos=True):
@@ -90,6 +92,7 @@ class KeepDurationTokensTest(unittest.TestCase):
         InferenceRuntime._keep_duration_tokens(runtime, ids, mask, frames)
         self.assertEqual(runtime.last_duration_tokens["frames"], [12.0, 10.0, 7.5, 3.5, 4.0])
         self.assertAlmostEqual(runtime.last_duration_tokens["content_frames"], 21.0)  # <s> と「。」を除く
+        self.assertEqual(runtime.last_duration_tokens["last_token"], "。")
 
 
 @unittest.skipUnless(CUDA, "needs CUDA")

@@ -176,6 +176,34 @@ def ends_with_punct(text: str | None) -> bool:
     return bool(text) and text.rstrip()[-1:] in FINAL_PUNCT
 
 
+def is_punct_token(token: str | None) -> bool:
+    """トークンの文字列（▁ を除く）が記号だけか。"""
+    t = (token or "").replace("▁", "")
+    return bool(t) and all(ch in FINAL_PUNCT for ch in t)
+
+
+def last_token_is_punct(text: str | None, tokens: dict | None = None) -> bool:
+    """合成した文の最後のトークンが記号か。ランタイムは文を整えてから（外側のかぎかっこを外す、〜 を ー に
+    するなど。irodori_tts.text_normalization）トークンにするので、元の文の最後の文字で見ると見誤る
+    （「今日はいい天気です」を記号で終わるとみなし、最後の語の長さを足さずに縮めすぎる）。
+    tokens（duration_tokens）の last_token があればそれで、無ければ整えた後の文で見る。"""
+    if tokens is not None and tokens.get("last_token") is not None:
+        return is_punct_token(tokens["last_token"])
+    if not text:
+        return False
+    from irodori_tts.text_normalization import normalize_text
+    return ends_with_punct(normalize_text(text).strip())
+
+
+def single_call_per_step(request) -> bool:
+    """CFG が independent（既定）か。independent は 1 ステップに DiT を 1 回呼ぶ（cond は先頭の行）。
+    joint・alternating は cond と uncond を別々に呼ぶので、呼び出しの回数で最後のステップが分からず、
+    uncond の呼び出しがポインタを上書きする（文が空のこともある）。確かめたのは independent だけなので、
+    それ以外では測り直さない。"""
+    mode = getattr(request, "cfg_guidance_mode", None) or "independent"
+    return str(mode).strip().lower() == "independent"
+
+
 def reading_end(pointer, text_len: int, final_punct: bool = False) -> int | None:
     """ポインタに読み進みの経路を当てはめ、経路が最後から 2 番目のトークンに届いた最初のステップ。
 
@@ -244,11 +272,11 @@ def estimated_frames(pointer: torch.Tensor, text_len: int, frames_per_step: int,
                      frames_per_second: float, text: str | None = None,
                      tokens: dict | None = None, lead: int = 0) -> int | None:
     """ポインタから見積もった、読み終えるまでの潜在フレーム数（余裕込み）。届いていなければ None。
-    text（合成する文）が文末の記号で終わるなら、その記号を指すフレームは使わない。
+    合成した文の最後のトークンが記号なら（last_token_is_punct。text は合成する文）、その記号を指すフレームは使わない。
     tokens（duration_tokens）があれば、届いた時点に最後の語の予測フレーム数（記号で終わらない文は最後の 2 つ）
     と LAST_WORD_TAIL_SECONDS を足し、文の中身の予測の FLOOR 倍（＋続きの行の先頭の余白 lead）を下限にする。
     無ければ届いた時点 + TAIL_SECONDS。"""
-    punct = ends_with_punct(text)
+    punct = last_token_is_punct(text, tokens)
     end = reading_end(pointer, text_len, punct)
     if end is None:
         return None
@@ -318,7 +346,7 @@ def synthesize(runtime, request, log_fn=None, stream_decoder=None, engine=None):
 
     info = {"length_check": "skipped"}
     if (request.seconds is not None or not supported(runtime.model_cfg)
-            or getattr(request, "lookahead_text", None)):
+            or getattr(request, "lookahead_text", None) or not single_call_per_step(request)):
         return runtime.synthesize(request, log_fn=log_fn), info
     if engine is not None and not EnginePointer.available(engine):
         return runtime.synthesize(request, log_fn=log_fn), info
@@ -393,7 +421,8 @@ def synthesize(runtime, request, log_fn=None, stream_decoder=None, engine=None):
         + (f", first pass stopped at call {stopped_at}" if stopped_at is not None else ""))
     # 呼び出しの回数は 1 回目と同じ（途中で止めたときはステップ数）
     last_call = recorder.calls if first is not None else int(request.num_steps or 0)
-    punct = ends_with_punct(request.text)
+    # 文末が記号かは、作り直しの前に 1 回目のトークンで決める（ランタイムは合成のたびにトークンを捨てる）
+    punct = last_token_is_punct(request.text, getattr(runtime, "last_duration_tokens", None))
 
     def verify(rec):
         if rec.calls == last_call and reading_end(rec.pointer, rec.text_len, punct) is None:
