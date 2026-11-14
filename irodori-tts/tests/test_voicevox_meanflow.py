@@ -175,5 +175,65 @@ class AdapterRequestTests(unittest.TestCase):
         self.assertEqual(captured["num_steps"], 8)
 
 
+@unittest.skipIf(voicevox_engine is None, "torch is not installed in this interpreter")
+class ContinuationCfgSpeakerTests(unittest.TestCase):
+    """続きの行（前のセリフの latent を prefix に渡す行）だけ、既定のスピーカーCFG を 2 にする。"""
+
+    CONTEXT = {"dataUrl": "data:audio/wav;base64,AAAA"}
+
+    def run_line(self, flow, query, latent_found=True):
+        adapter, captured = AdapterRequestTests.build_adapter(self, flow)
+        # 前のセリフの latent が見つかったか（_context_prefix の結果）だけを差し替える
+        adapter._context_prefix = lambda value: (
+            ("prefix-latent" if value and latent_found else None), False, 0.0)
+        query = {"irodori_text": "こんにちは", **query}
+        with patch.object(voicevox_engine, "READING_DICTIONARY") as dictionary:
+            dictionary.convert.side_effect = lambda text, **_: text
+            adapter.synthesize(query, 1)
+        return captured, query
+
+    def test_continuation_with_default_uses_two(self):
+        # エディタは値を変えていない行にも既定の 3 を送る。省略したときも同じ
+        for query in ({}, {"irodori_cfg_speaker": 3}, {"irodori_cfg_speaker": None}):
+            with self.subTest(query=query):
+                captured, sent = self.run_line("rf_velocity", {**query, "irodori_context_audio": self.CONTEXT})
+                self.assertEqual(captured["prefix_latent"], "prefix-latent")
+                self.assertEqual(captured["cfg_scale_speaker"], 2.0)
+                self.assertEqual(sent["irodori_cfg_speaker"], 2.0)  # エディタのログにも実際の値が出る
+                # ほかの CFG はそのまま
+                self.assertEqual(captured["cfg_scale_text"], 3.0)
+                self.assertEqual(captured["cfg_scale_caption"], 3.0)
+
+    def test_continuation_keeps_an_explicit_value(self):
+        for value in (0.0, 1.5, 5.0):
+            with self.subTest(value=value):
+                captured, sent = self.run_line(
+                    "rf_velocity", {"irodori_cfg_speaker": value, "irodori_context_audio": self.CONTEXT})
+                self.assertEqual(captured["cfg_scale_speaker"], value)
+                self.assertEqual(sent["irodori_cfg_speaker"], value)
+
+    def test_lines_that_do_not_continue_keep_the_default(self):
+        # 前のセリフの音声が無い行、送られても latent が見つからない（続きにならない）行
+        for query, found in (({}, True), ({"irodori_context_audio": self.CONTEXT}, False)):
+            with self.subTest(query=query, found=found):
+                captured, sent = self.run_line("rf_velocity", {"irodori_cfg_speaker": 3, **query}, found)
+                self.assertIsNone(captured["prefix_latent"])
+                self.assertEqual(captured["cfg_scale_speaker"], 3.0)
+                self.assertEqual(sent["irodori_cfg_speaker"], 3)
+
+    def test_meanflow_continuation_stays_without_cfg(self):
+        captured, sent = self.run_line(
+            "meanflow", {"irodori_cfg_speaker": 3, "irodori_context_audio": self.CONTEXT})
+        self.assertEqual(captured["cfg_scale_speaker"], 0.0)
+        self.assertEqual(sent["irodori_cfg_speaker"], 3)
+
+    def test_continuation_keeps_independent_cfg_for_the_length_check(self):
+        # 長さの測り直しは CFG が independent（既定）のときだけ（length_check.single_call_per_step）。
+        # 続きの行でも変えるのはスピーカーCFG の値だけで、ガイダンスの方式は渡さない（既定のまま）
+        captured, _ = self.run_line("rf_velocity", {"irodori_context_audio": self.CONTEXT})
+        self.assertNotIn("cfg_guidance_mode", captured)
+        self.assertEqual(captured["length_check"], "on")
+
+
 if __name__ == "__main__":
     unittest.main()

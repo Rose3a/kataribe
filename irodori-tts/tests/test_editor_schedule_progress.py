@@ -434,7 +434,9 @@ class EditorScheduleProgressTests(unittest.TestCase):
         self.assertRegex(IRODORI_SETTINGS, r"スピーカーCFG")
         self.assertNotRegex(IRODORI_SETTINGS, r"label=\"テキスト\"|textText|saveText")
         self.assertRegex(IRODORI_SETTINGS, r"既定値: 3")
-        self.assertRegex(IRODORI_SETTINGS, r"既定値: 5")
+        # スピーカーCFG の既定は 3 で、続きの行はエンジンが 2 にする（voicevox_engine._continuation_cfg_speaker）
+        self.assertRegex(IRODORI_SETTINGS, r"既定値: 3、続きの行は2")
+        self.assertNotRegex(IRODORI_SETTINGS, r"既定値: 5")
         self.assertNotRegex(IRODORI_SETTINGS, r"全行共通の生成設定[\s\S]{0,200}label=\"CFG\"")
 
     def test_editor_rejects_non_finite_per_line_cfg_values(self):

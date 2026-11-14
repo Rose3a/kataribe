@@ -530,7 +530,7 @@
               dense
               type="number"
               label="スピーカーCFG"
-              hint="既定値: 5（0〜20）"
+              hint="既定値: 3、続きの行は2（0〜20）"
               inputmode="decimal"
               :min="0"
               :max="20"

@@ -238,7 +238,8 @@ IRODORI_QUERY_FIELDS: dict[str, dict] = {
     },
     "irodori_cfg_speaker": {
         "type": "number", "minimum": 0.0, "maximum": 20.0, "default": 3.0,
-        "description": "MeanFlow モデルでは無視される",
+        "description": "前のセリフの続きとして作る行（irodori_context_audio が使われたとき）は、既定の 3 なら 2 にする"
+                       "（3 以外を指定すればその値）。MeanFlow モデルでは無視される",
     },
     "irodori_cfg_range": {
         "type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.75,
@@ -505,6 +506,19 @@ def _resolve_flow_parameterization(checkpoint: str | Path | None) -> tuple[str, 
     return "rf_velocity", "default"
 
 
+# スピーカーCFG の既定と、続きの行（前のセリフの latent を prefix にして作る blockwise の行）で使う値。
+# 続きの行は前のセリフの音声が話者の手がかりになるので、話者の条件を既定より弱くかける。
+DEFAULT_CFG_SPEAKER = 3.0
+CONTINUATION_CFG_SPEAKER = 2.0
+
+
+def _continuation_cfg_speaker(cfg_scale_speaker: float) -> float:
+    """続きの行のスピーカーCFG。既定（3）のままなら CONTINUATION_CFG_SPEAKER にし、
+    行ごとに別の値を入れていればそれを使う。エディタは値を変えていない行にも既定の 3 を送るので、
+    3 は「変えていない」とみなす。MeanFlow（CFG を使わないので 0）もそのまま。"""
+    return CONTINUATION_CFG_SPEAKER if cfg_scale_speaker == DEFAULT_CFG_SPEAKER else cfg_scale_speaker
+
+
 def _sampling_settings(flow_parameterization: str, default_steps: int, query: dict) -> dict:
     """1リクエスト分のサンプリング設定を決める。
 
@@ -535,7 +549,7 @@ def _sampling_settings(flow_parameterization: str, default_steps: int, query: di
     return {
         "num_steps": num_steps,
         "cfg_scale_text": _cfg_value(query, "irodori_cfg_text", 3.0),
-        "cfg_scale_speaker": _cfg_value(query, "irodori_cfg_speaker", 3.0),
+        "cfg_scale_speaker": _cfg_value(query, "irodori_cfg_speaker", DEFAULT_CFG_SPEAKER),
         "cfg_scale_caption": _cfg_value(query, "irodori_cfg_caption", 3.0),
         "cfg_min_t": _cfg_min_t(query),
         "t_schedule_mode": str(query.get("irodori_schedule", "sway")),
@@ -947,16 +961,22 @@ class VoicevoxAdapter:
         # such file is attached, preserve the normal speaker condition.
         if not query.get("irodori_reference_audio"):
             reference_strength = 1.0
-        print(
-            f"[voicevox] synth: flow={flow} steps={sampling['num_steps']} "
-            f"cfg={sampling['cfg_scale_text']}/{sampling['cfg_scale_caption']}"
-            f"/{sampling['cfg_scale_speaker']} cfg_min_t={sampling.get('cfg_min_t', 0.5)} schedule={sampling['t_schedule_mode']} "
-            f"speaker={speaker_name or '(none)'}",
-            file=sys.stderr, flush=True,
-        )
         reference = query.get("irodori_reference_audio")
         with self.lock:
             prefix_latent, context_watermark, prefix_tail = self._context_prefix(query.get("irodori_context_audio"))
+            if prefix_latent is not None:
+                # 前のセリフの続きとして作る行だけ、スピーカーCFG を弱める。エディタのログ
+                # （editor_engine の synth done）にも実際に使った値が出るよう、変えたときは query にも書き戻す
+                used = _continuation_cfg_speaker(sampling["cfg_scale_speaker"])
+                if used != sampling["cfg_scale_speaker"]:
+                    sampling["cfg_scale_speaker"] = query["irodori_cfg_speaker"] = used
+            print(
+                f"[voicevox] synth: flow={flow} steps={sampling['num_steps']} "
+                f"cfg={sampling['cfg_scale_text']}/{sampling['cfg_scale_caption']}"
+                f"/{sampling['cfg_scale_speaker']} cfg_min_t={sampling.get('cfg_min_t', 0.5)} schedule={sampling['t_schedule_mode']} "
+                f"speaker={speaker_name or '(none)'}" + (" continuation" if prefix_latent is not None else ""),
+                file=sys.stderr, flush=True,
+            )
             # The runtime reads reference audio from a file, so only that case
             # needs a temporary folder; the output WAV stays in memory.
             with (tempfile.TemporaryDirectory(prefix="irodori-vv-", dir=str(ROOT / "wrapper"))
