@@ -58,8 +58,31 @@ def blockwise_lead_frames(prev_text: Optional[str]) -> int:
     return BLOCKWISE_LEAD_CONTINUING
 
 
-# v2 は prefix を 20 秒まで学習したが、10 秒を超える例は少ないので 15 秒までにする（仮: フォルダ名で判定）
+# v2 は prefix を 20 秒まで学習したが、10 秒を超える例は少ないので 15 秒までにする
 BLOCKWISE_V2_PREFIX_SECONDS = 15.0
+_prefix_seconds_cache: dict[str, Optional[float]] = {}
+
+
+def blockwise_prefix_seconds(checkpoint: str) -> Optional[float]:
+    """前の行から見せる長さの上限（秒）をモデルが持っていれば返す。無ければ None（ランタイムの既定）。
+
+    HF の rose3/Irodori-TTS-v4.1-Small-Blockwise は v1 を v2 で上書きしたので、名前では見分けられない。
+    v2 のチェックポイント（FP32・bf16・W8A8）はメタデータ blockwise_prefix_seconds を持つ。上書きの前に
+    手元に置いた v2（Irodori-TTS-v4.1-Small-Blockwise-v2、メタデータ無し）はフォルダ名で見分ける。"""
+    if checkpoint not in _prefix_seconds_cache:
+        value = None
+        path = Path(checkpoint)
+        if path.suffix == ".safetensors" and path.is_file():
+            from safetensors import safe_open
+            with safe_open(str(path), "pt") as f:
+                value = (f.metadata() or {}).get("blockwise_prefix_seconds")
+        if value is not None:
+            _prefix_seconds_cache[checkpoint] = float(value)
+        elif "blockwise-v2" in checkpoint.replace("\\", "/").lower():
+            _prefix_seconds_cache[checkpoint] = BLOCKWISE_V2_PREFIX_SECONDS
+        else:
+            _prefix_seconds_cache[checkpoint] = None
+    return _prefix_seconds_cache[checkpoint]
 
 
 def parse_radeon_precision(value: str | None = None) -> str:
@@ -1010,10 +1033,11 @@ class IrodoriTTS:
             return
         request.tail_silence_max = BLOCKWISE_TAIL_SILENCE_MAX
         request.duration_edge_cap_frames = BLOCKWISE_EDGE_CAP_FRAMES
-        if "blockwise-v2" in os.environ.get("IRODORI_CHECKPOINT", "").replace("\\", "/").lower():
+        prefix_seconds = blockwise_prefix_seconds(os.environ.get("IRODORI_CHECKPOINT", ""))
+        if prefix_seconds is not None:
             import context_latents
-            request.prefix_seconds = BLOCKWISE_V2_PREFIX_SECONDS
-            context_latents.ENCODE_TAIL_SECONDS = BLOCKWISE_V2_PREFIX_SECONDS + 0.5
+            request.prefix_seconds = prefix_seconds
+            context_latents.ENCODE_TAIL_SECONDS = prefix_seconds + 0.5
 
     def speaker_dim(self) -> Optional[int]:
         """Speaker embedding width of the loaded model (768 for v4.1 Small)."""
