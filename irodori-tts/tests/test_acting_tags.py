@@ -98,33 +98,19 @@ class DropAndKeepTest(unittest.TestCase):
 
 
 class LaughWTest(unittest.TestCase):
-    """笑いの w は文を笑いながら言う印なので、文の頭に 😏 を置く（w 1つで3個、増えるごとに1個、10個まで）。"""
+    """笑いの w は絵文字にせず、演技タグの設定によらず読まずに消す。"""
 
-    def test_w_moves_to_sentence_head(self):
-        self.assertEqual(clean("それはないw"), "😏😏😏それはない!")
-        self.assertEqual(clean("え、うわｗｗｗｗ、それってまじか"), "😏" * 6 + "え、うわ!それってまじか")
-        self.assertEqual(clean("マジかwww。次行こう"), "😏" * 5 + "マジか!次行こう")
-        self.assertEqual(clean("いいよ。それはないww"), "いいよ。😏😏😏😏それはない!")
-
-    def test_mark_after_w(self):
-        # 後ろの ?！ はそのまま、行頭の www には ! を置かない
-        self.assertEqual(clean("マジかwww？"), "😏" * 5 + "マジか?")
-        self.assertEqual(clean("まじかよwww！"), "😏" * 5 + "まじかよ!")
-        self.assertEqual(clean("wwwで草"), "😏" * 5 + "で草")
-
-    def test_count_is_capped_at_ten(self):
-        self.assertEqual(clean("草" + "w" * 8), "😏" * 10 + "草!")
-        self.assertEqual(clean("草" + "w" * 30), "😏" * 10 + "草!")
-
-    def test_w_only_becomes_laugh(self):
-        self.assertEqual(clean("wwwww"), "🤭")
+    def test_w_is_dropped_without_emoji(self):
+        self.assertEqual(clean("それはないw"), "それはない")
+        self.assertEqual(clean("マジかwww。次行こう"), "マジか。次行こう")
+        self.assertEqual(clean("え、うわｗｗｗｗ、それってまじか"), "え、うわ、それってまじか")
+        for text in ("それはないw", "マジかwww？", "草" + "w" * 30):
+            self.assertNotIn("😏", clean(text))
+            self.assertEqual(clean(text), clean(text, acting_tags=False))
 
     def test_english_and_urls_are_untouched(self):
         for text in ("wow", "www.example.com", "Hello world"):
             self.assertEqual(clean(text), clean(text, acting_tags=False))
-
-    def test_off_just_drops_w(self):
-        self.assertEqual(clean("それはないw", acting_tags=False), "それはない")
 
 
 class SwitchTest(unittest.TestCase):
