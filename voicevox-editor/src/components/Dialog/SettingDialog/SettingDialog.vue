@@ -340,6 +340,12 @@
                   @update:modelValue="changeShowAudioLength"
                 />
                 <ToggleCell
+                  title="再生中のセリフを文字ごとに表示"
+                  description="ONの場合、再生中のセリフを発話に合わせて1文字ずつ濃くし、話している文字に印を付けます。時刻は生成した音声から測ります（エンジン側にASRモデルが必要。測れるまでは文字数から推定します）。"
+                  :modelValue="showPlaybackTextFollow"
+                  @update:modelValue="changeShowPlaybackTextFollow"
+                />
+                <ToggleCell
                   title="テキスト追加ボタンの表示"
                   description="OFFの場合、右下にテキスト追加ボタンが表示されません。（テキスト欄は Shift + Enter で追加できます）"
                   :modelValue="showAddAudioItemButton"
@@ -613,6 +619,9 @@ const [showAudioLength, changeShowAudioLength] = useRootMiscSetting(
   store,
   "showAudioLength",
 );
+
+const [showPlaybackTextFollow, changeShowPlaybackTextFollow] =
+  useRootMiscSetting(store, "showPlaybackTextFollow");
 
 const [_enableKatakanaEnglish, setEnableKatakanaEnglish] = useRootMiscSetting(
   store,

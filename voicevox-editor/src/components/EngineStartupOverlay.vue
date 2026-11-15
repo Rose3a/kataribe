@@ -18,11 +18,18 @@
     class="waiting-engine"
   >
     <div>
-      <QSpinner color="primary" size="2.5rem" />
-      <div class="q-mt-xs">
-        {{
-          allEngineState === "STARTING" ? "エンジン起動中・・・" : startupStage
-        }}
+      <div class="km-boot" role="status">
+        <div class="km-boot__logo" aria-hidden="true">
+          <span>か</span><span>た</span><span>り</span><span>べ</span>
+        </div>
+        <div class="km-boot__bar" aria-hidden="true"></div>
+        <div class="km-boot__stage">
+          {{
+            allEngineState === "STARTING"
+              ? "エンジン起動中・・・"
+              : startupStage
+          }}
+        </div>
       </div>
 
       <template v-if="isEngineWaitingLong">

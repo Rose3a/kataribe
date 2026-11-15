@@ -48,6 +48,10 @@ import { createEngineUrl } from "@/domain/url";
 import { PcmStreamPlayer } from "@/helpers/pcmStreamPlayer";
 import { GaplessPlayer } from "@/helpers/gaplessPlayer";
 import {
+  engineEndpoint,
+  getAsrTimelineCached,
+} from "@/helpers/asrTimelineCache";
+import {
   endScheduledPlayback,
   setActiveAudioStream,
   startScheduledPlayback,
@@ -1488,13 +1492,21 @@ export const audioStore = createPartialStore<AudioStoreTypes>({
       const audioItem: AudioItem = cloneWithUnwrapProxy(
         state.audioItems[audioKey],
       );
-      return actions.FETCH_AUDIO_FROM_AUDIO_ITEM({
+      const result = await actions.FETCH_AUDIO_FROM_AUDIO_ITEM({
         audioItem,
         audioKey,
         // 前のセリフから続けて生成する（設定がオンで、直前のセリフが生成済みのとき）
         context: previousLineContext(state, audioKey),
         ...options,
       });
+      // 文字ごとの発話時刻（再生中のセリフを文字ごとに表示する・ASR の口パクで使う）を、
+      // 音声ができた時点で先に取りに行く。結果は音声ごとにキャッシュされ、再生時はそれを待つだけになる
+      if (state.showPlaybackTextFollow || state.lipSyncTimeline === "asr") {
+        const endpoint = engineEndpoint(state, audioItem.voice.engineId);
+        if (endpoint != undefined && audioItem.text !== "")
+          void getAsrTimelineCached(endpoint, audioItem.text, result.blob);
+      }
+      return result;
     },
   },
 

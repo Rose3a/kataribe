@@ -423,6 +423,8 @@ export const rootMiscSettingSchema = z.object({
   enableKatakanaEnglish: z.boolean().default(true), // 未知の英単語をカタカナ読みに変換するかどうか
   enableMultiSelect: z.boolean().default(true), // 複数選択を有効にするかどうか
   showAudioLength: z.boolean().default(false), // 音声の長さを表示するかどうか
+  // 再生中のセリフを、発話に合わせて文字ごとに表示するかどうか（時刻は ASR で測る）
+  showPlaybackTextFollow: z.boolean().default(false),
   // 立ち絵の口パク。simple=開閉のみ、vowel=母音パーツがある場合の詳細切り替え
   lipSyncMode: z.enum(["off", "simple", "vowel"]).default("simple"),
   lipSyncSpeed: z.enum(["slow", "normal", "fast", "max"]).default("normal"),

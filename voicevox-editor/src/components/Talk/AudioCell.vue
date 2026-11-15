@@ -68,6 +68,7 @@
       rows="1"
       hideBottomSpace
       class="full-width"
+      :class="{ 'km-following': followChars.length > 0 }"
       color="primary"
       :disable="uiLocked"
       :error="audioTextBuffer.length >= 80"
@@ -87,6 +88,12 @@
         句読点の位置で文章を分割してください。
       </template>
       <template #after>
+        <span v-if="showDone" class="km-done q-mr-sm" aria-hidden="true">
+          <span class="km-done__circle"></span>
+          <i class="km-done__star"></i><i class="km-done__star"></i
+          ><i class="km-done__star"></i><i class="km-done__star"></i>
+          <svg viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5" /></svg>
+        </span>
         <div
           v-if="showAudioLength && audioDuration != undefined"
           class="q-mr-sm audio-length"
@@ -115,11 +122,29 @@
         @beforeHide="endContextMenuOperation()"
       />
     </QInput>
+    <!-- 再生中のセリフを文字ごとに追う（入力欄の文字の上に重ねる） -->
+    <p
+      v-if="followChars.length > 0"
+      class="km-follow"
+      :style="followBox"
+      aria-hidden="true"
+    >
+      <span
+        v-for="(item, i) in followChars"
+        :key="i"
+        class="km-follow__ch"
+        :class="{
+          'is-read': i < followRead,
+          'is-current': i === followCurrent,
+        }"
+        >{{ item.char }}</span
+      >
+    </p>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, watch, ref, nextTick } from "vue";
+import { computed, watch, ref, nextTick, onBeforeUnmount } from "vue";
 import { QInput } from "quasar";
 import CharacterButton from "@/components/CharacterButton.vue";
 import type { MenuItemData } from "@/components/Menu/type";
@@ -135,6 +160,16 @@ import {
 } from "@/composables/useModifierKey";
 import { getDefaultStyle } from "@/domain/talk";
 import { calculateAudioLength } from "@/store/audioGenerate";
+import { getAudioDurationSeconds, getPlaybackBlob } from "@/store/audioPlayer";
+import {
+  engineEndpoint,
+  getAsrTimelineCached,
+} from "@/helpers/asrTimelineCache";
+import {
+  charTimesFromAnchors,
+  estimateCharTimes,
+  type CharTime,
+} from "@/helpers/textFollow";
 
 const props = defineProps<{
   audioKey: AudioKey;
@@ -186,6 +221,141 @@ const isInitializingSpeaker = computed(() =>
   store.state.audioKeysWithInitializingSpeaker.includes(props.audioKey),
 );
 const audioItem = computed(() => store.state.audioItems[props.audioKey]);
+
+// ---- kataribe の UI 演出（styles/kataribe-motion.css） ----
+
+// 生成中：波形の棒と、セリフ欄に走る光
+const nowGenerating = computed(
+  () => store.state.audioStates[props.audioKey]?.nowGenerating ?? false,
+);
+// 生成できた：チェックを一度だけ出す
+const showDone = ref(false);
+let doneTimer: number | undefined;
+watch(nowGenerating, (now, before) => {
+  if (!before || now) return;
+  window.clearTimeout(doneTimer);
+  showDone.value = false;
+  void nextTick(() => {
+    showDone.value = true;
+    doneTimer = window.setTimeout(() => (showDone.value = false), 1800);
+  });
+});
+
+// 再生中：セリフを文字ごとに追う（設定でオン）。時刻は口パクと同じ /irodori/timeline を
+// 音声ごとにキャッシュして使い（生成時に先読み済み）、届くまでは文字数からの推定で動かす
+const showPlaybackTextFollow = computed(
+  () => store.state.showPlaybackTextFollow,
+);
+const isPlayingThisCell = computed(
+  () => store.state.nowPlayingAudioKey === props.audioKey,
+);
+const followChars = ref<CharTime[]>([]);
+/** 発話の始まりを過ぎた文字の数（これより前の文字を濃くする） */
+const followRead = ref(0);
+/** いま話している文字の番号（間の無音では -1） */
+const followCurrent = ref(-1);
+const followBox = ref<Record<string, string>>({});
+let followFrame = 0;
+let followRequest = 0;
+
+/** 入力欄の文字の位置と書体に、重ねる層を合わせる */
+function measureFollowBox(): boolean {
+  const native = (
+    textField.value?.$el as HTMLElement | undefined
+  )?.querySelector("textarea");
+  if (native == undefined || root.value == undefined) return false;
+  const field = native.getBoundingClientRect();
+  const cell = root.value.getBoundingClientRect();
+  const style = getComputedStyle(native);
+  followBox.value = {
+    left: `${field.left - cell.left}px`,
+    top: `${field.top - cell.top}px`,
+    width: `${field.width}px`,
+    height: `${field.height}px`,
+    fontFamily: style.fontFamily,
+    fontSize: style.fontSize,
+    fontWeight: style.fontWeight,
+    lineHeight: style.lineHeight,
+    letterSpacing: style.letterSpacing,
+    padding: style.padding,
+  };
+  return true;
+}
+
+/**
+ * 再生位置から「読み終えた文字数」と「いま話している文字」を求め、変わったときだけ表示を更新する。
+ * 毎フレームするのは二分探索だけで、DOM に触るのは文字が変わったとき（1 秒に十数回）だけ。
+ */
+function tickFollow() {
+  const chars = followChars.value;
+  const now = store.getters.ACTIVE_AUDIO_ELEM_CURRENT_TIME_GETTER() ?? 0;
+  let low = 0;
+  let high = chars.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if (chars[mid].t <= now) low = mid + 1;
+    else high = mid;
+  }
+  const last = chars[low - 1];
+  const current = last != undefined && now < last.t + last.d ? low - 1 : -1;
+  if (followRead.value !== low) followRead.value = low;
+  if (followCurrent.value !== current) followCurrent.value = current;
+  followFrame = requestAnimationFrame(tickFollow);
+}
+
+async function fetchFollowTimeline(text: string): Promise<CharTime[] | null> {
+  const blob = getPlaybackBlob();
+  const engineId = audioItem.value?.voice.engineId;
+  if (blob == undefined || engineId == undefined) return null;
+  const endpoint = engineEndpoint(store.state, engineId);
+  if (endpoint == undefined) return null;
+  const response = await getAsrTimelineCached(endpoint, text, blob);
+  return response?.anchors
+    ? charTimesFromAnchors(text, response.anchors)
+    : null;
+}
+
+watch(
+  [isPlayingThisCell, showPlaybackTextFollow],
+  async ([playing, enabled]) => {
+    const request = ++followRequest;
+    cancelAnimationFrame(followFrame);
+    followChars.value = [];
+    followRead.value = 0;
+    followCurrent.value = -1;
+    if (!playing || !enabled) return;
+    const text = audioItem.value?.text ?? "";
+    if (text === "" || !measureFollowBox()) return;
+    tickFollow();
+    const measured = fetchFollowTimeline(text);
+    // 先読み済み・2 回目以降なら実測がすぐ返るので、そのまま使う
+    const early = await Promise.race([
+      measured,
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 0)),
+    ]);
+    if (request !== followRequest) return;
+    if (early != null && early.length > 0) {
+      followChars.value = early;
+      return;
+    }
+    // まだ無ければ推定で始めて、実測が届いたら差し替える（音声の長さはデコード後に分かる）
+    for (let i = 0; i < 20 && getAudioDurationSeconds() <= 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    if (request !== followRequest) return;
+    followChars.value = estimateCharTimes(text, getAudioDurationSeconds());
+    const chars = await measured;
+    if (request !== followRequest || chars == null || chars.length === 0)
+      return;
+    followChars.value = chars;
+  },
+);
+
+onBeforeUnmount(() => {
+  ++followRequest;
+  cancelAnimationFrame(followFrame);
+  window.clearTimeout(doneTimer);
+});
 
 const uiLocked = computed(() => store.getters.UI_LOCKED);
 

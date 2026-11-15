@@ -1,0 +1,313 @@
+/*
+ * kataribe の UI 演出（起動中・行を生成できたときのチェック・再生中のセリフを文字ごとに追う表示）
+ *
+ * 色はテーマの変数（domain/dom.ts が :root に付ける --color-*）をそのまま使う。
+ * 動きを減らす設定（prefers-reduced-motion）のときは、時間をほぼ 0 にして動きを止める。
+ */
+
+:root {
+  --km-primary: var(--color-primary, #a5d4ad);
+  --km-display: var(--color-display, #121212);
+  --km-on-primary: var(--color-display-on-primary, #121212);
+  --km-ease-sharp: cubic-bezier(0.85, 0, 0.15, 1);
+  --km-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --km-spring: linear(
+    0,
+    0.086,
+    0.294,
+    0.551,
+    0.801,
+    1.005,
+    1.145,
+    1.218,
+    1.233,
+    1.205,
+    1.153,
+    1.092,
+    1.035,
+    0.991,
+    0.961,
+    0.947,
+    0.946,
+    0.954,
+    0.967,
+    0.981,
+    0.994,
+    1.004,
+    1.01,
+    1.013,
+    1.012,
+    1.01,
+    1.007,
+    1.004,
+    1.001,
+    0.999,
+    0.997,
+    0.997,
+    0.997,
+    0.998,
+    0.999,
+    0.999,
+    1
+  );
+}
+
+/* ---------- 起動中（EngineStartupOverlay） ---------- */
+.km-boot {
+  display: grid;
+  justify-items: center;
+  gap: 18px;
+  padding: 10px 18px 4px;
+  color: var(--km-display);
+}
+.km-boot__logo {
+  display: flex;
+  gap: 8px;
+  perspective: 600px;
+}
+.km-boot__logo span {
+  --i: 0;
+  display: grid;
+  place-items: center;
+  width: 46px;
+  aspect-ratio: 1;
+  border-radius: 12px;
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--km-on-primary);
+  background: var(--km-primary);
+  transform-origin: 50% 0;
+  animation:
+    km-flip 0.8s var(--km-spring) calc(var(--i) * 0.11s) both,
+    km-read 2.4s var(--km-ease-out) calc(1.1s + var(--i) * 0.16s) infinite;
+}
+.km-boot__logo span:nth-child(2) {
+  --i: 1;
+}
+.km-boot__logo span:nth-child(3) {
+  --i: 2;
+}
+.km-boot__logo span:nth-child(4) {
+  --i: 3;
+}
+@keyframes km-flip {
+  from {
+    opacity: 0;
+    transform: rotateX(-100deg) translateY(-8px);
+  }
+  20% {
+    opacity: 1;
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes km-read {
+  0%,
+  22%,
+  100% {
+    transform: none;
+  }
+  8% {
+    transform: translateY(-9px) scale(1.06);
+  }
+  15% {
+    transform: translateY(1px) scale(0.98, 1.02);
+  }
+}
+.km-boot__bar {
+  width: 180px;
+  height: 4px;
+  border-radius: 99px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--km-primary) 25%, transparent);
+}
+.km-boot__bar::before {
+  content: "";
+  display: block;
+  width: 40%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--km-primary);
+  animation: km-slide 1.4s var(--km-ease-sharp) infinite;
+}
+@keyframes km-slide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+.km-boot__stage {
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  color: var(--km-display);
+  background: linear-gradient(
+      90deg,
+      currentColor 0 40%,
+      var(--km-primary) 50%,
+      currentColor 60% 100%
+    )
+    0 0 / 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  animation: km-shine 2.2s linear 1s infinite;
+}
+@keyframes km-shine {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0 0;
+  }
+}
+
+/* ---------- 生成できた（AudioCell、一度だけ） ---------- */
+.km-done {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  aspect-ratio: 1;
+  flex: none;
+}
+.km-done__circle {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: var(--km-primary);
+  animation:
+    km-pop 0.6s var(--km-spring) both,
+    km-fade 0.4s ease-in 1.3s forwards;
+}
+@keyframes km-pop {
+  from {
+    transform: scale(0);
+  }
+  to {
+    transform: scale(1);
+  }
+}
+@keyframes km-fade {
+  to {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+}
+.km-done svg {
+  position: relative;
+  width: 64%;
+  overflow: visible;
+  animation: km-fade 0.4s ease-in 1.3s forwards;
+}
+.km-done path {
+  fill: none;
+  stroke: var(--km-on-primary);
+  stroke-width: 3.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 30;
+  stroke-dashoffset: 30;
+  animation: km-draw 0.4s var(--km-ease-out) 0.2s forwards;
+}
+@keyframes km-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+.km-done__star {
+  --x: 0px;
+  --y: 0px;
+  position: absolute;
+  width: 7px;
+  aspect-ratio: 1;
+  background: var(--km-primary);
+  clip-path: polygon(
+    50% 0,
+    61% 39%,
+    100% 50%,
+    61% 61%,
+    50% 100%,
+    39% 61%,
+    0 50%,
+    39% 39%
+  );
+  animation: km-burst 0.7s var(--km-ease-out) 0.28s both;
+}
+.km-done__star:nth-of-type(1) {
+  --x: -16px;
+  --y: -12px;
+}
+.km-done__star:nth-of-type(2) {
+  --x: 16px;
+  --y: -14px;
+  width: 6px;
+}
+.km-done__star:nth-of-type(3) {
+  --x: 17px;
+  --y: 11px;
+  width: 5px;
+}
+.km-done__star:nth-of-type(4) {
+  --x: -15px;
+  --y: 13px;
+  width: 6px;
+}
+@keyframes km-burst {
+  0% {
+    opacity: 0;
+    transform: translate(0, 0) scale(0) rotate(0);
+  }
+  30% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(var(--x), var(--y)) scale(1) rotate(90deg);
+  }
+}
+
+/* ---------- 再生中のセリフを文字ごとに追う（AudioCell） ---------- */
+.km-follow {
+  position: absolute;
+  z-index: 1;
+  margin: 0;
+  overflow: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  pointer-events: none;
+  color: var(--km-display);
+}
+/* 状態は AudioCell が文字の変わり目でだけ付け替える（is-read / is-current） */
+.km-follow__ch {
+  color: color-mix(in srgb, var(--km-display) 42%, transparent);
+  border-radius: 3px;
+  transition: color 0.15s ease-out;
+}
+.km-follow__ch.is-read {
+  color: var(--km-display);
+}
+.km-follow__ch.is-current {
+  background: color-mix(in srgb, var(--km-primary) 65%, transparent);
+  box-shadow: 0 2px 0 var(--km-primary);
+}
+/* 追っている間は、下の入力欄の文字を隠して重なりを防ぐ */
+.km-following .q-field__native {
+  color: transparent !important;
+  caret-color: transparent !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [class*="km-"],
+  [class*="km-"]::before,
+  [class*="km-"]::after,
+  [class*="km-"] > * {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
+}

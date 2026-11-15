@@ -11,6 +11,7 @@ import { markdownItPlugin } from "@/plugins/markdownItPlugin";
 import "@quasar/extras/material-icons/material-icons.css";
 import "quasar/dist/quasar.sass";
 import "./styles/_index.scss";
+import "./styles/kataribe-motion.css";
 
 // NOTE: 起動後、設定を読み込んでからvue-gtmを有効化する関係上、dataLayerの用意が間に合わず、値が欠落してしまう箇所が存在する
 //       ため、それを防止するため自前でdataLayerをあらかじめ用意する

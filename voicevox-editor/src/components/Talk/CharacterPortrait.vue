@@ -39,7 +39,7 @@ import {
   type MoraStep,
   type TimelineSource,
 } from "@/helpers/portraitLipSync";
-import { fetchAsrTimeline } from "@/helpers/irodoriEngine";
+import { getAsrTimelineCached } from "@/helpers/asrTimelineCache";
 import type { AsrTimelineResponse } from "@/domain/irodori";
 import { createEngineUrl } from "@/domain/url";
 import { getAudioDurationSeconds, getPlaybackBlob } from "@/store/audioPlayer";
@@ -182,7 +182,8 @@ async function loadAsrTimeline(
     ...info,
     port: store.state.altPortInfos[engineId] ?? info.defaultPort,
   });
-  const response: AsrTimelineResponse | null = await fetchAsrTimeline(
+  // セリフを文字ごとに追う表示と同じ要求を共有する（ASR は音声ごとに 1 回）
+  const response: AsrTimelineResponse | null = await getAsrTimelineCached(
     endpoint,
     text,
     audio,
