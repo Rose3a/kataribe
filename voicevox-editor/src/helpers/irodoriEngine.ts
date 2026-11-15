@@ -9,6 +9,9 @@ import type {
   AsrTimelineResponse,
   IrodoriSession,
   IrodoriSettings,
+  IrodoriSpeakerTrainOptions,
+  IrodoriSpeakerTrainRequest,
+  IrodoriSpeakerTrainStatus,
   IrodoriStatus,
   IrodoriStorageStatus,
 } from "@/domain/irodori";
@@ -228,4 +231,83 @@ export async function fetchIrodoriStatusQuietly(
   } catch {
     return undefined;
   }
+}
+
+async function readSpeakerTrain<T>(response: Response): Promise<T> {
+  if (!response.ok) {
+    let detail = await response.text();
+    try {
+      detail = (JSON.parse(detail) as { detail?: string }).detail ?? detail;
+    } catch {
+      // JSON でなければ本文のまま
+    }
+    throw new Error(detail);
+  }
+  return (await response.json()) as T;
+}
+
+/** 話者学習で選べるベースモデルや、書き起こし（Haas-ja）が使えるかを取る。 */
+export async function fetchSpeakerTrainOptions(
+  endpoint: string,
+): Promise<IrodoriSpeakerTrainOptions> {
+  return await readSpeakerTrain<IrodoriSpeakerTrainOptions>(
+    await irodoriRequest(endpoint, "/irodori/speaker-train/options", {
+      timeoutMs: 60000,
+    }),
+  );
+}
+
+/** 話者学習の進み具合を取る。 */
+export async function fetchSpeakerTrainStatus(
+  endpoint: string,
+): Promise<IrodoriSpeakerTrainStatus> {
+  return await readSpeakerTrain<IrodoriSpeakerTrainStatus>(
+    await irodoriRequest(endpoint, "/irodori/speaker-train", {
+      timeoutMs: 10000,
+    }),
+  );
+}
+
+/** 話者学習を始める（エンジンが子プロセスで動かす。GPU なら合成用のモデルを一度下ろす）。 */
+export async function startSpeakerTrain(
+  endpoint: string,
+  request: IrodoriSpeakerTrainRequest,
+): Promise<IrodoriSpeakerTrainStatus> {
+  return await readSpeakerTrain<IrodoriSpeakerTrainStatus>(
+    await irodoriRequest(endpoint, "/irodori/speaker-train/start", {
+      method: "POST",
+      body: request,
+      timeoutMs: 60000,
+    }),
+  );
+}
+
+/**
+ * エンジンを動かしている PC で、フォルダを選ぶ画面（エクスプローラー形式）を開く。
+ * 選んだフォルダのパスを返す。やめたときは undefined。選ぶまで待つので時間制限は長め。
+ */
+export async function pickIrodoriFolder(
+  endpoint: string,
+  initial = "",
+): Promise<string | undefined> {
+  const result = await readSpeakerTrain<{ path: string | null }>(
+    await irodoriRequest(endpoint, "/irodori/pick-folder", {
+      method: "POST",
+      body: { initial },
+      timeoutMs: 30 * 60 * 1000,
+    }),
+  );
+  return result.path ?? undefined;
+}
+
+/** 動いている話者学習を止める。 */
+export async function cancelSpeakerTrain(
+  endpoint: string,
+): Promise<IrodoriSpeakerTrainStatus> {
+  return await readSpeakerTrain<IrodoriSpeakerTrainStatus>(
+    await irodoriRequest(endpoint, "/irodori/speaker-train/cancel", {
+      method: "POST",
+      body: {},
+    }),
+  );
 }

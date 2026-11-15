@@ -41,6 +41,7 @@ from tts_cli import SpeakerCassette, mix_line_speakers, resolve_embed_dirs
 from speaker_mix import compose_speaker_mix
 from synthesis_queue import SynthesisQueue
 import voice_design
+from speaker_train_job import SpeakerTrainJob
 from process_job import open_folder, tie_children_to_this_process
 from model_storage import ModelStorage
 from token_split import (DEFAULT_TOKEN_SPLIT_THRESHOLD, TOKEN_SPLIT_THRESHOLDS,
@@ -118,6 +119,8 @@ class EditorAdapter:
         # 声づくり: 試聴したテイクと、保存した声の一覧（speakers/声づくり/）
         self.voice_takes = voice_design.TakeStore()
         self.voices = voice_design.VoiceLibrary(SPEAKER_DIR)
+        # 話者学習（speakers/学習した話者/）。終わったら話者一覧を作り直す
+        self.speaker_train = SpeakerTrainJob(on_finished=self._speaker_train_finished)
         self.progress = dict(active=False, percent=0, stage="idle")
         self._progress_percent = 0
         self._prewarm_lock = threading.Lock()
@@ -1340,6 +1343,34 @@ class EditorAdapter:
             self.operation_lock.release()
         return dict(self.storage_status(), freedBytes=freed)
 
+    # ------------------------------------------------------------ 話者学習
+    def speaker_train_options(self):
+        return self.speaker_train.options()
+
+    def speaker_train_status(self):
+        return self.speaker_train.status()
+
+    def speaker_train_start(self, payload):
+        def before_start(device):
+            # GPU で学習するときは、合成用のモデルを下ろして VRAM を空ける（次の合成でまた読み込む）
+            if device == "cpu":
+                return
+            if self.close(timeout=30):
+                self._runtime_log("[speaker-train] 学習のため合成用のモデルを解放しました")
+        return self.speaker_train.start(payload, before_start=before_start)
+
+    def speaker_train_cancel(self, _payload=None):
+        return self.speaker_train.cancel()
+
+    def pick_folder(self, payload):
+        import speaker_train_job
+        initial = payload.get("initial", "") if isinstance(payload, dict) else ""
+        return speaker_train_job.pick_folder(initial if isinstance(initial, str) else "")
+
+    def _speaker_train_finished(self, state):
+        if state.get("state") == "done":
+            self.refresh()
+
     def close(self, timeout=None):
         """モデルを解放する。timeout 秒以内に生成・読み込みが終わらなければ False。"""
         if not self.operation_lock.acquire(timeout=-1 if timeout is None else timeout):
@@ -1390,6 +1421,15 @@ class EditorHandler(Handler):
                 return self._send(200, icon, "image/png")
             except (ValueError, FileNotFoundError) as exc:
                 return self._json(404, {"detail": str(exc)})
+        if path in ("/irodori/speaker-train", "/irodori/speaker-train/options"):
+            if not self._authorized():
+                return self._json(403, {"detail": "invalid local origin/session"})
+            try:
+                if path.endswith("/options"):
+                    return self._json(200, self.adapter.speaker_train_options())
+                return self._json(200, self.adapter.speaker_train_status())
+            except Exception as exc:
+                return self._json(500, {"detail": str(exc)})
         if path == "/irodori/settings":
             if not self._authorized():
                 return self._json(403, {"detail": "invalid local origin/session"})
@@ -1429,6 +1469,19 @@ class EditorHandler(Handler):
                 return self._json(200, action(self._body_json()))
             except (ValueError, KeyError, TypeError, FileNotFoundError) as exc:
                 return self._json(400, {"detail": str(exc)})
+            except Exception as exc:
+                return self._json(500, {"detail": str(exc)})
+        train_actions = {"/irodori/speaker-train/start": self.adapter.speaker_train_start,
+                         "/irodori/speaker-train/cancel": self.adapter.speaker_train_cancel,
+                         "/irodori/pick-folder": self.adapter.pick_folder}
+        action = train_actions.get(urlparse(self.path).path)
+        if action is not None:
+            try:
+                return self._json(200, action(self._body_json()))
+            except (ValueError, TypeError) as exc:
+                return self._json(400, {"detail": str(exc)})
+            except RuntimeError as exc:
+                return self._json(409, {"detail": str(exc)})
             except Exception as exc:
                 return self._json(500, {"detail": str(exc)})
         if urlparse(self.path).path in ("/irodori/mix/preview", "/irodori/mix/save"):

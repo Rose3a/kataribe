@@ -249,3 +249,78 @@ export type IrodoriStorageStatus = {
   scannedAt: number;
   freedBytes?: number;
 };
+
+/** 話者学習でベースに選べるモデル（v4.1 Small と同じ構造で、手元にあるもの）。 */
+export type IrodoriSpeakerTrainBaseModel = {
+  path: string;
+  label: string;
+  source: "local" | "huggingface";
+};
+
+/** GET /irodori/speaker-train/options の応答。 */
+export type IrodoriSpeakerTrainOptions = {
+  baseModels: IrodoriSpeakerTrainBaseModel[];
+  /** テキストの無い音声を書き起こす Haas-ja が入っているか（bat\haas_setup.bat）。 */
+  haasAvailable: boolean;
+  cudaAvailable: boolean;
+  defaults: { steps: number; speed: "learn" | "keep"; device: "cuda" | "cpu" };
+  speakerFolder: string;
+  /** すでにある学習した話者の名前。 */
+  existing: string[];
+};
+
+/** POST /irodori/speaker-train/start の要求。 */
+export type IrodoriSpeakerTrainRequest = {
+  name: string;
+  dataDir: string;
+  baseModel: string;
+  speed: "learn" | "keep";
+  device: "auto" | "cuda" | "cpu";
+  steps: number;
+  verifyText: boolean;
+  overwrite: boolean;
+};
+
+/** 学習した結果（speaker_train.py の run の戻り値）。 */
+export type IrodoriSpeakerTrainResult = {
+  name: string;
+  speaker_file: string;
+  record: string;
+  data: {
+    files: number;
+    unreadable: number;
+    too_short: number;
+    transcribed: number;
+    text_replaced_by_asr: number;
+    no_text: number;
+    too_long: number;
+    used: number;
+    used_minutes: number;
+  };
+  metrics: {
+    actual_over_predicted: number;
+    pace_vs_base: number;
+    train_seconds: number;
+    peak_vram_gb?: number;
+  };
+};
+
+/** GET /irodori/speaker-train の応答。 */
+export type IrodoriSpeakerTrainStatus = {
+  state: "idle" | "running" | "done" | "error" | "cancelled";
+  percent: number;
+  stage: string;
+  message: string;
+  log: string[];
+  result: IrodoriSpeakerTrainResult | null;
+  error: string | null;
+  params: IrodoriSpeakerTrainRequest | null;
+  startedAt: number | null;
+  finishedAt: number | null;
+  detail: {
+    step?: number;
+    steps?: number;
+    eta_sec?: number;
+    vram_gb?: number;
+  };
+};

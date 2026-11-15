@@ -37,6 +37,7 @@
   <ImportSongProjectDialog v-model="isImportSongProjectDialogOpenComputed" />
   <PresetManageDialog v-model:dialogOpened="isPresetManageDialogOpenComputed" />
   <HelpDialog v-model:dialogOpened="isHelpDialogOpenComputed" />
+  <SpeakerTrainDialog v-model:dialogOpened="isSpeakerTrainDialogOpenComputed" />
 </template>
 
 <script setup lang="ts">
@@ -57,6 +58,7 @@ import ImportSongProjectDialog from "@/components/Dialog/ImportSongProjectDialog
 import ExportSongAudioDialog from "@/components/Dialog/ExportSongAudioDialog/Container.vue";
 import PresetManageDialog from "@/components/Dialog/PresetManageDialog.vue";
 import HelpDialog from "@/components/Dialog/HelpDialog/HelpDialog.vue";
+import SpeakerTrainDialog from "@/components/Dialog/SpeakerTrainDialog.vue";
 import { useStore } from "@/store";
 import { filterCharacterInfosByStyleType } from "@/store/utility";
 
@@ -204,6 +206,15 @@ const isPresetManageDialogOpenComputed = computed({
   set: (val) =>
     store.actions.SET_DIALOG_OPEN({
       isPresetManageDialogOpen: val,
+    }),
+});
+
+// 話者学習ダイアログ
+const isSpeakerTrainDialogOpenComputed = computed({
+  get: () => store.state.isSpeakerTrainDialogOpen,
+  set: (val) =>
+    store.actions.SET_DIALOG_OPEN({
+      isSpeakerTrainDialogOpen: val,
     }),
 });
 

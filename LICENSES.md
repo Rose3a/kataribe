@@ -13,6 +13,7 @@
 | `tools/` | セットアップ・検証用スクリプト | MIT | コピーまたは重要な部分を配布するときは、著作権表示と許諾表示を残します。 | `LICENSE` |
 | `voicevox-editor/` | 改変を含む VOICEVOX Editor | LGPL-3.0、または VOICEVOX 上流から別途取得するライセンス | LGPL-3.0 を選ぶ場合は、改変部分を含む対応ソースコードの提供など、同ライセンスの条件に従います。別途取得したライセンスを使う場合は、その条件に従います。 | `voicevox-editor/LICENSE`、`voicevox-editor/LGPL_LICENSE`、`voicevox-editor/GPL_LICENSE` |
 | `runtime/trt-lab/repo/` | 改変を含む Irodori-TTS ランタイム | MIT | コピーまたは重要な部分を配布するときは、著作権表示と許諾表示を残します。 | `runtime/trt-lab/repo/LICENSE` |
+| `irodori-tts/wrapper/vendor/haas_asr/` | 話者学習の書き起こしに使う Haas-ASR の推論コード（third-intelligence/Haas-ASR を同梱） | Apache-2.0 | 再配布時はライセンスの写しを添え、変更したファイルには変更した旨を示します。 | `licenses/haas-asr.txt` |
 
 `voicevox-editor/` に含まれる Irodori 向けの追加・変更部分は、MIT には切り替わらず
 LGPL-3.0 の対象です。
@@ -42,6 +43,7 @@ Editor の JavaScript 依存パッケージと実行環境の依存パッケー�
 | Irodori-TTS-v4.1-Small-Yomi-Tech-tuned | 音声生成モデル（難読漢字・技術用語の読み改善版） | 重み・コード: MIT License + モデルカードの Ethical Restrictions / 埋め込みの読み辞書: CC BY-SA 4.0 | 読み辞書の外来語は JMdict（© EDRDG, CC BY-SA 4.0）由来です。出典の表示を残します。辞書データを取り出して加工・再配布する場合は CC BY-SA 4.0 を適用します。配布ページ: <https://huggingface.co/j-llm/Irodori-TTS-v4.1-Small-Yomi-Tech-tuned>、JMdict のライセンス: <https://www.edrdg.org/edrdg/licence.html> |
 | Irodori-TTS-v4-Large | 音声生成モデル（大容量版） | Gemma Terms of Use + モデルカードの Ethical Restrictions | テキストエンコーダーが T5Gemma 2 由来のため、Gemma の利用規約と禁止用途ポリシーに従います。なりすましや、誤情報を目的とする音声生成は禁止されています。配布ページ: <https://huggingface.co/Aratako/Irodori-TTS-v4-Large> |
 | Irodori-TTS-v4-Large-Quantized | 音声生成モデル（大容量版の INT8 などの量子化版） | Gemma Terms of Use + モデルカードの Ethical Restrictions | Irodori-TTS-v4-Large と同じ条件です。配布ページ: <https://huggingface.co/Aratako/Irodori-TTS-v4-Large-Quantized> |
+| Haas-ja-v1.0 | 話者学習の書き起こし用 ASR モデル（`bat\haas_setup.bat` を実行したときだけ取得） | Apache-2.0 | 再配布時はライセンスの写しを添えます。配布ページ: <https://huggingface.co/third-intelligence/Haas-ja-v1.0> |
 
 モデル重み、トークナイザー、話者データ、参照音声、画像、生成音声は、上のコードライセンスとは
 別の配布物です。モデルや話者を追加・差し替えた場合は、その配布元が示すライセンスと利用条件を

@@ -357,6 +357,16 @@ export const useCommonMenuBarData = (store: Store) => {
           },
           disableWhenUiLocked: true,
         },
+        {
+          type: "button",
+          label: "話者学習（音声から話者を作る）",
+          onClick() {
+            void store.actions.SET_DIALOG_OPEN({
+              isSpeakerTrainDialogOpen: true,
+            });
+          },
+          disableWhenUiLocked: true,
+        },
       ],
       options: [
         {

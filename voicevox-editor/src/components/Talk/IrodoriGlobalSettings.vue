@@ -252,6 +252,20 @@
           @deleted="run(false)"
         />
       </QExpansionItem>
+      <div class="row items-center q-mt-sm">
+        <QBtn
+          outline
+          dense
+          noCaps
+          icon="school"
+          label="話者学習（音声から話者を作る）を開く"
+          :disable="locked"
+          @click="openSpeakerTrain"
+        />
+        <span class="text-caption q-ml-sm"
+          >メニューの「設定」からも開けます。</span
+        >
+      </div>
       <QExpansionItem
         label="モデル・話者の追加 / セットアップ"
         dense
@@ -568,6 +582,13 @@ const tokenSplitNote = computed(() => {
 const modelFolder = ref("");
 // 開いたときだけ一覧を取る（フォルダサイズの集計に数秒かかる）。
 const storageOpen = ref(false);
+// 話者学習は専用の画面（SpeakerTrainDialog）で行う
+function openSpeakerTrain() {
+  void store.actions.SET_DIALOG_OPEN({
+    isSettingDialogOpen: false,
+    isSpeakerTrainDialogOpen: true,
+  });
+}
 const speakerFolder = ref("");
 const status = ref("");
 const error = ref("");
