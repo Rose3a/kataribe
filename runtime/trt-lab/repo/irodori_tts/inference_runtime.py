@@ -359,6 +359,15 @@ class SamplingRequest:
     lookahead_text: str | None = None
 
 
+def prefix_lead_within(latent_steps: int, lead_frames: int, max_frames: int) -> int:
+    """続きの行の先頭に足す余白（フレーム）を、足したあとの長さが max_frames を超えない分だけにする。
+
+    余白は長さの上限（max_seconds）で切ったあとに足すので、そのままだと 30 秒近い行で上限を超え、
+    TensorRT のプロファイル（750 フレーム）の外になって合成が 400 で落ちる。超える分は余白を削り、
+    セリフの長さ（予測）はそのままにする。"""
+    return max(0, min(int(lead_frames), int(max_frames) - int(latent_steps)))
+
+
 @dataclass
 class SamplingResult:
     audio: torch.Tensor
@@ -1770,8 +1779,18 @@ class InferenceRuntime:
                 for msg in messages[msg_count_before_prefix:]:
                     _log(msg)
                 if prefix is not None:
-                    # 続きの先頭の無音ぶん（その文だけの長さ予測には入っていない）
-                    latent_steps += max(0, int(req.prefix_lead_frames))
+                    # 続きの先頭の無音ぶん（その文だけの長さ予測には入っていない）。足しても max_seconds は超えない
+                    limit_frames = max(1, math.floor(max_seconds * self.codec.sample_rate / hop_length))
+                    wanted_lead = max(0, int(req.prefix_lead_frames))
+                    lead = prefix_lead_within(latent_steps, wanted_lead, limit_frames)
+                    if lead < wanted_lead:
+                        msg = (
+                            f"info: lead frames {wanted_lead} -> {lead} to stay within "
+                            f"{limit_frames} frames ({max_seconds:.1f}s)."
+                        )
+                        messages.append(msg)
+                        _log(msg)
+                    latent_steps += lead
                     target_samples = int(latent_steps * hop_length)
             patched_steps = math.ceil(latent_steps / self.model_cfg.latent_patch_size)
 

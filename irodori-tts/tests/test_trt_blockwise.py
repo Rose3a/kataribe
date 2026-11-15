@@ -177,6 +177,14 @@ class LeadFramesTest(unittest.TestCase):
         self.assertEqual(f(None), tts_cli.BLOCKWISE_LEAD_AFTER_STOP)
         self.assertEqual(f(""), tts_cli.BLOCKWISE_LEAD_AFTER_STOP)
 
+    def test_lead_stays_within_the_max_length(self):
+        # 30 秒近い続きの行（予測 745 フレーム）に余白 20 を足すと 765 になり、TensorRT の 750 を超えていた
+        from irodori_tts.inference_runtime import prefix_lead_within
+        self.assertEqual(prefix_lead_within(745, 20, 750), 5)
+        self.assertEqual(prefix_lead_within(750, 20, 750), 0)
+        self.assertEqual(prefix_lead_within(400, 20, 750), 20)
+        self.assertEqual(prefix_lead_within(400, 0, 750), 0)
+
 
 class VramTrimTest(unittest.TestCase):
     def test_prefix_projection_stays_on_gpu(self):
