@@ -1362,6 +1362,12 @@ class EditorAdapter:
     def speaker_train_cancel(self, _payload=None):
         return self.speaker_train.cancel()
 
+    def speaker_train_stop(self, _payload=None):
+        return self.speaker_train.stop()
+
+    def speaker_train_record(self, name):
+        return self.speaker_train.record(name)
+
     def pick_folder(self, payload):
         import speaker_train_job
         initial = payload.get("initial", "") if isinstance(payload, dict) else ""
@@ -1421,13 +1427,18 @@ class EditorHandler(Handler):
                 return self._send(200, icon, "image/png")
             except (ValueError, FileNotFoundError) as exc:
                 return self._json(404, {"detail": str(exc)})
-        if path in ("/irodori/speaker-train", "/irodori/speaker-train/options"):
+        if path in ("/irodori/speaker-train", "/irodori/speaker-train/options", "/irodori/speaker-train/record"):
             if not self._authorized():
                 return self._json(403, {"detail": "invalid local origin/session"})
             try:
                 if path.endswith("/options"):
                     return self._json(200, self.adapter.speaker_train_options())
+                if path.endswith("/record"):
+                    name = parse_qs(urlparse(self.path).query).get("name", [""])[0]
+                    return self._json(200, self.adapter.speaker_train_record(name))
                 return self._json(200, self.adapter.speaker_train_status())
+            except (ValueError, FileNotFoundError) as exc:
+                return self._json(404, {"detail": str(exc)})
             except Exception as exc:
                 return self._json(500, {"detail": str(exc)})
         if path == "/irodori/settings":
@@ -1473,6 +1484,7 @@ class EditorHandler(Handler):
                 return self._json(500, {"detail": str(exc)})
         train_actions = {"/irodori/speaker-train/start": self.adapter.speaker_train_start,
                          "/irodori/speaker-train/cancel": self.adapter.speaker_train_cancel,
+                         "/irodori/speaker-train/stop": self.adapter.speaker_train_stop,
                          "/irodori/pick-folder": self.adapter.pick_folder}
         action = train_actions.get(urlparse(self.path).path)
         if action is not None:

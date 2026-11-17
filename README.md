@@ -133,10 +133,11 @@ kataribeでは、音声合成エンジンとして使用している `irodori-tt
 
 - モデル本体は変えず、16 トークンの話者埋め込みだけを学習します。結果は `speakers/学習した話者/<名前>/` に保存され、PyTorch でも TensorRT でもそのまま使えます。
 - ベースモデルは Irodori-TTS-v4.1-Small と同じ構造のもの（v4.1 Small、Anime、Yomi Tech、Blockwise の bf16 版、`models/` に置いた微調整版など）から選びます。作った話者は、そのベースモデルで使ってください。
-- 音声と同じ名前の `.txt`（または Style-Bert-VITS2 の `esd.list`）があればセリフとして使います。テキストの無い音声は Haas-ja-v1.0 で書き起こします。書き起こしを使うには、初回だけ `bat\haas_setup.bat` を実行してください（`.localenv-haas` に別の Python 環境と約 1.2GB のモデルを入れます）。
+- 音声と同じ名前の `.txt`（または Style-Bert-VITS2 の `esd.list`）があればセリフとして使います。テキストの無い音声は Haas-ja-v1.0 で書き起こします。書き起こしを使うには、初回だけ `bat\haas_setup.bat` を実行してください（`.local\venv-haas` に別の Python 環境と約 1.2GB のモデルを入れます）。
 - 「話速も学習する」をオンにすると、キャラの話す速さ・間の取り方も覚えます。
+- 学習率（一定 / cosine・ウォームアップ）、バッチ、時間予測の重み、検証の割合・間隔、保存する話者（最後 / 検証 loss が最小）、シードを変えられます。学習に使わない音声を少し取り分けて検証 loss を測り、学習中は loss・時間予測の誤差・学習率・勾配ノルム・初期値からの変化をグラフで見られます。「ここで終えて保存」でその時点の話者を保存できます。記録（設定・結果・loss の履歴）は `<名前>.train.json` に残り、別の学習と重ねて比べたり、設定を読み込んだりできます。
 - GPU なら VRAM 約 2GB、500 ステップで数分です。CPU でも動きます（短いセリフ中心なら 10〜15 分ほど）。
-- コマンドから使う場合: `.localenv\Scripts\python.exe irodori-tts\wrapper\speaker_train.py --name <名前> --data <音声のフォルダ>`（`--help` で項目を表示）。
+- コマンドから使う場合: `.local\venv\Scripts\python.exe irodori-tts\wrapper\speaker_train.py --name <名前> --data <音声のフォルダ>`（`--help` で項目を表示）。
 
 ## kataribeの利用条件
 

@@ -257,28 +257,141 @@ export type IrodoriSpeakerTrainBaseModel = {
   source: "local" | "huggingface";
 };
 
+/** 学習の設定（数・選択）。エンジンの既定値と同じ形。 */
+export type IrodoriSpeakerTrainSettings = {
+  steps: number;
+  lr: number;
+  /** constant = 一定 / cosine = 最後に向けて 0 近くまで下げる。 */
+  lrSchedule: "constant" | "cosine";
+  warmup: number;
+  /** 0 = 自動（GPU 16 / CPU 4）。 */
+  batch: number;
+  durWeight: number;
+  /** 検証に回す音声の割合（0 で検証しない）。 */
+  valFrac: number;
+  /** 検証の間隔（ステップ）。0 = 自動。 */
+  valEvery: number;
+  /** 保存する話者: last = 最後 / best = 検証 loss が一番低かったとき。 */
+  keep: "last" | "best";
+  seed: number;
+};
+
+export type IrodoriSpeakerTrainNumberKey = Exclude<
+  keyof IrodoriSpeakerTrainSettings,
+  "lrSchedule" | "keep"
+>;
+
+/** 過去の学習（speakers/学習した話者/<名前>/<名前>.train.json）の一覧の 1 件。 */
+export type IrodoriSpeakerTrainRun = {
+  name: string;
+  created: string | null;
+  steps: number | null;
+  lr: number | null;
+  /** loss の履歴があるか（グラフで比べられるか）。 */
+  hasHistory: boolean;
+  metrics: Partial<IrodoriSpeakerTrainMetrics>;
+};
+
 /** GET /irodori/speaker-train/options の応答。 */
 export type IrodoriSpeakerTrainOptions = {
   baseModels: IrodoriSpeakerTrainBaseModel[];
   /** テキストの無い音声を書き起こす Haas-ja が入っているか（bat\haas_setup.bat）。 */
   haasAvailable: boolean;
   cudaAvailable: boolean;
-  defaults: { steps: number; speed: "learn" | "keep"; device: "cuda" | "cpu" };
+  defaults: IrodoriSpeakerTrainSettings & {
+    speed: "learn" | "keep";
+    device: "cuda" | "cpu";
+  };
+  /** 数の設定で選べる範囲 [下限, 上限]。 */
+  limits: Record<IrodoriSpeakerTrainNumberKey, [number, number]>;
+  /** これより少ない本数では検証に取り分けない。 */
+  valMinTotal: number;
   speakerFolder: string;
   /** すでにある学習した話者の名前。 */
   existing: string[];
+  runs: IrodoriSpeakerTrainRun[];
 };
 
 /** POST /irodori/speaker-train/start の要求。 */
-export type IrodoriSpeakerTrainRequest = {
+export type IrodoriSpeakerTrainRequest = IrodoriSpeakerTrainSettings & {
   name: string;
   dataDir: string;
   baseModel: string;
   speed: "learn" | "keep";
   device: "auto" | "cuda" | "cpu";
-  steps: number;
   verifyText: boolean;
   overwrite: boolean;
+};
+
+/** 学習中の記録（学習: report_every ステップごとの平均）。 */
+export type IrodoriSpeakerTrainPoint = {
+  step: number;
+  /** RF（速度場）の loss。 */
+  loss: number;
+  /** 時間予測の loss（Huber、log フレーム）。 */
+  dur: number;
+  /** 時間予測の誤差（秒）。 */
+  dur_mae_sec: number;
+  lr: number;
+  /** 話者埋め込みの勾配ノルム。 */
+  grad: number;
+  /** 初期値（ゼロショット）からの変化（‖今 − 初期値‖ ÷ ‖初期値‖）。 */
+  drift: number;
+  steps_per_sec: number;
+  elapsed_sec: number;
+};
+
+/** 検証の記録（決まった t・雑音で測った loss）。step 0 は学習前（ゼロショット）。 */
+export type IrodoriSpeakerTrainValPoint = {
+  step: number;
+  loss: number;
+  dur_mae_sec: number;
+  /** その時点で一番低かった。 */
+  best?: boolean;
+};
+
+export type IrodoriSpeakerTrainHistory = {
+  train: IrodoriSpeakerTrainPoint[];
+  val: IrodoriSpeakerTrainValPoint[];
+};
+
+/** 学習で実際に使った設定（自動の値を決めた後）。 */
+export type IrodoriSpeakerTrainConfig = {
+  batch: number;
+  grad_ckpt: number;
+  dtype: string;
+  train_clips: number;
+  val_clips: number;
+  val_points: number;
+  val_every: number;
+  report_every: number;
+  lr: number;
+  lr_schedule: string;
+  warmup: number;
+  steps: number;
+  dur_weight: number;
+  params: number;
+  keep: string;
+  seed: number;
+};
+
+export type IrodoriSpeakerTrainMetrics = {
+  actual_over_predicted: number;
+  pace_vs_base: number;
+  train_seconds: number;
+  peak_vram_gb?: number;
+  steps_done?: number;
+  saved_step?: number;
+  stopped_at?: number;
+  final_train_loss?: number | null;
+  drift?: number;
+  val_loss_init?: number;
+  val_loss_final?: number;
+  val_loss_best?: number;
+  best_step?: number;
+  val_loss_saved?: number;
+  val_dur_mae_sec_init?: number;
+  val_dur_mae_sec_saved?: number;
 };
 
 /** 学習した結果（speaker_train.py の run の戻り値）。 */
@@ -296,13 +409,36 @@ export type IrodoriSpeakerTrainResult = {
     too_long: number;
     used: number;
     used_minutes: number;
+    val?: number;
   };
-  metrics: {
-    actual_over_predicted: number;
-    pace_vs_base: number;
-    train_seconds: number;
-    peak_vram_gb?: number;
+  metrics: IrodoriSpeakerTrainMetrics;
+};
+
+/** GET /irodori/speaker-train/record?name= の応答（.train.json の中身）。古い記録には history・settings が無い。 */
+export type IrodoriSpeakerTrainRecord = {
+  version: number;
+  name: string;
+  created: string;
+  steps: number;
+  lr: number;
+  speed: "learn" | "keep";
+  dur_weight: number;
+  batch?: number;
+  settings?: {
+    steps: number;
+    lr: number;
+    lr_schedule: "constant" | "cosine";
+    warmup: number;
+    batch: number;
+    dur_weight: number;
+    speed: "learn" | "keep";
+    val_frac: number;
+    val_every: number;
+    keep: "last" | "best";
+    seed: number;
   };
+  metrics: Partial<IrodoriSpeakerTrainMetrics>;
+  history?: IrodoriSpeakerTrainHistory;
 };
 
 /** GET /irodori/speaker-train の応答。 */
@@ -323,4 +459,8 @@ export type IrodoriSpeakerTrainStatus = {
     eta_sec?: number;
     vram_gb?: number;
   };
+  config: IrodoriSpeakerTrainConfig | null;
+  history: IrodoriSpeakerTrainHistory;
+  /** 「保存して終える」を押した。 */
+  stopRequested: boolean;
 };

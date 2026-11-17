@@ -113,7 +113,7 @@ watch(dialogOpened, async (opened) => {
 
 .train-card {
   margin: auto;
-  max-width: 960px;
+  max-width: 1440px;
   padding: vars.$padding-2;
 }
 

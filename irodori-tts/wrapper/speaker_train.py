@@ -46,6 +46,15 @@ TRIM_PAD_SECONDS = 0.05
 DEFAULT_STEPS = 500
 DEFAULT_LR = 0.01
 DEFAULT_DUR_WEIGHT = 1.0
+LR_SCHEDULES = ("constant", "cosine")
+# 検証: 学習に使わない音声を少し取り分け、決まった t と雑音で loss を測る（学習の loss は t が毎回違うので揺れが大きい）。
+# 本数が少ないときは取り分けない（学習の音声を減らさない）
+DEFAULT_VAL_FRAC = 0.05
+VAL_MIN_CLIPS = 4
+VAL_MAX_CLIPS = 32  # 32 本 × 4 点で 1 回およそ 1 秒（GPU）。500 ステップ・20 回で学習時間の 1 割ほど
+VAL_MIN_TOTAL = 24
+VAL_T_POINTS = 4  # 学習の t の分布（logit-normal）を 4 等分した各区間の真ん中
+KEEP_CHOICES = ("last", "best")
 INIT_REF_SECONDS = 60.0
 TOKENS = 16
 SPEAKER_SUBDIR = "学習した話者"
@@ -82,6 +91,37 @@ def validate_name(name: str) -> str:
             or name.upper().split(" ")[0] in WINDOWS_RESERVED):
         raise TrainError('名前は1〜32文字で、\\ / : * ? " < > | . は使えません')
     return name
+
+
+# 学習の設定で選べる範囲（エディタの入力欄とエンジンの確かめにも使う）。(下限, 上限, 名前)
+LIMITS = {
+    "steps": (50, 5000, "ステップ数"),
+    "lr": (1e-5, 1.0, "学習率"),
+    "warmup": (0, 2000, "ウォームアップ"),
+    "batch": (0, 64, "バッチ"),
+    "dur_weight": (0.0, 10.0, "時間予測の重み"),
+    "val_frac": (0.0, 0.3, "検証に回す割合"),
+    "val_every": (0, 5000, "検証の間隔"),
+    "seed": (0, 2 ** 31 - 1, "シード"),
+}
+
+
+def check_settings(args) -> None:
+    """学習の設定が範囲内か。外れていれば TrainError（日本語の説明）。"""
+    for key, (lo, hi, label) in LIMITS.items():
+        value = getattr(args, key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise TrainError(f"{label}が数ではありません: {value!r}")
+        if isinstance(lo, int) and not isinstance(value, int):
+            raise TrainError(f"{label}は整数です: {value!r}")
+        if not lo <= value <= hi:
+            raise TrainError(f"{label}は {lo:g}〜{hi:g} です（{value:g}）")
+    if args.warmup >= args.steps:
+        raise TrainError(f"ウォームアップ（{args.warmup}）はステップ数（{args.steps}）より小さくしてください")
+    if args.lr_schedule not in LR_SCHEDULES:
+        raise TrainError(f"学習率の変え方は {' / '.join(LR_SCHEDULES)} です")
+    if args.keep not in KEEP_CHOICES:
+        raise TrainError(f"保存する話者は {' / '.join(KEEP_CHOICES)} です")
 
 
 def speaker_root() -> Path:
@@ -452,7 +492,39 @@ def use_efficient_attention() -> None:
 
 # ---------------------------------------------------------------- 学習
 
-def train(rows: list[dict], ckpt: Path, args, pct: tuple[float, float]) -> tuple:
+def lr_factor(step: int, total: int, schedule: str = "constant", warmup: int = 0) -> float:
+    """step（1 始まり）での学習率の倍率。ウォームアップは 0 から直線で上げ、cosine は残りの区間で 0 近くまで下げる。"""
+    if warmup > 0 and step <= warmup:
+        return step / warmup
+    if schedule == "cosine":
+        span = max(1, total - warmup)
+        return 0.5 * (1.0 + math.cos(math.pi * min(1.0, (step - warmup - 1) / span)))
+    return 1.0
+
+
+def val_count(total: int, frac: float) -> int:
+    """検証に回す本数。割合 0 か、音声が少ないときは 0（取り分けない）。"""
+    if frac <= 0 or total < VAL_MIN_TOTAL:
+        return 0
+    return int(min(VAL_MAX_CLIPS, max(VAL_MIN_CLIPS, round(total * frac)), total - 8))
+
+
+def split_rows(total: int, frac: float, seed: int) -> tuple[list[int], list[int]]:
+    """(学習の番号, 検証の番号)。同じシードなら同じ分け方。"""
+    order = list(range(total))
+    random.Random(seed + 1).shuffle(order)
+    n = val_count(total, frac)
+    return sorted(order[n:]), sorted(order[:n])
+
+
+def auto_val_every(steps: int, cuda: bool) -> int:
+    """検証の間隔の既定。GPU は全体で約 20 回、CPU は重いので約 10 回。"""
+    target = steps / (20 if cuda else 10)
+    return max(5, int(round(target / 5.0)) * 5)
+
+
+def train(rows: list[dict], ckpt: Path, args, pct: tuple[float, float],
+          val_ids: list[int] | None = None) -> tuple:
     import torch
     import torch.nn.functional as F
     from irodori_tts.duration import build_duration_features
@@ -470,13 +542,18 @@ def train(rows: list[dict], ckpt: Path, args, pct: tuple[float, float]) -> tuple
     torch.manual_seed(args.seed)
     rng = random.Random(args.seed)
 
+    val_ids = sorted(val_ids or [])
+    val_set = set(val_ids)
+    train_ids = [i for i in range(len(rows)) if i not in val_set]
+    stop_file = Path(args.stop_file) if getattr(args, "stop_file", None) else None
+
     progress("load", pct[0], "ベースモデルを読み込んでいます")
     lat = [torch.load(r["latent"], map_location="cpu", weights_only=True).float() for r in rows]
     model, cfg, tok = load_model(ckpt, dtype)
     model.train()
 
-    # 初期値（ゼロショット）: 話者エンコーダだけ載せて計算し、下ろす
-    order = list(range(len(rows)))
+    # 初期値（ゼロショット）: 話者エンコーダだけ載せて計算し、下ろす（検証の音声は使わない）
+    order = list(train_ids)
     random.Random(args.seed).shuffle(order)
     pieces, total = [], 0
     for i in order:
@@ -527,12 +604,17 @@ def train(rows: list[dict], ckpt: Path, args, pct: tuple[float, float]) -> tuple
         torch.cuda.reset_peak_memory_stats(dev)
 
     spk = torch.nn.Parameter(init.to(dev))
+    init_dev = init.to(dev)
+    init_norm = float(init_dev.norm().clamp_min(1e-8))
     if args.speed == "keep":
         keep_mask = torch.ones_like(spk)
         keep_mask[0] = 0
         spk.register_hook(lambda g: g * keep_mask)
     dur_weight = args.dur_weight if args.speed == "learn" else 0.0
-    opt = torch.optim.AdamW([spk], lr=args.lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=0.0)
+    schedule = getattr(args, "lr_schedule", "constant")
+    warmup = max(0, min(int(getattr(args, "warmup", 0)), args.steps - 1))
+    opt = torch.optim.AdamW([spk], lr=args.lr * lr_factor(1, args.steps, schedule, warmup),
+                            betas=(0.9, 0.999), eps=1e-8, weight_decay=0.0)
     cap_dim = cfg.caption_dim_resolved
 
     def batch_tensors(ids_):
@@ -571,7 +653,7 @@ def train(rows: list[dict], ckpt: Path, args, pct: tuple[float, float]) -> tuple
             has_caption=torch.zeros(bsz, dtype=torch.bool, device=dev), detach_condition=detach)
 
     def make_batches():
-        idx = list(range(len(rows)))
+        idx = list(train_ids)
         rng.shuffle(idx)
         out, win = [], batch * 64
         for s in range(0, len(idx), win):
@@ -581,11 +663,81 @@ def train(rows: list[dict], ckpt: Path, args, pct: tuple[float, float]) -> tuple
         rng.shuffle(out)
         return out
 
-    batches: list[list[int]] = []
-    hist = {"rf": 0.0, "dur": 0.0, "mae": 0.0, "n": 0}
+    # 検証: 音声ごとに決まった t（VAL_T_POINTS 個）と決まった雑音で loss を測る。雑音は最初に作って CPU に置く
+    val_t = torch.sigmoid(torch.erfinv(2.0 * (torch.arange(VAL_T_POINTS) + 0.5) / VAL_T_POINTS - 1.0) * (2.0 ** 0.5)).tolist()
+    gen = torch.Generator().manual_seed(args.seed + 7919)
+    val_pairs = sorted(((i, k) for i in val_ids for k in range(VAL_T_POINTS)), key=lambda p: rows[p[0]]["frames"])
+    val_noise = {p: torch.randn((rows[p[0]]["frames"], cfg.latent_dim), generator=gen) for p in val_pairs}
+    val_every = int(getattr(args, "val_every", 0) or 0) or auto_val_every(args.steps, cuda)
+    report_every = max(1, int(round(args.steps / 250)))
+
+    def evaluate() -> dict:
+        """検証の loss（RF）と時間予測の誤差（秒）。dropout を止めて測る。"""
+        model.eval()
+        total, count, errs = 0.0, 0, []
+        with torch.no_grad():
+            st_all = conditions(batch)
+            for k in range(0, len(val_pairs), batch):
+                chunk = val_pairs[k:k + batch]
+                x0, valid, ts, tm, _, _ = batch_tensors([i for i, _ in chunk])
+                noise = torch.zeros_like(x0)
+                for j, p in enumerate(chunk):
+                    nz = val_noise[p]
+                    noise[j, :nz.shape[0]] = nz.to(dev)
+                t = torch.tensor([val_t[q] for _, q in chunk], device=dev, dtype=torch.float32)
+                x_t = ((1 - t[:, None, None]) * x0 + t[:, None, None] * noise).to(dtype)
+                st_, sm_, cs_, cm_ = (c[: len(chunk)] for c in st_all)
+                v = model.forward_with_encoded_conditions(x_t=x_t, t=t.to(dtype), text_state=ts, text_mask=tm,
+                                                          speaker_state=st_, speaker_mask=sm_, caption_state=cs_,
+                                                          caption_mask=cm_, latent_mask=valid)
+                diff = ((v.float() - (noise - x0)) ** 2).mean(dim=-1)
+                w = valid.float()
+                total += float(((diff * w).sum(-1) / w.sum(-1).clamp_min(1)).sum())
+                count += len(chunk)
+            for k in range(0, len(val_ids), batch):
+                ids_ = val_ids[k:k + batch]
+                _, _, ts, tm, feats, frames = batch_tensors(ids_)
+                st_, sm_, cs_, cm_ = (c[: len(ids_)] for c in st_all)
+                logf = predict_log_frames(ts, tm, feats, st_, sm_, cs_, cm_)
+                errs += (torch.expm1(logf.float()).clamp_min(0) - frames).abs().tolist()
+        model.train()
+        return {"loss": round(total / max(count, 1), 5), "dur_mae_sec": round(sum(errs) / max(len(errs), 1) / FPS, 3)}
+
+    emit("config", batch=batch, grad_ckpt=ckpt_every, dtype=str(dtype).replace("torch.", ""),
+         train_clips=len(train_ids), val_clips=len(val_ids), val_points=len(val_pairs), val_every=val_every if val_ids else 0,
+         report_every=report_every, lr=args.lr, lr_schedule=schedule, warmup=warmup, steps=args.steps,
+         dur_weight=dur_weight, params=int(spk.numel()), keep=getattr(args, "keep", "last"), seed=args.seed)
+
+    history: dict[str, list] = {"train": [], "val": []}
+    best = {"loss": math.inf, "step": 0, "spk": None}
+
+    def record_val(step: int) -> None:
+        point = {"step": step, **evaluate()}
+        if point["loss"] < best["loss"]:
+            best.update(loss=point["loss"], step=step, spk=spk.detach().clone())
+            point["best"] = True
+        history["val"].append(point)
+        emit("metrics", kind="val", **point)
+
     t0 = time.time()
+    if val_ids:
+        progress("train", pct[0] + 2, "検証の基準（学習前のゼロショット）を測っています")
+        record_val(0)
+    batches: list[list[int]] = []
+    hist = {"rf": 0.0, "dur": 0.0, "mae": 0.0, "grad": 0.0, "n": 0}
+    step_losses: list[float] = []
     span = pct[1] - pct[0] - 2
+    window_t = time.time()
+    t_train = time.time()
+    done_steps = 0
+    stopped_at = None
     for step in range(1, args.steps + 1):
+        if stop_file is not None and stop_file.exists():
+            stopped_at = done_steps
+            break
+        lr_now = args.lr * lr_factor(step, args.steps, schedule, warmup)
+        for group in opt.param_groups:
+            group["lr"] = lr_now
         if not batches:
             batches = make_batches()
         x0, valid, ts, tm, feats, frames = batch_tensors(batches.pop())
@@ -606,27 +758,57 @@ def train(rows: list[dict], ckpt: Path, args, pct: tuple[float, float]) -> tuple
         loss = rf + dur_weight * dur
         opt.zero_grad(set_to_none=True)
         loss.backward()
+        grad = float(spk.grad.detach().float().norm()) if spk.grad is not None else 0.0
         opt.step()
-        hist["rf"] += float(rf.detach())
+        done_steps = step
+        rf_value = float(rf.detach())
+        step_losses.append(rf_value)
+        hist["rf"] += rf_value
         hist["dur"] += float(dur.detach())
         hist["mae"] += float((torch.expm1(logf.detach().float()).clamp_min(0) - frames).abs().mean())
+        hist["grad"] += grad
         hist["n"] += 1
-        if step % 10 == 0 or step == args.steps:
-            el = time.time() - t0
+        if step % report_every == 0 or step == args.steps:
+            now = time.time()
             n = max(hist["n"], 1)
-            extra = {"step": step, "steps": args.steps, "eta_sec": round(el / step * (args.steps - step)),
-                     "rf": round(hist["rf"] / n, 4), "dur_mae_sec": round(hist["mae"] / n / FPS, 2)}
+            point = {"step": step, "loss": round(hist["rf"] / n, 5), "dur": round(hist["dur"] / n, 5),
+                     "dur_mae_sec": round(hist["mae"] / n / FPS, 3), "lr": float(f"{lr_now:.6g}"),
+                     "grad": round(hist["grad"] / n, 5),
+                     "drift": round(float((spk.detach() - init_dev).norm()) / init_norm, 5),
+                     "steps_per_sec": round(n / max(now - window_t, 1e-6), 3), "elapsed_sec": round(now - t0, 1)}
+            history["train"].append(point)
+            emit("metrics", kind="train", **point)
+            window_t = now
+            hist = {"rf": 0.0, "dur": 0.0, "mae": 0.0, "grad": 0.0, "n": 0}
+        if val_ids and step % val_every == 0 and step != args.steps:
+            t_eval = time.time()
+            record_val(step)
+            window_t += time.time() - t_eval  # 速さ（step/秒）に検証の時間を混ぜない
+        if step % report_every == 0 or step == args.steps:
+            el = time.time() - t_train
+            eta = round(el / step * (args.steps - step))
+            extra = {"step": step, "steps": args.steps, "eta_sec": eta, "rf": point["loss"],
+                     "dur_mae_sec": point["dur_mae_sec"]}
             if cuda:
                 extra["vram_gb"] = round(torch.cuda.max_memory_allocated(dev) / GB, 2)
             progress("train", pct[0] + 2 + span * step / args.steps,
-                     f"学習 {step}/{args.steps}（残り約 {max(0, extra['eta_sec']) // 60} 分 {max(0, extra['eta_sec']) % 60} 秒）",
-                     **extra)
-            hist = {"rf": 0.0, "dur": 0.0, "mae": 0.0, "n": 0}
+                     f"学習 {step}/{args.steps}（残り約 {max(0, eta) // 60} 分 {max(0, eta) % 60} 秒）", **extra)
 
-    # 話速の記録: 学習データで「実際 ÷ 予測」（補正の候補）と「この話者 ÷ 話者なし」（ベースと比べた遅さ）
+    if val_ids and (not history["val"] or history["val"][-1]["step"] != done_steps):
+        progress("train", pct[1] - 1, "最後の検証をしています")
+        record_val(done_steps)
+    keep = getattr(args, "keep", "last")
+    saved_step = done_steps
+    if keep == "best" and best["spk"] is not None:
+        with torch.no_grad():
+            spk.copy_(best["spk"])
+        saved_step = best["step"]
+
+    # 話速の記録: 保存する話者で「実際 ÷ 予測」（補正の候補）と「この話者 ÷ 話者なし」（ベースと比べた遅さ）
     metrics = {}
+    model.eval()
     with torch.no_grad():
-        sample = list(range(len(rows)))
+        sample = list(train_ids)
         rng.shuffle(sample)
         ratios, paces = [], []
         for k in range(0, min(len(sample), 320), batch):
@@ -639,13 +821,27 @@ def train(rows: list[dict], ckpt: Path, args, pct: tuple[float, float]) -> tuple
             paces += (learned / none.clamp_min(1)).tolist()
         ratios.sort()
         paces.sort()
+        tail = step_losses[-max(1, len(step_losses) // 10):] if step_losses else []
         metrics = {"actual_over_predicted": round(ratios[len(ratios) // 2], 3),
                    "pace_vs_base": round(paces[len(paces) // 2], 3),
-                   "train_seconds": round(time.time() - t0, 1)}
+                   "train_seconds": round(time.time() - t0, 1),
+                   "steps_done": done_steps, "saved_step": saved_step,
+                   "final_train_loss": round(sum(tail) / len(tail), 5) if tail else None,
+                   "drift": round(float((spk.detach() - init_dev).norm()) / init_norm, 5)}
+        if stopped_at is not None:
+            metrics["stopped_at"] = stopped_at
+        if history["val"]:
+            first, last = history["val"][0], history["val"][-1]
+            saved = next((p for p in history["val"] if p["step"] == saved_step), last)
+            metrics.update(val_loss_init=first["loss"], val_loss_final=last["loss"], val_loss_best=best["loss"],
+                           best_step=best["step"], val_loss_saved=saved["loss"],
+                           val_dur_mae_sec_init=first["dur_mae_sec"], val_dur_mae_sec_saved=saved["dur_mae_sec"])
         if cuda:
             metrics["peak_vram_gb"] = round(torch.cuda.max_memory_allocated(dev) / GB, 2)
-    return spk.detach().float().cpu().contiguous(), metrics, {"batch": batch, "grad_ckpt": ckpt_every,
-                                                             "dtype": str(dtype).replace("torch.", "")}
+    return spk.detach().float().cpu().contiguous(), metrics, {
+        "batch": batch, "grad_ckpt": ckpt_every, "dtype": str(dtype).replace("torch.", ""),
+        "train_clips": len(train_ids), "val_clips": len(val_ids), "val_every": val_every if val_ids else 0,
+        "report_every": report_every, "history": history}
 
 
 # ---------------------------------------------------------------- 本体
@@ -661,6 +857,7 @@ def run(args) -> dict:
         args.device = "cuda" if torch.cuda.is_available() else "cpu"
     if args.device == "cuda" and not torch.cuda.is_available():
         raise TrainError("CUDA の GPU が見つかりません。CPU を選んでください")
+    check_settings(args)
 
     data_dir = Path(args.data).expanduser().resolve()
     ckpt = resolve_checkpoint(args.base)
@@ -714,32 +911,42 @@ def run(args) -> dict:
     if len(rows) < 8:
         raise TrainError(f"学習に使える音声が {len(rows)} 本しかありません（1〜30 秒でテキストのあるもの）。"
                          "もっと音声を入れてください（合計 10 分以上がおすすめ）")
+    train_ids, val_ids = split_rows(len(rows), args.val_frac, args.seed)
+    stats["val"] = len(val_ids)
+    val_set = set(val_ids)
     (work / "manifest.jsonl").write_text("".join(json.dumps(
-        {k: r[k] for k in ("wav", "text", "text_source", "frames", "latent")}, ensure_ascii=False) + "\n"
-        for r in rows), encoding="utf-8")
-    progress("prepare", 45, f"{len(rows)} 本・{stats['used_minutes']} 分で学習します", stats=stats)
+        {**{k: r[k] for k in ("wav", "text", "text_source", "frames", "latent")}, "split": "val" if i in val_set else "train"},
+        ensure_ascii=False) + "\n" for i, r in enumerate(rows)), encoding="utf-8")
+    split_note = f"（うち検証 {len(val_ids)} 本）" if val_ids else ""
+    progress("prepare", 45, f"{len(rows)} 本・{stats['used_minutes']} 分で学習します{split_note}", stats=stats)
 
-    embedding, metrics, run_cfg = train(rows, ckpt, args, (45, 97))
+    embedding, metrics, run_cfg = train(rows, ckpt, args, (45, 97), val_ids=val_ids)
+    history = run_cfg.pop("history")
 
     progress("save", 98, "話者を保存しています")
     from safetensors.torch import save_file
     target.parent.mkdir(parents=True, exist_ok=True)
     meta = {
-        "trainer": "kataribe speaker_train v1",
+        "trainer": "kataribe speaker_train v2",
         "base_checkpoint": str(ckpt),
         "base_sha1_head": hashlib.sha1(ckpt.open("rb").read(1 << 20)).hexdigest()[:16],
-        "speed": args.speed, "steps": str(args.steps), "tokens": str(TOKENS), "init": "zeroshot",
+        "speed": args.speed, "steps": str(metrics["saved_step"]), "tokens": str(TOKENS), "init": "zeroshot",
+        "lr": str(args.lr), "lr_schedule": args.lr_schedule,
         "actual_over_predicted": str(metrics["actual_over_predicted"]),
         "pace_vs_base": str(metrics["pace_vs_base"]),
     }
     tmp = target.with_suffix(".tmp")
     save_file({"speaker_embedding": embedding}, str(tmp), metadata=meta)
     os.replace(tmp, target)
+    settings = {"steps": args.steps, "lr": args.lr, "lr_schedule": args.lr_schedule, "warmup": args.warmup,
+                "batch": args.batch, "dur_weight": args.dur_weight, "speed": args.speed, "val_frac": args.val_frac,
+                "val_every": args.val_every, "keep": args.keep, "seed": args.seed, "device": args.device,
+                "verify_text": bool(args.verify_text)}
     record = {
-        "version": 1, "name": name, "created": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "version": 2, "name": name, "created": time.strftime("%Y-%m-%d %H:%M:%S"),
         "data_dir": str(data_dir), "base_checkpoint": str(ckpt), "speed": args.speed, "steps": args.steps,
         "lr": args.lr, "dur_weight": args.dur_weight if args.speed == "learn" else 0.0, "device": args.device,
-        **run_cfg, "data": stats, "metrics": metrics,
+        **run_cfg, "settings": settings, "data": stats, "metrics": metrics, "history": history,
         "text_sources": {s: sum(1 for r in rows if r["text_source"] == s) for s in {r["text_source"] for r in rows}},
     }
     meta_path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -759,7 +966,16 @@ def main(argv=None) -> int:
     ap.add_argument("--batch", type=int, default=0, help="0 = 自動（GPU 16 / CPU 4）")
     ap.add_argument("--grad-ckpt", type=int, default=None, help="勾配チェックポイント（既定 GPU 1 / CPU 0）")
     ap.add_argument("--lr", type=float, default=DEFAULT_LR)
+    ap.add_argument("--lr-schedule", choices=LR_SCHEDULES, default="constant",
+                    help="学習率の変え方: constant = 一定 / cosine = 最後に向けて 0 近くまで下げる")
+    ap.add_argument("--warmup", type=int, default=0, help="学習率を 0 から上げていくステップ数")
     ap.add_argument("--dur-weight", type=float, default=DEFAULT_DUR_WEIGHT)
+    ap.add_argument("--val-frac", type=float, default=DEFAULT_VAL_FRAC,
+                    help=f"検証に回す音声の割合（0 で検証しない。{VAL_MIN_TOTAL} 本未満のときも検証しない）")
+    ap.add_argument("--val-every", type=int, default=0, help="検証の間隔（ステップ）。0 = 自動（GPU 約 20 回・CPU 約 10 回）")
+    ap.add_argument("--keep", choices=KEEP_CHOICES, default="last",
+                    help="保存する話者: last = 最後 / best = 検証 loss が一番低かったとき（検証が無ければ最後）")
+    ap.add_argument("--stop-file", default=None, help="このファイルができたら、その時点の話者を保存して終える")
     ap.add_argument("--verify-text", type=int, default=1,
                     help="付属テキストも Haas-ja で確かめ、大きく違うものは書き起こしに置き換える（Haas が入っているときだけ）")
     ap.add_argument("--overwrite", action="store_true")

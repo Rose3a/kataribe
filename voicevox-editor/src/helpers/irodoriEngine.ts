@@ -10,6 +10,7 @@ import type {
   IrodoriSession,
   IrodoriSettings,
   IrodoriSpeakerTrainOptions,
+  IrodoriSpeakerTrainRecord,
   IrodoriSpeakerTrainRequest,
   IrodoriSpeakerTrainStatus,
   IrodoriStatus,
@@ -71,10 +72,10 @@ export async function irodoriRequest(
     await fetch(`${endpoint}${path}`, {
       method,
       headers: {
-        ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
+        ...(body != undefined ? { "Content-Type": "application/json" } : {}),
         "X-Irodori-Session": token,
       },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      body: body != undefined ? JSON.stringify(body) : undefined,
       signal:
         signal == undefined
           ? AbortSignal.timeout(timeoutMs)
@@ -298,6 +299,32 @@ export async function pickIrodoriFolder(
     }),
   );
   return result.path ?? undefined;
+}
+
+/** 動いている話者学習をその時点で終え、話者を保存させる（中止と違って結果が残る）。 */
+export async function stopSpeakerTrain(
+  endpoint: string,
+): Promise<IrodoriSpeakerTrainStatus> {
+  return await readSpeakerTrain<IrodoriSpeakerTrainStatus>(
+    await irodoriRequest(endpoint, "/irodori/speaker-train/stop", {
+      method: "POST",
+      body: {},
+    }),
+  );
+}
+
+/** 過去の学習の記録（設定・結果・loss の履歴）を取る。 */
+export async function fetchSpeakerTrainRecord(
+  endpoint: string,
+  name: string,
+): Promise<IrodoriSpeakerTrainRecord> {
+  return await readSpeakerTrain<IrodoriSpeakerTrainRecord>(
+    await irodoriRequest(
+      endpoint,
+      `/irodori/speaker-train/record?name=${encodeURIComponent(name)}`,
+      { timeoutMs: 10000 },
+    ),
+  );
 }
 
 /** 動いている話者学習を止める。 */
